@@ -369,8 +369,7 @@ const file_room_v1_room_proto_rawDesc = "" +
 	"\bREMUXING\x10\x03\x12\t\n" +
 	"\x05ERROR\x10\x042i\n" +
 	"\vRoomService\x12Z\n" +
-	"\tListRooms\x12\x19.room.v1.ListRoomsRequest\x1a\x1a.room.v1.ListRoomsResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/rooms/listB-\n" +
-	"\aroom.v1P\x01Z\x14suika/api/room/v1;v1\xa2\x02\tAPIRoomV1b\x06proto3"
+	"\tListRooms\x12\x19.room.v1.ListRoomsRequest\x1a\x1a.room.v1.ListRoomsResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/rooms/listB\x16Z\x14suika/api/room/v1;v1b\x06proto3"
 
 var (
 	file_room_v1_room_proto_rawDescOnce sync.Once
