@@ -26,8 +26,15 @@ go test ./internal/service/ -run TestTodoServiceCRUD   # one test
 
 There is no configured linter. Proto codegen uses buf v2 with
 buf.build/googleapis/googleapis as a BSR dependency (buf.lock committed).
-Wire regeneration happens via `go generate` from `cmd/suika/wire_gen.go`,
-so `make all` covers it.
+All protoc plugins are pinned and invoked as `go run <plugin>@<version>`
+from `buf.gen.yaml` / `buf.gen.config.yaml`, so nothing besides `buf` and
+`wire` needs installing. Wire regeneration happens via `go generate` from
+`cmd/suika/wire_gen.go`, so `make all` covers it.
+
+Note: README.md and the Dockerfile predate the entrypoint rename and are
+stale — the app is `cmd/suika` (README says `cmd/server`), `make build`
+produces `bin/suika` (Dockerfile CMD runs `./server`), and there is no
+`third_party/` directory. Trust the Makefile and this file.
 
 Never hand-edit generated files: `*.pb.go`, `*_grpc.pb.go`, `*_http.pb.go`,
 `wire_gen.go`, `openapi.yaml`. Regenerated files belong in the same commit
@@ -77,12 +84,12 @@ design rather than add the import.
 
 **service (DTO ↔ DO)**
 
-- `convert<Resource>` parses an incoming proto into a DO. The reverse
-  direction is built inline at the return site; the reply type is
-  whatever the proto declares — usually the resource itself
-  (`return &v1.<Resource>{...}, nil`), sometimes a list wrapper
-  (`*v1.<Resources>Set`), or `&emptypb.Empty{}` for deletes. Inlining
-  keeps each handler self-contained.
+- `convert<Resource>` parses an incoming proto into a DO; the reverse
+  direction is `convert<Resource>Reply` (DO → DTO), a free function so
+  unary handlers and streaming helpers (e.g. `newTodoEvent`) share it.
+  The reply type is whatever the proto declares — usually the resource
+  itself (`return convert<Resource>Reply(do), nil`), sometimes a list
+  wrapper (`*v1.<Resources>Set`), or `&emptypb.Empty{}` for deletes.
 - Embed `Unimplemented<Resource>ServiceServer`.
 - Parse AIP list requests via `filtering` / `ordering` / `pagination`
   (go.einride.tech/aip); apply `fieldmask.Update` for partial updates.
@@ -115,8 +122,10 @@ design rather than add the import.
 - _Shared clients_: `*Data` (internal/data/data.go) holds long-lived
   storage clients. Repos receive `*Data` and never construct their own
   clients. (The sample `Data` struct is empty: the sample repo is a
-  mutex-protected in-memory map, intentionally simple — it shows the
-  flow, not a real query engine.)
+  mutex-protected in-memory map storing DOs directly — no PO, no
+  conversion helpers — intentionally simple to show the flow, not a real
+  query engine. The `database`/`redis` entries in `configs/config.yaml`
+  are unused template placeholders.)
 - _Querying_: translate `ListOptions.Filter` and `ListOptions.OrderBy`
   into the storage driver's query language inside the repo.
 - _Errors_: map driver errors to `biz` typed errors so callers above
@@ -167,3 +176,17 @@ end-to-end through the real in-memory repo.
 - Never commit real credentials in `configs/config.yaml`.
 - AGENTS.md carries the same layering contract for other agents; keep
   the two in sync when changing template rules.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (github.com/xgbt/suika), operated via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles map 1:1 to same-named labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/` (created lazily by skills when needed). See `docs/agents/domain.md`.
