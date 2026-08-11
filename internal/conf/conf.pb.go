@@ -26,6 +26,7 @@ type Bootstrap struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Server        *Server                `protobuf:"bytes,1,opt,name=server,proto3" json:"server,omitempty"`
 	Data          *Data                  `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	Recorder      *Recorder              `protobuf:"bytes,3,opt,name=recorder,proto3" json:"recorder,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -74,6 +75,149 @@ func (x *Bootstrap) GetData() *Data {
 	return nil
 }
 
+func (x *Bootstrap) GetRecorder() *Recorder {
+	if x != nil {
+		return x.Recorder
+	}
+	return nil
+}
+
+// Recorder configures the Bilibili live recorder: which rooms to watch,
+// where recordings land, and how recording/danmaku/reconnect behave.
+// Sensitive credentials (cookie) belong in configs/credentials.yaml,
+// which is merged into Bootstrap by the config file source and gitignored.
+type Recorder struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Rooms to monitor.
+	Rooms []*Recorder_Room `protobuf:"bytes,1,rep,name=rooms,proto3" json:"rooms,omitempty"`
+	// Full cookie header including SESSDATA, required for source quality.
+	// Keep in configs/credentials.yaml (gitignored), never in config.yaml.
+	Cookie string `protobuf:"bytes,2,opt,name=cookie,proto3" json:"cookie,omitempty"`
+	// Directory recordings are written under. Default ./recordings.
+	RecordRoot string `protobuf:"bytes,3,opt,name=record_root,json=recordRoot,proto3" json:"record_root,omitempty"`
+	// Fallback room-state poll interval (danmaku WS is the primary
+	// live-detection channel). Default 600s.
+	FallbackPollInterval *durationpb.Duration `protobuf:"bytes,4,opt,name=fallback_poll_interval,json=fallbackPollInterval,proto3" json:"fallback_poll_interval,omitempty"`
+	// Requested stream quality. 10000 = source; the highest available
+	// quality is accepted when the request cannot be satisfied.
+	QualityQn int32 `protobuf:"varint,5,opt,name=quality_qn,json=qualityQn,proto3" json:"quality_qn,omitempty"`
+	// Segment length in minutes. Optional so an explicit 0 (no splitting)
+	// is distinguishable from unset (unset defaults to 120).
+	SegmentMinutes *int32 `protobuf:"varint,6,opt,name=segment_minutes,json=segmentMinutes,proto3,oneof" json:"segment_minutes,omitempty"`
+	// Maximum rooms recorded concurrently; 0 means unlimited.
+	MaxConcurrent int32 `protobuf:"varint,7,opt,name=max_concurrent,json=maxConcurrent,proto3" json:"max_concurrent,omitempty"`
+	// Remux finished segments from FLV to MP4 via ffmpeg. Optional so an
+	// explicit false (e.g. ffmpeg-less machines) is distinguishable from
+	// unset (unset defaults to true).
+	RemuxEnabled *bool `protobuf:"varint,8,opt,name=remux_enabled,json=remuxEnabled,proto3,oneof" json:"remux_enabled,omitempty"`
+	// Danmaku recording options.
+	Danmaku *Recorder_DanmakuOptions `protobuf:"bytes,9,opt,name=danmaku,proto3" json:"danmaku,omitempty"`
+	// Reconnect and health-check options.
+	Reconnect     *Recorder_ReconnectOptions `protobuf:"bytes,10,opt,name=reconnect,proto3" json:"reconnect,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Recorder) Reset() {
+	*x = Recorder{}
+	mi := &file_conf_conf_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Recorder) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Recorder) ProtoMessage() {}
+
+func (x *Recorder) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Recorder.ProtoReflect.Descriptor instead.
+func (*Recorder) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Recorder) GetRooms() []*Recorder_Room {
+	if x != nil {
+		return x.Rooms
+	}
+	return nil
+}
+
+func (x *Recorder) GetCookie() string {
+	if x != nil {
+		return x.Cookie
+	}
+	return ""
+}
+
+func (x *Recorder) GetRecordRoot() string {
+	if x != nil {
+		return x.RecordRoot
+	}
+	return ""
+}
+
+func (x *Recorder) GetFallbackPollInterval() *durationpb.Duration {
+	if x != nil {
+		return x.FallbackPollInterval
+	}
+	return nil
+}
+
+func (x *Recorder) GetQualityQn() int32 {
+	if x != nil {
+		return x.QualityQn
+	}
+	return 0
+}
+
+func (x *Recorder) GetSegmentMinutes() int32 {
+	if x != nil && x.SegmentMinutes != nil {
+		return *x.SegmentMinutes
+	}
+	return 0
+}
+
+func (x *Recorder) GetMaxConcurrent() int32 {
+	if x != nil {
+		return x.MaxConcurrent
+	}
+	return 0
+}
+
+func (x *Recorder) GetRemuxEnabled() bool {
+	if x != nil && x.RemuxEnabled != nil {
+		return *x.RemuxEnabled
+	}
+	return false
+}
+
+func (x *Recorder) GetDanmaku() *Recorder_DanmakuOptions {
+	if x != nil {
+		return x.Danmaku
+	}
+	return nil
+}
+
+func (x *Recorder) GetReconnect() *Recorder_ReconnectOptions {
+	if x != nil {
+		return x.Reconnect
+	}
+	return nil
+}
+
 type Server struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Http          *Server_HTTP           `protobuf:"bytes,1,opt,name=http,proto3" json:"http,omitempty"`
@@ -84,7 +228,7 @@ type Server struct {
 
 func (x *Server) Reset() {
 	*x = Server{}
-	mi := &file_conf_conf_proto_msgTypes[1]
+	mi := &file_conf_conf_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -96,7 +240,7 @@ func (x *Server) String() string {
 func (*Server) ProtoMessage() {}
 
 func (x *Server) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[1]
+	mi := &file_conf_conf_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -109,7 +253,7 @@ func (x *Server) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server.ProtoReflect.Descriptor instead.
 func (*Server) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{1}
+	return file_conf_conf_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Server) GetHttp() *Server_HTTP {
@@ -136,7 +280,7 @@ type Data struct {
 
 func (x *Data) Reset() {
 	*x = Data{}
-	mi := &file_conf_conf_proto_msgTypes[2]
+	mi := &file_conf_conf_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -148,7 +292,7 @@ func (x *Data) String() string {
 func (*Data) ProtoMessage() {}
 
 func (x *Data) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[2]
+	mi := &file_conf_conf_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -161,7 +305,7 @@ func (x *Data) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data.ProtoReflect.Descriptor instead.
 func (*Data) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2}
+	return file_conf_conf_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Data) GetDatabase() *Data_Database {
@@ -178,6 +322,216 @@ func (x *Data) GetRedis() *Data_Redis {
 	return nil
 }
 
+// Room is one monitored live room.
+type Recorder_Room struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Bilibili room id.
+	RoomId int64 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
+	// Streamer display name, used in the recording directory name.
+	// When empty it is fetched from the room API on first contact.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Whether this room is monitored.
+	Enabled       bool `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Recorder_Room) Reset() {
+	*x = Recorder_Room{}
+	mi := &file_conf_conf_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Recorder_Room) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Recorder_Room) ProtoMessage() {}
+
+func (x *Recorder_Room) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Recorder_Room.ProtoReflect.Descriptor instead.
+func (*Recorder_Room) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{1, 0}
+}
+
+func (x *Recorder_Room) GetRoomId() int64 {
+	if x != nil {
+		return x.RoomId
+	}
+	return 0
+}
+
+func (x *Recorder_Room) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Recorder_Room) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+// DanmakuOptions tune danmaku event recording.
+type Recorder_DanmakuOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Also record INTERACT_WORD (room-entry) events. Off by default:
+	// volume is roughly 10x danmaku with near-zero clipping value.
+	RecordInteractWord bool `protobuf:"varint,1,opt,name=record_interact_word,json=recordInteractWord,proto3" json:"record_interact_word,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *Recorder_DanmakuOptions) Reset() {
+	*x = Recorder_DanmakuOptions{}
+	mi := &file_conf_conf_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Recorder_DanmakuOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Recorder_DanmakuOptions) ProtoMessage() {}
+
+func (x *Recorder_DanmakuOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Recorder_DanmakuOptions.ProtoReflect.Descriptor instead.
+func (*Recorder_DanmakuOptions) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{1, 1}
+}
+
+func (x *Recorder_DanmakuOptions) GetRecordInteractWord() bool {
+	if x != nil {
+		return x.RecordInteractWord
+	}
+	return false
+}
+
+// ReconnectOptions tune stream reconnection and health probing.
+type Recorder_ReconnectOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Reconnect when the stream drops while the room is still live.
+	// Optional so an explicit false is distinguishable from unset
+	// (unset defaults to true).
+	AutoReconnect *bool `protobuf:"varint,1,opt,name=auto_reconnect,json=autoReconnect,proto3,oneof" json:"auto_reconnect,omitempty"`
+	// Maximum reconnect attempts per session for ordinary interruptions.
+	// Zero falls back to the default of 3; disable reconnecting via
+	// auto_reconnect=false instead.
+	MaxReconnect int32 `protobuf:"varint,2,opt,name=max_reconnect,json=maxReconnect,proto3" json:"max_reconnect,omitempty"`
+	// Delay before each reconnect attempt. Zero falls back to 10s.
+	ReconnectDelay *durationpb.Duration `protobuf:"bytes,3,opt,name=reconnect_delay,json=reconnectDelay,proto3" json:"reconnect_delay,omitempty"`
+	// Attempts reserved for CDN-transient errors (404 / connection reset).
+	// Zero falls back to the default of 5.
+	CdnTransientBudget int32 `protobuf:"varint,4,opt,name=cdn_transient_budget,json=cdnTransientBudget,proto3" json:"cdn_transient_budget,omitempty"`
+	// Interval between recording health checks (no new tag => unhealthy).
+	// Zero falls back to 60s.
+	HealthCheckInterval *durationpb.Duration `protobuf:"bytes,5,opt,name=health_check_interval,json=healthCheckInterval,proto3" json:"health_check_interval,omitempty"`
+	// Consecutive unhealthy rounds that abort the current connection.
+	// Zero falls back to the default of 3.
+	HealthCheckFailRounds int32 `protobuf:"varint,6,opt,name=health_check_fail_rounds,json=healthCheckFailRounds,proto3" json:"health_check_fail_rounds,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *Recorder_ReconnectOptions) Reset() {
+	*x = Recorder_ReconnectOptions{}
+	mi := &file_conf_conf_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Recorder_ReconnectOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Recorder_ReconnectOptions) ProtoMessage() {}
+
+func (x *Recorder_ReconnectOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Recorder_ReconnectOptions.ProtoReflect.Descriptor instead.
+func (*Recorder_ReconnectOptions) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{1, 2}
+}
+
+func (x *Recorder_ReconnectOptions) GetAutoReconnect() bool {
+	if x != nil && x.AutoReconnect != nil {
+		return *x.AutoReconnect
+	}
+	return false
+}
+
+func (x *Recorder_ReconnectOptions) GetMaxReconnect() int32 {
+	if x != nil {
+		return x.MaxReconnect
+	}
+	return 0
+}
+
+func (x *Recorder_ReconnectOptions) GetReconnectDelay() *durationpb.Duration {
+	if x != nil {
+		return x.ReconnectDelay
+	}
+	return nil
+}
+
+func (x *Recorder_ReconnectOptions) GetCdnTransientBudget() int32 {
+	if x != nil {
+		return x.CdnTransientBudget
+	}
+	return 0
+}
+
+func (x *Recorder_ReconnectOptions) GetHealthCheckInterval() *durationpb.Duration {
+	if x != nil {
+		return x.HealthCheckInterval
+	}
+	return nil
+}
+
+func (x *Recorder_ReconnectOptions) GetHealthCheckFailRounds() int32 {
+	if x != nil {
+		return x.HealthCheckFailRounds
+	}
+	return 0
+}
+
 type Server_HTTP struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Network       string                 `protobuf:"bytes,1,opt,name=network,proto3" json:"network,omitempty"`
@@ -189,7 +543,7 @@ type Server_HTTP struct {
 
 func (x *Server_HTTP) Reset() {
 	*x = Server_HTTP{}
-	mi := &file_conf_conf_proto_msgTypes[3]
+	mi := &file_conf_conf_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -201,7 +555,7 @@ func (x *Server_HTTP) String() string {
 func (*Server_HTTP) ProtoMessage() {}
 
 func (x *Server_HTTP) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[3]
+	mi := &file_conf_conf_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -214,7 +568,7 @@ func (x *Server_HTTP) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server_HTTP.ProtoReflect.Descriptor instead.
 func (*Server_HTTP) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{1, 0}
+	return file_conf_conf_proto_rawDescGZIP(), []int{2, 0}
 }
 
 func (x *Server_HTTP) GetNetwork() string {
@@ -249,7 +603,7 @@ type Server_GRPC struct {
 
 func (x *Server_GRPC) Reset() {
 	*x = Server_GRPC{}
-	mi := &file_conf_conf_proto_msgTypes[4]
+	mi := &file_conf_conf_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -261,7 +615,7 @@ func (x *Server_GRPC) String() string {
 func (*Server_GRPC) ProtoMessage() {}
 
 func (x *Server_GRPC) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[4]
+	mi := &file_conf_conf_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -274,7 +628,7 @@ func (x *Server_GRPC) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server_GRPC.ProtoReflect.Descriptor instead.
 func (*Server_GRPC) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{1, 1}
+	return file_conf_conf_proto_rawDescGZIP(), []int{2, 1}
 }
 
 func (x *Server_GRPC) GetNetwork() string {
@@ -308,7 +662,7 @@ type Data_Database struct {
 
 func (x *Data_Database) Reset() {
 	*x = Data_Database{}
-	mi := &file_conf_conf_proto_msgTypes[5]
+	mi := &file_conf_conf_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -320,7 +674,7 @@ func (x *Data_Database) String() string {
 func (*Data_Database) ProtoMessage() {}
 
 func (x *Data_Database) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[5]
+	mi := &file_conf_conf_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -333,7 +687,7 @@ func (x *Data_Database) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Database.ProtoReflect.Descriptor instead.
 func (*Data_Database) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 0}
+	return file_conf_conf_proto_rawDescGZIP(), []int{3, 0}
 }
 
 func (x *Data_Database) GetDriver() string {
@@ -362,7 +716,7 @@ type Data_Redis struct {
 
 func (x *Data_Redis) Reset() {
 	*x = Data_Redis{}
-	mi := &file_conf_conf_proto_msgTypes[6]
+	mi := &file_conf_conf_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -374,7 +728,7 @@ func (x *Data_Redis) String() string {
 func (*Data_Redis) ProtoMessage() {}
 
 func (x *Data_Redis) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[6]
+	mi := &file_conf_conf_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -387,7 +741,7 @@ func (x *Data_Redis) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Redis.ProtoReflect.Descriptor instead.
 func (*Data_Redis) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 1}
+	return file_conf_conf_proto_rawDescGZIP(), []int{3, 1}
 }
 
 func (x *Data_Redis) GetNetwork() string {
@@ -423,10 +777,41 @@ var File_conf_conf_proto protoreflect.FileDescriptor
 const file_conf_conf_proto_rawDesc = "" +
 	"\n" +
 	"\x0fconf/conf.proto\x12\n" +
-	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"]\n" +
+	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"\x8f\x01\n" +
 	"\tBootstrap\x12*\n" +
 	"\x06server\x18\x01 \x01(\v2\x12.kratos.api.ServerR\x06server\x12$\n" +
-	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\"\xb8\x02\n" +
+	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\x120\n" +
+	"\brecorder\x18\x03 \x01(\v2\x14.kratos.api.RecorderR\brecorder\"\x97\b\n" +
+	"\bRecorder\x12/\n" +
+	"\x05rooms\x18\x01 \x03(\v2\x19.kratos.api.Recorder.RoomR\x05rooms\x12\x16\n" +
+	"\x06cookie\x18\x02 \x01(\tR\x06cookie\x12\x1f\n" +
+	"\vrecord_root\x18\x03 \x01(\tR\n" +
+	"recordRoot\x12O\n" +
+	"\x16fallback_poll_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x14fallbackPollInterval\x12\x1d\n" +
+	"\n" +
+	"quality_qn\x18\x05 \x01(\x05R\tqualityQn\x12,\n" +
+	"\x0fsegment_minutes\x18\x06 \x01(\x05H\x00R\x0esegmentMinutes\x88\x01\x01\x12%\n" +
+	"\x0emax_concurrent\x18\a \x01(\x05R\rmaxConcurrent\x12(\n" +
+	"\rremux_enabled\x18\b \x01(\bH\x01R\fremuxEnabled\x88\x01\x01\x12=\n" +
+	"\adanmaku\x18\t \x01(\v2#.kratos.api.Recorder.DanmakuOptionsR\adanmaku\x12C\n" +
+	"\treconnect\x18\n" +
+	" \x01(\v2%.kratos.api.Recorder.ReconnectOptionsR\treconnect\x1aM\n" +
+	"\x04Room\x12\x17\n" +
+	"\aroom_id\x18\x01 \x01(\x03R\x06roomId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\x1aB\n" +
+	"\x0eDanmakuOptions\x120\n" +
+	"\x14record_interact_word\x18\x01 \x01(\bR\x12recordInteractWord\x1a\xf4\x02\n" +
+	"\x10ReconnectOptions\x12*\n" +
+	"\x0eauto_reconnect\x18\x01 \x01(\bH\x00R\rautoReconnect\x88\x01\x01\x12#\n" +
+	"\rmax_reconnect\x18\x02 \x01(\x05R\fmaxReconnect\x12B\n" +
+	"\x0freconnect_delay\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x0ereconnectDelay\x120\n" +
+	"\x14cdn_transient_budget\x18\x04 \x01(\x05R\x12cdnTransientBudget\x12M\n" +
+	"\x15health_check_interval\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\x13healthCheckInterval\x127\n" +
+	"\x18health_check_fail_rounds\x18\x06 \x01(\x05R\x15healthCheckFailRoundsB\x11\n" +
+	"\x0f_auto_reconnectB\x12\n" +
+	"\x10_segment_minutesB\x10\n" +
+	"\x0e_remux_enabled\"\xb8\x02\n" +
 	"\x06Server\x12+\n" +
 	"\x04http\x18\x01 \x01(\v2\x17.kratos.api.Server.HTTPR\x04http\x12+\n" +
 	"\x04grpc\x18\x02 \x01(\v2\x17.kratos.api.Server.GRPCR\x04grpc\x1ai\n" +
@@ -462,33 +847,44 @@ func file_conf_conf_proto_rawDescGZIP() []byte {
 	return file_conf_conf_proto_rawDescData
 }
 
-var file_conf_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_conf_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_conf_conf_proto_goTypes = []any{
-	(*Bootstrap)(nil),           // 0: kratos.api.Bootstrap
-	(*Server)(nil),              // 1: kratos.api.Server
-	(*Data)(nil),                // 2: kratos.api.Data
-	(*Server_HTTP)(nil),         // 3: kratos.api.Server.HTTP
-	(*Server_GRPC)(nil),         // 4: kratos.api.Server.GRPC
-	(*Data_Database)(nil),       // 5: kratos.api.Data.Database
-	(*Data_Redis)(nil),          // 6: kratos.api.Data.Redis
-	(*durationpb.Duration)(nil), // 7: google.protobuf.Duration
+	(*Bootstrap)(nil),                 // 0: kratos.api.Bootstrap
+	(*Recorder)(nil),                  // 1: kratos.api.Recorder
+	(*Server)(nil),                    // 2: kratos.api.Server
+	(*Data)(nil),                      // 3: kratos.api.Data
+	(*Recorder_Room)(nil),             // 4: kratos.api.Recorder.Room
+	(*Recorder_DanmakuOptions)(nil),   // 5: kratos.api.Recorder.DanmakuOptions
+	(*Recorder_ReconnectOptions)(nil), // 6: kratos.api.Recorder.ReconnectOptions
+	(*Server_HTTP)(nil),               // 7: kratos.api.Server.HTTP
+	(*Server_GRPC)(nil),               // 8: kratos.api.Server.GRPC
+	(*Data_Database)(nil),             // 9: kratos.api.Data.Database
+	(*Data_Redis)(nil),                // 10: kratos.api.Data.Redis
+	(*durationpb.Duration)(nil),       // 11: google.protobuf.Duration
 }
 var file_conf_conf_proto_depIdxs = []int32{
-	1,  // 0: kratos.api.Bootstrap.server:type_name -> kratos.api.Server
-	2,  // 1: kratos.api.Bootstrap.data:type_name -> kratos.api.Data
-	3,  // 2: kratos.api.Server.http:type_name -> kratos.api.Server.HTTP
-	4,  // 3: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
-	5,  // 4: kratos.api.Data.database:type_name -> kratos.api.Data.Database
-	6,  // 5: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
-	7,  // 6: kratos.api.Server.HTTP.timeout:type_name -> google.protobuf.Duration
-	7,  // 7: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
-	7,  // 8: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
-	7,  // 9: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	2,  // 0: kratos.api.Bootstrap.server:type_name -> kratos.api.Server
+	3,  // 1: kratos.api.Bootstrap.data:type_name -> kratos.api.Data
+	1,  // 2: kratos.api.Bootstrap.recorder:type_name -> kratos.api.Recorder
+	4,  // 3: kratos.api.Recorder.rooms:type_name -> kratos.api.Recorder.Room
+	11, // 4: kratos.api.Recorder.fallback_poll_interval:type_name -> google.protobuf.Duration
+	5,  // 5: kratos.api.Recorder.danmaku:type_name -> kratos.api.Recorder.DanmakuOptions
+	6,  // 6: kratos.api.Recorder.reconnect:type_name -> kratos.api.Recorder.ReconnectOptions
+	7,  // 7: kratos.api.Server.http:type_name -> kratos.api.Server.HTTP
+	8,  // 8: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
+	9,  // 9: kratos.api.Data.database:type_name -> kratos.api.Data.Database
+	10, // 10: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
+	11, // 11: kratos.api.Recorder.ReconnectOptions.reconnect_delay:type_name -> google.protobuf.Duration
+	11, // 12: kratos.api.Recorder.ReconnectOptions.health_check_interval:type_name -> google.protobuf.Duration
+	11, // 13: kratos.api.Server.HTTP.timeout:type_name -> google.protobuf.Duration
+	11, // 14: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
+	11, // 15: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
+	11, // 16: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_conf_conf_proto_init() }
@@ -496,13 +892,15 @@ func file_conf_conf_proto_init() {
 	if File_conf_conf_proto != nil {
 		return
 	}
+	file_conf_conf_proto_msgTypes[1].OneofWrappers = []any{}
+	file_conf_conf_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_conf_conf_proto_rawDesc), len(file_conf_conf_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

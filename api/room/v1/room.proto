@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package room.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "suika/api/room/v1;v1";
+option java_multiple_files = true;
+option java_package = "room.v1";
+option objc_class_prefix = "APIRoomV1";
+
+// RoomService exposes the read-only status of the configured rooms:
+// one entry per room with its live state and recording progress.
+service RoomService {
+  // ListRooms returns the live/record status of every configured room.
+  // The room set is fixed by configuration, so no pagination is offered.
+  rpc ListRooms (ListRoomsRequest) returns (ListRoomsResponse) {
+    option (google.api.http) = {
+      get: "/v1/rooms/list"
+    };
+  }
+}
+
+// LiveStatus is the broadcast state of a room as reported by Bilibili.
+enum LiveStatus {
+  LIVE_STATUS_UNSPECIFIED = 0;
+  // PREPARING means the room is offline (not streaming).
+  PREPARING = 1;
+  // LIVE means the streamer is currently broadcasting.
+  LIVE = 2;
+}
+
+// RecordStatus is the recorder's own state for a room.
+enum RecordStatus {
+  RECORD_STATUS_UNSPECIFIED = 0;
+  // IDLE means no recording session is active for the room.
+  IDLE = 1;
+  // RECORDING means a session is actively writing stream data.
+  RECORDING = 2;
+  // REMUXING means the session ended and segments are being remuxed.
+  REMUXING = 3;
+  // ERROR means the last operation for the room failed.
+  ERROR = 4;
+}
+
+// RoomStatus is the combined live/record status of one configured room.
+message RoomStatus {
+  // Bilibili room id.
+  int64 room_id = 1;
+  // Streamer display name used for the recording directory.
+  string name = 2;
+  // Whether this room is monitored at all.
+  bool enabled = 3;
+  // Broadcast state reported by Bilibili.
+  LiveStatus live_status = 4;
+  // Recorder state for this room.
+  RecordStatus record_status = 5;
+  // Path of the segment file currently being written. Empty when idle.
+  string current_file = 6;
+  // Bytes written across the current session. Zero when idle.
+  int64 bytes_written = 7;
+  // Time at which the current session started. Absent when idle.
+  google.protobuf.Timestamp session_started_at = 8;
+  // Last error observed for this room. Empty when healthy.
+  string last_error = 9;
+}
+
+// ListRoomsRequest is the input for RoomService.ListRooms.
+message ListRoomsRequest {}
+
+// ListRoomsResponse is the output for RoomService.ListRooms.
+message ListRoomsResponse {
+  // Status of every configured room, in configuration order.
+  repeated RoomStatus rooms = 1;
+}

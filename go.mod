@@ -3,7 +3,9 @@ module suika
 go 1.25.12
 
 require (
+	github.com/andybalholm/brotli v1.2.2
 	github.com/google/wire v0.7.0
+	github.com/gorilla/websocket v1.5.3
 	go.einride.tech/aip v0.86.3
 	go.uber.org/automaxprocs v1.6.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260807164820-c8921c73eeea
@@ -13,7 +15,6 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 )
 

@@ -13,3 +13,35 @@ data:
     addr: 127.0.0.1:6379
     read_timeout: 0.2s
     write_timeout: 0.2s
+recorder:
+  # 示例房间:改成 enabled: true 才会真正监控。
+  # 冒烟阶段保持 false,避免没有 cookie 时打真实 API。
+  rooms:
+    - room_id: 6
+      name: example-room-a
+      enabled: false
+    - room_id: 21452505
+      name: example-room-b
+      enabled: false
+  # 真实 cookie 一律放 configs/credentials.yaml(已 gitignore),
+  # 参照 configs/credentials.example.yaml,切勿写在本文件里。
+  cookie: ""
+  record_root: ./recordings
+  # 房间状态轮询兜底间隔(弹幕 WS 是主要的开播探测通道)。
+  fallback_poll_interval: 600s
+  # 10000 = 原画。需要登录 cookie 才能拿到原画,无 cookie 时会降级。
+  quality_qn: 10000
+  max_concurrent: 2
+  # 本机未安装 ffmpeg 时必须保持 false;装了 ffmpeg 后再改 true。
+  # 程序会在启动时探测 ffmpeg,开启转封装但 ffmpeg 缺失会直接启动失败。
+  remux_enabled: false
+  danmaku:
+    # 开启会记录进场词(INTERACT_WORD),量约为弹幕的 10 倍,默认关闭。
+    record_interact_word: false
+  reconnect:
+    auto_reconnect: true
+    max_reconnect: 3
+    reconnect_delay: 10s
+    cdn_transient_budget: 5
+    health_check_interval: 30s
+    health_check_fail_rounds: 3
