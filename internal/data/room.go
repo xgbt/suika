@@ -10,9 +10,9 @@ import (
 	"suika/internal/biz"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
-	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"go.einride.tech/aip/filtering"
 	"go.einride.tech/aip/ordering"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"gorm.io/gorm"
 )
 

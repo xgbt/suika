@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"suika/internal/conf"
@@ -102,9 +103,6 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	return d, cleanup, nil
 }
 
-// openDatabase opens the embedded database. Only the sqlite driver is
-// supported; the source is a filesystem path (parent directories are
-// created on demand).
 func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
 	driver := c.GetDriver()
 	if driver != "sqlite" {
@@ -114,14 +112,14 @@ func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
 	if source == "" {
 		return nil, fmt.Errorf("data: database source is empty")
 	}
-	if dir := filepath.Dir(source); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("data: create database directory %q: %w", dir, err)
-		}
-	}
-	db, err := gorm.Open(sqlite.Open(source), &gorm.Config{})
+
+	filePath, err := ensureSQLiteDir(source)
 	if err != nil {
-		return nil, fmt.Errorf("data: open sqlite database %q: %w", source, err)
+		return nil, err
+	}
+	db, err := gorm.Open(sqlite.Open(filePath), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("data: open sqlite database %q: %w", filePath, err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -130,4 +128,62 @@ func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
 	// A single connection avoids SQLITE_BUSY on the embedded database.
 	sqlDB.SetMaxOpenConns(1)
 	return db, nil
+}
+
+// ensureSQLiteDir validates the configured sqlite source and prepares its
+// parent directory.
+//
+// Expected source format is a plain sqlite file path, for example:
+//   - ./data/suika.db
+//   - /var/lib/suika/suika.db
+//
+// It returns the normalized file path that should be passed to sqlite.Open.
+// The database file itself is not created here; sqlite will create it on open
+// when it does not exist.
+func ensureSQLiteDir(source string) (string, error) {
+	filePath, err := sqliteFilePath(source)
+	if err != nil {
+		return "", err
+	}
+	if dir := filepath.Dir(filePath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("data: create database directory %q: %w", dir, err)
+		}
+	}
+	return filePath, nil
+}
+
+// sqliteFilePath validates and normalizes the sqlite database source as a
+// filesystem file path.
+//
+// Rules:
+//   - source must be non-empty after trimming spaces.
+//   - query parameters are rejected to keep config semantics simple and
+//     deterministic (we only support plain file paths).
+//   - directory-like inputs (for example "./data/" or "/") are rejected.
+//
+// The returned value is a cleaned path suitable for filepath operations and
+// sqlite.Open.
+func sqliteFilePath(source string) (string, error) {
+	pathPart := strings.TrimSpace(source)
+	if pathPart == "" {
+		return "", fmt.Errorf("data: database source is empty")
+	}
+	if _, _, ok := strings.Cut(pathPart, "?"); ok {
+		return "", fmt.Errorf("data: invalid database source %q: query parameters are not supported, use a plain file path like ./data/suika.db", source)
+	}
+	if pathPart == "" {
+		return "", fmt.Errorf("data: invalid database source %q", source)
+	}
+	if strings.HasSuffix(pathPart, "/") || strings.HasSuffix(pathPart, string(filepath.Separator)) {
+		return "", fmt.Errorf("data: invalid database source %q: expected a file path, got a directory path", source)
+	}
+	pathPart = filepath.Clean(pathPart)
+	if pathPart == "." || pathPart == string(filepath.Separator) {
+		return "", fmt.Errorf("data: invalid database source %q", source)
+	}
+	if stat, err := os.Stat(pathPart); err == nil && stat.IsDir() {
+		return "", fmt.Errorf("data: invalid database source %q: expected a file path, got a directory", source)
+	}
+	return pathPart, nil
 }
