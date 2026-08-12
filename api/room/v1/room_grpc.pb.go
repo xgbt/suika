@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -30,41 +29,12 @@ const (
 // RoomServiceClient is the client API for RoomService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-//
-// RoomService manages the monitored rooms and their live status. The
-// persisted fields (room_id, name, enabled, create_time, update_time) are
-// stored in the database; the runtime fields (live_status, record_status,
-// current_file, bytes_written, session_started_at, last_error) are merged
-// in from the in-memory room registry on Get/List and carry default values
-// on Create/Update/Delete responses.
 type RoomServiceClient interface {
-	// CreateRoom registers a new room and returns the stored record with
-	// create_time and update_time populated and the runtime fields set to
-	// their defaults.
-	// Returns INVALID_ARGUMENT if the request payload fails validation, or
-	// ALREADY_EXISTS if a room with the same room_id is already registered.
-	CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (*Room, error)
-	// ListRooms returns a page of rooms, optionally filtered and ordered,
-	// with the runtime state merged in from the room registry.
-	// Use the next_page_token from RoomSet to retrieve subsequent pages.
-	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-	// Declared before GetRoom so the generated router registers the literal
-	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
-	// (gorilla/mux matches in registration order).
-	ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...grpc.CallOption) (*RoomSet, error)
-	// GetRoom returns one room by its platform room id with the runtime
-	// state merged in from the room registry.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*Room, error)
-	// UpdateRoom applies a partial update to an existing room using a
-	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
-	// immutable. Fields not listed in update_mask are left unchanged.
-	// Returns NOT_FOUND if the target room does not exist, or
-	// INVALID_ARGUMENT if update_mask references unsupported fields.
-	UpdateRoom(ctx context.Context, in *UpdateRoomRequest, opts ...grpc.CallOption) (*Room, error)
-	// DeleteRoom permanently removes a room by its platform room id.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	DeleteRoom(ctx context.Context, in *DeleteRoomRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (*CreateRoomResponse, error)
+	ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...grpc.CallOption) (*ListRoomsResponse, error)
+	GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*GetRoomResponse, error)
+	UpdateRoom(ctx context.Context, in *UpdateRoomRequest, opts ...grpc.CallOption) (*UpdateRoomResponse, error)
+	DeleteRoom(ctx context.Context, in *DeleteRoomRequest, opts ...grpc.CallOption) (*DeleteRoomResponse, error)
 }
 
 type roomServiceClient struct {
@@ -75,9 +45,9 @@ func NewRoomServiceClient(cc grpc.ClientConnInterface) RoomServiceClient {
 	return &roomServiceClient{cc}
 }
 
-func (c *roomServiceClient) CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (*Room, error) {
+func (c *roomServiceClient) CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (*CreateRoomResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Room)
+	out := new(CreateRoomResponse)
 	err := c.cc.Invoke(ctx, RoomService_CreateRoom_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -85,9 +55,9 @@ func (c *roomServiceClient) CreateRoom(ctx context.Context, in *CreateRoomReques
 	return out, nil
 }
 
-func (c *roomServiceClient) ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...grpc.CallOption) (*RoomSet, error) {
+func (c *roomServiceClient) ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...grpc.CallOption) (*ListRoomsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RoomSet)
+	out := new(ListRoomsResponse)
 	err := c.cc.Invoke(ctx, RoomService_ListRooms_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -95,9 +65,9 @@ func (c *roomServiceClient) ListRooms(ctx context.Context, in *ListRoomsRequest,
 	return out, nil
 }
 
-func (c *roomServiceClient) GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*Room, error) {
+func (c *roomServiceClient) GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*GetRoomResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Room)
+	out := new(GetRoomResponse)
 	err := c.cc.Invoke(ctx, RoomService_GetRoom_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -105,9 +75,9 @@ func (c *roomServiceClient) GetRoom(ctx context.Context, in *GetRoomRequest, opt
 	return out, nil
 }
 
-func (c *roomServiceClient) UpdateRoom(ctx context.Context, in *UpdateRoomRequest, opts ...grpc.CallOption) (*Room, error) {
+func (c *roomServiceClient) UpdateRoom(ctx context.Context, in *UpdateRoomRequest, opts ...grpc.CallOption) (*UpdateRoomResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Room)
+	out := new(UpdateRoomResponse)
 	err := c.cc.Invoke(ctx, RoomService_UpdateRoom_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -115,9 +85,9 @@ func (c *roomServiceClient) UpdateRoom(ctx context.Context, in *UpdateRoomReques
 	return out, nil
 }
 
-func (c *roomServiceClient) DeleteRoom(ctx context.Context, in *DeleteRoomRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *roomServiceClient) DeleteRoom(ctx context.Context, in *DeleteRoomRequest, opts ...grpc.CallOption) (*DeleteRoomResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(DeleteRoomResponse)
 	err := c.cc.Invoke(ctx, RoomService_DeleteRoom_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -128,41 +98,12 @@ func (c *roomServiceClient) DeleteRoom(ctx context.Context, in *DeleteRoomReques
 // RoomServiceServer is the server API for RoomService service.
 // All implementations must embed UnimplementedRoomServiceServer
 // for forward compatibility.
-//
-// RoomService manages the monitored rooms and their live status. The
-// persisted fields (room_id, name, enabled, create_time, update_time) are
-// stored in the database; the runtime fields (live_status, record_status,
-// current_file, bytes_written, session_started_at, last_error) are merged
-// in from the in-memory room registry on Get/List and carry default values
-// on Create/Update/Delete responses.
 type RoomServiceServer interface {
-	// CreateRoom registers a new room and returns the stored record with
-	// create_time and update_time populated and the runtime fields set to
-	// their defaults.
-	// Returns INVALID_ARGUMENT if the request payload fails validation, or
-	// ALREADY_EXISTS if a room with the same room_id is already registered.
-	CreateRoom(context.Context, *CreateRoomRequest) (*Room, error)
-	// ListRooms returns a page of rooms, optionally filtered and ordered,
-	// with the runtime state merged in from the room registry.
-	// Use the next_page_token from RoomSet to retrieve subsequent pages.
-	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-	// Declared before GetRoom so the generated router registers the literal
-	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
-	// (gorilla/mux matches in registration order).
-	ListRooms(context.Context, *ListRoomsRequest) (*RoomSet, error)
-	// GetRoom returns one room by its platform room id with the runtime
-	// state merged in from the room registry.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	GetRoom(context.Context, *GetRoomRequest) (*Room, error)
-	// UpdateRoom applies a partial update to an existing room using a
-	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
-	// immutable. Fields not listed in update_mask are left unchanged.
-	// Returns NOT_FOUND if the target room does not exist, or
-	// INVALID_ARGUMENT if update_mask references unsupported fields.
-	UpdateRoom(context.Context, *UpdateRoomRequest) (*Room, error)
-	// DeleteRoom permanently removes a room by its platform room id.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	DeleteRoom(context.Context, *DeleteRoomRequest) (*emptypb.Empty, error)
+	CreateRoom(context.Context, *CreateRoomRequest) (*CreateRoomResponse, error)
+	ListRooms(context.Context, *ListRoomsRequest) (*ListRoomsResponse, error)
+	GetRoom(context.Context, *GetRoomRequest) (*GetRoomResponse, error)
+	UpdateRoom(context.Context, *UpdateRoomRequest) (*UpdateRoomResponse, error)
+	DeleteRoom(context.Context, *DeleteRoomRequest) (*DeleteRoomResponse, error)
 	mustEmbedUnimplementedRoomServiceServer()
 }
 
@@ -173,19 +114,19 @@ type RoomServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedRoomServiceServer struct{}
 
-func (UnimplementedRoomServiceServer) CreateRoom(context.Context, *CreateRoomRequest) (*Room, error) {
+func (UnimplementedRoomServiceServer) CreateRoom(context.Context, *CreateRoomRequest) (*CreateRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateRoom not implemented")
 }
-func (UnimplementedRoomServiceServer) ListRooms(context.Context, *ListRoomsRequest) (*RoomSet, error) {
+func (UnimplementedRoomServiceServer) ListRooms(context.Context, *ListRoomsRequest) (*ListRoomsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRooms not implemented")
 }
-func (UnimplementedRoomServiceServer) GetRoom(context.Context, *GetRoomRequest) (*Room, error) {
+func (UnimplementedRoomServiceServer) GetRoom(context.Context, *GetRoomRequest) (*GetRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRoom not implemented")
 }
-func (UnimplementedRoomServiceServer) UpdateRoom(context.Context, *UpdateRoomRequest) (*Room, error) {
+func (UnimplementedRoomServiceServer) UpdateRoom(context.Context, *UpdateRoomRequest) (*UpdateRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UpdateRoom not implemented")
 }
-func (UnimplementedRoomServiceServer) DeleteRoom(context.Context, *DeleteRoomRequest) (*emptypb.Empty, error) {
+func (UnimplementedRoomServiceServer) DeleteRoom(context.Context, *DeleteRoomRequest) (*DeleteRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteRoom not implemented")
 }
 func (UnimplementedRoomServiceServer) mustEmbedUnimplementedRoomServiceServer() {}

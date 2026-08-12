@@ -9,189 +9,125 @@ import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "suika/api/room/v1;v1";
+option java_multiple_files = true;
+option java_package = "room.v1";
+option objc_class_prefix = "APIRoomV1";
 
-// RoomService manages the monitored rooms and their live status. The
-// persisted fields (room_id, name, enabled, create_time, update_time) are
-// stored in the database; the runtime fields (live_status, record_status,
-// current_file, bytes_written, session_started_at, last_error) are merged
-// in from the in-memory room registry on Get/List and carry default values
-// on Create/Update/Delete responses.
 service RoomService {
-  // CreateRoom registers a new room and returns the stored record with
-  // create_time and update_time populated and the runtime fields set to
-  // their defaults.
-  // Returns INVALID_ARGUMENT if the request payload fails validation, or
-  // ALREADY_EXISTS if a room with the same room_id is already registered.
-  rpc CreateRoom (CreateRoomRequest) returns (Room) {
+  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse) {
     option (google.api.http) = {
       post: "/v1/rooms/create"
-      body: "room"
+      body: "*"
     };
   }
 
-  // ListRooms returns a page of rooms, optionally filtered and ordered,
-  // with the runtime state merged in from the room registry.
-  // Use the next_page_token from RoomSet to retrieve subsequent pages.
-  // Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-  // Declared before GetRoom so the generated router registers the literal
-  // "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
-  // (gorilla/mux matches in registration order).
-  rpc ListRooms (ListRoomsRequest) returns (RoomSet) {
+  rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse) {
     option (google.api.http) = {
-      get: "/v1/rooms/list"
+      post: "/v1/rooms/list"
+      body: "*"
     };
   }
 
-  // GetRoom returns one room by its platform room id with the runtime
-  // state merged in from the room registry.
-  // Returns NOT_FOUND if no room exists with the supplied room id.
-  rpc GetRoom (GetRoomRequest) returns (Room) {
+  rpc GetRoom(GetRoomRequest) returns (GetRoomResponse) {
     option (google.api.http) = {
-      get: "/v1/rooms/{room_id}"
+      post: "/v1/rooms/get"
+      body: "*"
     };
   }
 
-  // UpdateRoom applies a partial update to an existing room using a
-  // FieldMask. Only `name` and `enabled` may be changed; `room_id` is
-  // immutable. Fields not listed in update_mask are left unchanged.
-  // Returns NOT_FOUND if the target room does not exist, or
-  // INVALID_ARGUMENT if update_mask references unsupported fields.
-  rpc UpdateRoom (UpdateRoomRequest) returns (Room) {
+  rpc UpdateRoom(UpdateRoomRequest) returns (UpdateRoomResponse) {
     option (google.api.http) = {
-      put: "/v1/rooms/update"
-      body: "room"
+      post: "/v1/rooms/update"
+      body: "*"
     };
   }
 
-  // DeleteRoom permanently removes a room by its platform room id.
-  // Returns NOT_FOUND if no room exists with the supplied room id.
-  rpc DeleteRoom (DeleteRoomRequest) returns (google.protobuf.Empty) {
+  rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse) {
     option (google.api.http) = {
-      delete: "/v1/rooms/{room_id}"
+      post: "/v1/rooms/delete"
+      body: "*"
     };
   }
 }
 
-// LiveStatus is the broadcast state of a room as reported by the platform.
+// LiveStatus 表示房间的直播状态。
 enum LiveStatus {
+  // 未指定直播状态。
   LIVE_STATUS_UNSPECIFIED = 0;
-  // PREPARING means the room is offline (not streaming).
-  PREPARING = 1;
-  // LIVE means the streamer is currently broadcasting.
-  LIVE = 2;
+  // 房间未在直播。
+  LIVE_STATUS_PREPARING = 1;
+  // 房间正在直播。
+  LIVE_STATUS_LIVE = 2;
 }
 
-// RecordStatus is the recorder's own state for a room.
+// RecordStatus 表示房间录制任务的状态。
 enum RecordStatus {
+  // 未指定录制状态。
   RECORD_STATUS_UNSPECIFIED = 0;
-  // IDLE means no recording session is active for the room.
-  IDLE = 1;
-  // RECORDING means a session is actively writing stream data.
-  RECORDING = 2;
-  // REMUXING means the session ended and segments are being remuxed.
-  REMUXING = 3;
-  // ERROR means the last operation for the room failed.
-  ERROR = 4;
+  // 当前没有录制任务。
+  RECORD_STATUS_IDLE = 1;
+  // 正在录制直播流。
+  RECORD_STATUS_RECORDING = 2;
+  // 录制结束，正在合并文件。
+  RECORD_STATUS_REMUXING = 3;
+  // 录制任务发生错误。
+  RECORD_STATUS_ERROR = 4;
 }
 
-// Room is the canonical representation of one monitored room: persisted
-// fields plus the runtime state merged in on read.
 message Room {
-  // Platform room id supplied by the caller. Serves as the unique
-  // identifier; immutable once created.
   int64 room_id = 1;
-  // Streamer display name used for the recording directory. May be empty
-  // on create; the recorder backfills it from the platform API.
   string name = 2;
-  // Whether this room is monitored at all.
   bool enabled = 3;
-  // Broadcast state reported by the platform. Runtime state, server-populated.
   LiveStatus live_status = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // Recorder state for this room. Runtime state, server-populated.
   RecordStatus record_status = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // Path of the segment file currently being written. Empty when idle.
-  // Runtime state, server-populated.
   string current_file = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // Bytes written across the current session. Zero when idle.
-  // Runtime state, server-populated.
   int64 bytes_written = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // Time at which the current session started. Absent when idle.
-  // Runtime state, server-populated.
   google.protobuf.Timestamp session_started_at = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // Last error observed for this room. Empty when healthy.
-  // Runtime state, server-populated.
   string last_error = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // Time at which the room was registered. Server-assigned, read-only.
   google.protobuf.Timestamp create_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // Time at which the room was last modified. Server-assigned, read-only.
   google.protobuf.Timestamp update_time = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
-// RoomSet is a paginated collection of rooms returned by ListRooms.
-message RoomSet {
-  // The page of rooms in the order requested by ListRoomsRequest.order_by.
-  repeated Room rooms = 1;
-  // Token used to retrieve the next page via ListRoomsRequest.page_token.
-  // Empty when there are no more results.
-  string next_page_token = 2;
-}
-
-// CreateRoomRequest is the input for RoomService.CreateRoom.
 message CreateRoomRequest {
-  // The room to register. room_id must be the platform room id; the
-  // create_time, update_time, and runtime fields are ignored on input and
-  // populated by the server in the response.
   Room room = 1 [(google.api.field_behavior) = REQUIRED];
 }
 
-// GetRoomRequest is the input for RoomService.GetRoom.
+message CreateRoomResponse {
+  Room room = 1;
+}
+
 message GetRoomRequest {
-  // Platform room id of the room to retrieve.
   int64 room_id = 1 [(google.api.field_behavior) = REQUIRED];
 }
 
-// ListRoomsRequest is the input for RoomService.ListRooms.
+message GetRoomResponse {
+  Room room = 1;
+}
+
 message ListRoomsRequest {
-  // Optional. Maximum number of rooms to return in a single page.
-  // The server applies a default of 20 when unset or out of range.
   int32 page_size = 1;
-  // Optional. Token from a previous response's next_page_token used to fetch
-  // the next page. Leave empty to request the first page.
   string page_token = 2;
-  // Optional. The standard list filter. Only persisted fields are
-  // supported; runtime fields are server-populated and not filterable.
-  // Supported fields:
-  //    * `room_id` (i.e. `room_id=123`)
-  //    * `name` (i.e. `name:"streamer"`)
-  //    * `enabled` (i.e. `enabled` or `NOT enabled`)
-  //    * `create_time` range (i.e. `create_time>="2026-01-01T00:00:00Z"`)
-  //    * `update_time` range (i.e. `update_time>="2026-01-01T00:00:00Z"`)
   string filter = 3;
-  // Optional. A comma-separated list of fields to order by. Only persisted
-  // fields are supported; runtime fields are not orderable.
-  // Supported fields:
-  //    * `room_id`
-  //    * `name`
-  //    * `enabled`
-  //    * `create_time`
-  //    * `update_time`
-  // Append ` desc` to a field for descending order, e.g. `create_time desc`.
-  // Defaults to ascending order when no direction is supplied.
   string order_by = 4;
 }
 
-// UpdateRoomRequest is the input for RoomService.UpdateRoom.
-message UpdateRoomRequest {
-  // The room carrying the new field values. room.room_id identifies the
-  // target record and must be set.
-  Room room = 1 [(google.api.field_behavior) = REQUIRED];
-  // Set of field paths in room to overwrite. Only `name` and `enabled` are
-  // supported; fields not listed are left unchanged.
-  google.protobuf.FieldMask update_mask = 2 [(google.api.field_behavior) = REQUIRED];
+message ListRoomsResponse {
+  repeated Room rooms = 1;
+  string next_page_token = 2;
 }
 
-// DeleteRoomRequest is the input for RoomService.DeleteRoom.
+message UpdateRoomRequest {
+  Room room = 1 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 2 [(google.api.field_behavior) = REQUIRED];
+}
+message UpdateRoomResponse {
+  Room room = 1;
+}
+
 message DeleteRoomRequest {
-  // Platform room id of the room to delete.
   int64 room_id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DeleteRoomResponse {
+  google.protobuf.Empty empty = 1;
 }

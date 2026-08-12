@@ -9,7 +9,6 @@ package v1
 import (
 	context "context"
 	http "github.com/go-kratos/kratos/v3/transport/http"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -25,51 +24,26 @@ const OperationRoomServiceListRooms = "/room.v1.RoomService/ListRooms"
 const OperationRoomServiceUpdateRoom = "/room.v1.RoomService/UpdateRoom"
 
 type RoomServiceHTTPServer interface {
-	// CreateRoom CreateRoom registers a new room and returns the stored record with
-	// create_time and update_time populated and the runtime fields set to
-	// their defaults.
-	// Returns INVALID_ARGUMENT if the request payload fails validation, or
-	// ALREADY_EXISTS if a room with the same room_id is already registered.
-	CreateRoom(context.Context, *CreateRoomRequest) (*Room, error)
-	// DeleteRoom DeleteRoom permanently removes a room by its platform room id.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	DeleteRoom(context.Context, *DeleteRoomRequest) (*emptypb.Empty, error)
-	// GetRoom GetRoom returns one room by its platform room id with the runtime
-	// state merged in from the room registry.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	GetRoom(context.Context, *GetRoomRequest) (*Room, error)
-	// ListRooms ListRooms returns a page of rooms, optionally filtered and ordered,
-	// with the runtime state merged in from the room registry.
-	// Use the next_page_token from RoomSet to retrieve subsequent pages.
-	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-	// Declared before GetRoom so the generated router registers the literal
-	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
-	// (gorilla/mux matches in registration order).
-	ListRooms(context.Context, *ListRoomsRequest) (*RoomSet, error)
-	// UpdateRoom UpdateRoom applies a partial update to an existing room using a
-	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
-	// immutable. Fields not listed in update_mask are left unchanged.
-	// Returns NOT_FOUND if the target room does not exist, or
-	// INVALID_ARGUMENT if update_mask references unsupported fields.
-	UpdateRoom(context.Context, *UpdateRoomRequest) (*Room, error)
+	CreateRoom(context.Context, *CreateRoomRequest) (*CreateRoomResponse, error)
+	DeleteRoom(context.Context, *DeleteRoomRequest) (*DeleteRoomResponse, error)
+	GetRoom(context.Context, *GetRoomRequest) (*GetRoomResponse, error)
+	ListRooms(context.Context, *ListRoomsRequest) (*ListRoomsResponse, error)
+	UpdateRoom(context.Context, *UpdateRoomRequest) (*UpdateRoomResponse, error)
 }
 
 func RegisterRoomServiceHTTPServer(s *http.Server, srv RoomServiceHTTPServer) {
 	r := s.Route("/")
 	r.Handle("POST", "/v1/rooms/create", _RoomService_CreateRoom0_HTTP_Handler(srv))
-	r.Handle("GET", "/v1/rooms/list", _RoomService_ListRooms0_HTTP_Handler(srv))
-	r.Handle("GET", "/v1/rooms/{room_id}", _RoomService_GetRoom0_HTTP_Handler(srv))
-	r.Handle("PUT", "/v1/rooms/update", _RoomService_UpdateRoom0_HTTP_Handler(srv))
-	r.Handle("DELETE", "/v1/rooms/{room_id}", _RoomService_DeleteRoom0_HTTP_Handler(srv))
+	r.Handle("POST", "/v1/rooms/list", _RoomService_ListRooms0_HTTP_Handler(srv))
+	r.Handle("POST", "/v1/rooms/get", _RoomService_GetRoom0_HTTP_Handler(srv))
+	r.Handle("POST", "/v1/rooms/update", _RoomService_UpdateRoom0_HTTP_Handler(srv))
+	r.Handle("POST", "/v1/rooms/delete", _RoomService_DeleteRoom0_HTTP_Handler(srv))
 }
 
 func _RoomService_CreateRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in CreateRoomRequest
-		if err := ctx.Bind(&in.Room); err != nil {
-			return err
-		}
-		if err := ctx.BindQuery(&in); err != nil {
+		if err := ctx.Bind(&in); err != nil {
 			return err
 		}
 		http.SetOperation(ctx, OperationRoomServiceCreateRoom)
@@ -80,7 +54,7 @@ func _RoomService_CreateRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx h
 		if err != nil {
 			return err
 		}
-		reply := out.(*Room)
+		reply := out.(*CreateRoomResponse)
 		return ctx.Result(200, reply)
 	}
 }
@@ -88,7 +62,7 @@ func _RoomService_CreateRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx h
 func _RoomService_ListRooms0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in ListRoomsRequest
-		if err := ctx.BindQuery(&in); err != nil {
+		if err := ctx.Bind(&in); err != nil {
 			return err
 		}
 		http.SetOperation(ctx, OperationRoomServiceListRooms)
@@ -99,7 +73,7 @@ func _RoomService_ListRooms0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx ht
 		if err != nil {
 			return err
 		}
-		reply := out.(*RoomSet)
+		reply := out.(*ListRoomsResponse)
 		return ctx.Result(200, reply)
 	}
 }
@@ -107,10 +81,7 @@ func _RoomService_ListRooms0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx ht
 func _RoomService_GetRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in GetRoomRequest
-		if err := ctx.BindQuery(&in); err != nil {
-			return err
-		}
-		if err := ctx.BindVars(&in); err != nil {
+		if err := ctx.Bind(&in); err != nil {
 			return err
 		}
 		http.SetOperation(ctx, OperationRoomServiceGetRoom)
@@ -121,7 +92,7 @@ func _RoomService_GetRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http
 		if err != nil {
 			return err
 		}
-		reply := out.(*Room)
+		reply := out.(*GetRoomResponse)
 		return ctx.Result(200, reply)
 	}
 }
@@ -129,10 +100,7 @@ func _RoomService_GetRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http
 func _RoomService_UpdateRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in UpdateRoomRequest
-		if err := ctx.Bind(&in.Room); err != nil {
-			return err
-		}
-		if err := ctx.BindQuery(&in); err != nil {
+		if err := ctx.Bind(&in); err != nil {
 			return err
 		}
 		http.SetOperation(ctx, OperationRoomServiceUpdateRoom)
@@ -143,7 +111,7 @@ func _RoomService_UpdateRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx h
 		if err != nil {
 			return err
 		}
-		reply := out.(*Room)
+		reply := out.(*UpdateRoomResponse)
 		return ctx.Result(200, reply)
 	}
 }
@@ -151,10 +119,7 @@ func _RoomService_UpdateRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx h
 func _RoomService_DeleteRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in DeleteRoomRequest
-		if err := ctx.BindQuery(&in); err != nil {
-			return err
-		}
-		if err := ctx.BindVars(&in); err != nil {
+		if err := ctx.Bind(&in); err != nil {
 			return err
 		}
 		http.SetOperation(ctx, OperationRoomServiceDeleteRoom)
@@ -165,39 +130,17 @@ func _RoomService_DeleteRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx h
 		if err != nil {
 			return err
 		}
-		reply := out.(*emptypb.Empty)
+		reply := out.(*DeleteRoomResponse)
 		return ctx.Result(200, reply)
 	}
 }
 
 type RoomServiceHTTPClient interface {
-	// CreateRoom CreateRoom registers a new room and returns the stored record with
-	// create_time and update_time populated and the runtime fields set to
-	// their defaults.
-	// Returns INVALID_ARGUMENT if the request payload fails validation, or
-	// ALREADY_EXISTS if a room with the same room_id is already registered.
-	CreateRoom(ctx context.Context, req *CreateRoomRequest, opts ...http.CallOption) (rsp *Room, err error)
-	// DeleteRoom DeleteRoom permanently removes a room by its platform room id.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	DeleteRoom(ctx context.Context, req *DeleteRoomRequest, opts ...http.CallOption) (rsp *emptypb.Empty, err error)
-	// GetRoom GetRoom returns one room by its platform room id with the runtime
-	// state merged in from the room registry.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	GetRoom(ctx context.Context, req *GetRoomRequest, opts ...http.CallOption) (rsp *Room, err error)
-	// ListRooms ListRooms returns a page of rooms, optionally filtered and ordered,
-	// with the runtime state merged in from the room registry.
-	// Use the next_page_token from RoomSet to retrieve subsequent pages.
-	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-	// Declared before GetRoom so the generated router registers the literal
-	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
-	// (gorilla/mux matches in registration order).
-	ListRooms(ctx context.Context, req *ListRoomsRequest, opts ...http.CallOption) (rsp *RoomSet, err error)
-	// UpdateRoom UpdateRoom applies a partial update to an existing room using a
-	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
-	// immutable. Fields not listed in update_mask are left unchanged.
-	// Returns NOT_FOUND if the target room does not exist, or
-	// INVALID_ARGUMENT if update_mask references unsupported fields.
-	UpdateRoom(ctx context.Context, req *UpdateRoomRequest, opts ...http.CallOption) (rsp *Room, err error)
+	CreateRoom(ctx context.Context, req *CreateRoomRequest, opts ...http.CallOption) (rsp *CreateRoomResponse, err error)
+	DeleteRoom(ctx context.Context, req *DeleteRoomRequest, opts ...http.CallOption) (rsp *DeleteRoomResponse, err error)
+	GetRoom(ctx context.Context, req *GetRoomRequest, opts ...http.CallOption) (rsp *GetRoomResponse, err error)
+	ListRooms(ctx context.Context, req *ListRoomsRequest, opts ...http.CallOption) (rsp *ListRoomsResponse, err error)
+	UpdateRoom(ctx context.Context, req *UpdateRoomRequest, opts ...http.CallOption) (rsp *UpdateRoomResponse, err error)
 }
 
 type RoomServiceHTTPClientImpl struct {
@@ -208,104 +151,85 @@ func NewRoomServiceHTTPClient(client *http.Client) RoomServiceHTTPClient {
 	return &RoomServiceHTTPClientImpl{client}
 }
 
-// CreateRoom CreateRoom registers a new room and returns the stored record with
-// create_time and update_time populated and the runtime fields set to
-// their defaults.
-// Returns INVALID_ARGUMENT if the request payload fails validation, or
-// ALREADY_EXISTS if a room with the same room_id is already registered.
-func (c *RoomServiceHTTPClientImpl) CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...http.CallOption) (*Room, error) {
-	var out Room
+func (c *RoomServiceHTTPClientImpl) CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...http.CallOption) (*CreateRoomResponse, error) {
+	var out CreateRoomResponse
 	pattern := "/v1/rooms/create"
-	path := http.BuildPath(pattern, in, http.WithQueryParams(), http.WithOmitFields("room"))
+	path := http.BuildPath(pattern, in)
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
 		http.ContentType("application/protojson"),
 		http.Operation(OperationRoomServiceCreateRoom),
 		http.PathTemplate(pattern),
 	}, opts...)
-	err := c.cc.Invoke(ctx, "POST", path, in.Room, &out, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// DeleteRoom DeleteRoom permanently removes a room by its platform room id.
-// Returns NOT_FOUND if no room exists with the supplied room id.
-func (c *RoomServiceHTTPClientImpl) DeleteRoom(ctx context.Context, in *DeleteRoomRequest, opts ...http.CallOption) (*emptypb.Empty, error) {
-	var out emptypb.Empty
-	pattern := "/v1/rooms/{room_id}"
-	path := http.BuildPath(pattern, in, http.WithQueryParams())
+func (c *RoomServiceHTTPClientImpl) DeleteRoom(ctx context.Context, in *DeleteRoomRequest, opts ...http.CallOption) (*DeleteRoomResponse, error) {
+	var out DeleteRoomResponse
+	pattern := "/v1/rooms/delete"
+	path := http.BuildPath(pattern, in)
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
 		http.Operation(OperationRoomServiceDeleteRoom),
 		http.PathTemplate(pattern),
 	}, opts...)
-	err := c.cc.Invoke(ctx, "DELETE", path, nil, &out, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// GetRoom GetRoom returns one room by its platform room id with the runtime
-// state merged in from the room registry.
-// Returns NOT_FOUND if no room exists with the supplied room id.
-func (c *RoomServiceHTTPClientImpl) GetRoom(ctx context.Context, in *GetRoomRequest, opts ...http.CallOption) (*Room, error) {
-	var out Room
-	pattern := "/v1/rooms/{room_id}"
-	path := http.BuildPath(pattern, in, http.WithQueryParams())
+func (c *RoomServiceHTTPClientImpl) GetRoom(ctx context.Context, in *GetRoomRequest, opts ...http.CallOption) (*GetRoomResponse, error) {
+	var out GetRoomResponse
+	pattern := "/v1/rooms/get"
+	path := http.BuildPath(pattern, in)
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
 		http.Operation(OperationRoomServiceGetRoom),
 		http.PathTemplate(pattern),
 	}, opts...)
-	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// ListRooms ListRooms returns a page of rooms, optionally filtered and ordered,
-// with the runtime state merged in from the room registry.
-// Use the next_page_token from RoomSet to retrieve subsequent pages.
-// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-// Declared before GetRoom so the generated router registers the literal
-// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
-// (gorilla/mux matches in registration order).
-func (c *RoomServiceHTTPClientImpl) ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...http.CallOption) (*RoomSet, error) {
-	var out RoomSet
+func (c *RoomServiceHTTPClientImpl) ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...http.CallOption) (*ListRoomsResponse, error) {
+	var out ListRoomsResponse
 	pattern := "/v1/rooms/list"
-	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	path := http.BuildPath(pattern, in)
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
 		http.Operation(OperationRoomServiceListRooms),
 		http.PathTemplate(pattern),
 	}, opts...)
-	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// UpdateRoom UpdateRoom applies a partial update to an existing room using a
-// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
-// immutable. Fields not listed in update_mask are left unchanged.
-// Returns NOT_FOUND if the target room does not exist, or
-// INVALID_ARGUMENT if update_mask references unsupported fields.
-func (c *RoomServiceHTTPClientImpl) UpdateRoom(ctx context.Context, in *UpdateRoomRequest, opts ...http.CallOption) (*Room, error) {
-	var out Room
+func (c *RoomServiceHTTPClientImpl) UpdateRoom(ctx context.Context, in *UpdateRoomRequest, opts ...http.CallOption) (*UpdateRoomResponse, error) {
+	var out UpdateRoomResponse
 	pattern := "/v1/rooms/update"
-	path := http.BuildPath(pattern, in, http.WithQueryParams(), http.WithOmitFields("room"))
+	path := http.BuildPath(pattern, in)
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
 		http.ContentType("application/protojson"),
 		http.Operation(OperationRoomServiceUpdateRoom),
 		http.PathTemplate(pattern),
 	}, opts...)
-	err := c.cc.Invoke(ctx, "PUT", path, in.Room, &out, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}

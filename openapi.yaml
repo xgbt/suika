@@ -4,31 +4,18 @@
 openapi: 3.0.3
 info:
     title: RoomService API
-    description: |-
-        RoomService manages the monitored rooms and their live status. The
-         persisted fields (room_id, name, enabled, create_time, update_time) are
-         stored in the database; the runtime fields (live_status, record_status,
-         current_file, bytes_written, session_started_at, last_error) are merged
-         in from the in-memory room registry on Get/List and carry default values
-         on Create/Update/Delete responses.
     version: 0.0.1
 paths:
     /v1/rooms/create:
         post:
             tags:
                 - RoomService
-            description: |-
-                CreateRoom registers a new room and returns the stored record with
-                 create_time and update_time populated and the runtime fields set to
-                 their defaults.
-                 Returns INVALID_ARGUMENT if the request payload fails validation, or
-                 ALREADY_EXISTS if a room with the same room_id is already registered.
             operationId: RoomService_CreateRoom
             requestBody:
                 content:
                     application/json:
                         schema:
-                            $ref: '#/components/schemas/room.v1.Room'
+                            $ref: '#/components/schemas/room.v1.CreateRoomRequest'
                 required: true
             responses:
                 "200":
@@ -36,96 +23,17 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/room.v1.Room'
-    /v1/rooms/list:
-        get:
+                                $ref: '#/components/schemas/room.v1.CreateRoomResponse'
+    /v1/rooms/delete:
+        post:
             tags:
                 - RoomService
-            description: |-
-                ListRooms returns a page of rooms, optionally filtered and ordered,
-                 with the runtime state merged in from the room registry.
-                 Use the next_page_token from RoomSet to retrieve subsequent pages.
-                 Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-                 Declared before GetRoom so the generated router registers the literal
-                 "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
-                 (gorilla/mux matches in registration order).
-            operationId: RoomService_ListRooms
-            parameters:
-                - name: pageSize
-                  in: query
-                  description: |-
-                    Optional. Maximum number of rooms to return in a single page.
-                     The server applies a default of 20 when unset or out of range.
-                  schema:
-                    type: integer
-                    format: int32
-                - name: pageToken
-                  in: query
-                  description: |-
-                    Optional. Token from a previous response's next_page_token used to fetch
-                     the next page. Leave empty to request the first page.
-                  schema:
-                    type: string
-                - name: filter
-                  in: query
-                  description: |-
-                    Optional. The standard list filter. Only persisted fields are
-                     supported; runtime fields are server-populated and not filterable.
-                     Supported fields:
-                        * `room_id` (i.e. `room_id=123`)
-                        * `name` (i.e. `name:"streamer"`)
-                        * `enabled` (i.e. `enabled` or `NOT enabled`)
-                        * `create_time` range (i.e. `create_time>="2026-01-01T00:00:00Z"`)
-                        * `update_time` range (i.e. `update_time>="2026-01-01T00:00:00Z"`)
-                  schema:
-                    type: string
-                - name: orderBy
-                  in: query
-                  description: |-
-                    Optional. A comma-separated list of fields to order by. Only persisted
-                     fields are supported; runtime fields are not orderable.
-                     Supported fields:
-                        * `room_id`
-                        * `name`
-                        * `enabled`
-                        * `create_time`
-                        * `update_time`
-                     Append ` desc` to a field for descending order, e.g. `create_time desc`.
-                     Defaults to ascending order when no direction is supplied.
-                  schema:
-                    type: string
-            responses:
-                "200":
-                    description: OK
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/room.v1.RoomSet'
-    /v1/rooms/update:
-        put:
-            tags:
-                - RoomService
-            description: |-
-                UpdateRoom applies a partial update to an existing room using a
-                 FieldMask. Only `name` and `enabled` may be changed; `room_id` is
-                 immutable. Fields not listed in update_mask are left unchanged.
-                 Returns NOT_FOUND if the target room does not exist, or
-                 INVALID_ARGUMENT if update_mask references unsupported fields.
-            operationId: RoomService_UpdateRoom
-            parameters:
-                - name: updateMask
-                  in: query
-                  description: |-
-                    Set of field paths in room to overwrite. Only `name` and `enabled` are
-                     supported; fields not listed are left unchanged.
-                  schema:
-                    type: string
-                    format: field-mask
+            operationId: RoomService_DeleteRoom
             requestBody:
                 content:
                     application/json:
                         schema:
-                            $ref: '#/components/schemas/room.v1.Room'
+                            $ref: '#/components/schemas/room.v1.DeleteRoomRequest'
                 required: true
             responses:
                 "200":
@@ -133,127 +41,171 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/room.v1.Room'
-    /v1/rooms/{roomId}:
-        get:
+                                $ref: '#/components/schemas/room.v1.DeleteRoomResponse'
+    /v1/rooms/get:
+        post:
             tags:
                 - RoomService
-            description: |-
-                GetRoom returns one room by its platform room id with the runtime
-                 state merged in from the room registry.
-                 Returns NOT_FOUND if no room exists with the supplied room id.
             operationId: RoomService_GetRoom
-            parameters:
-                - name: roomId
-                  in: path
-                  description: Platform room id of the room to retrieve.
-                  required: true
-                  schema:
-                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/room.v1.GetRoomRequest'
+                required: true
             responses:
                 "200":
                     description: OK
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/room.v1.Room'
-        delete:
+                                $ref: '#/components/schemas/room.v1.GetRoomResponse'
+    /v1/rooms/list:
+        post:
             tags:
                 - RoomService
-            description: |-
-                DeleteRoom permanently removes a room by its platform room id.
-                 Returns NOT_FOUND if no room exists with the supplied room id.
-            operationId: RoomService_DeleteRoom
-            parameters:
-                - name: roomId
-                  in: path
-                  description: Platform room id of the room to delete.
-                  required: true
-                  schema:
-                    type: string
+            operationId: RoomService_ListRooms
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/room.v1.ListRoomsRequest'
+                required: true
             responses:
                 "200":
                     description: OK
-                    content: {}
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/room.v1.ListRoomsResponse'
+    /v1/rooms/update:
+        post:
+            tags:
+                - RoomService
+            operationId: RoomService_UpdateRoom
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/room.v1.UpdateRoomRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/room.v1.UpdateRoomResponse'
 components:
     schemas:
-        room.v1.Room:
+        room.v1.CreateRoomRequest:
+            required:
+                - room
+            type: object
+            properties:
+                room:
+                    $ref: '#/components/schemas/room.v1.Room'
+        room.v1.CreateRoomResponse:
+            type: object
+            properties:
+                room:
+                    $ref: '#/components/schemas/room.v1.Room'
+        room.v1.DeleteRoomRequest:
+            required:
+                - roomId
             type: object
             properties:
                 roomId:
                     type: string
-                    description: |-
-                        Platform room id supplied by the caller. Serves as the unique
-                         identifier; immutable once created.
-                name:
+        room.v1.DeleteRoomResponse:
+            type: object
+            properties: {}
+        room.v1.GetRoomRequest:
+            required:
+                - roomId
+            type: object
+            properties:
+                roomId:
                     type: string
-                    description: |-
-                        Streamer display name used for the recording directory. May be empty
-                         on create; the recorder backfills it from the platform API.
-                enabled:
-                    type: boolean
-                    description: Whether this room is monitored at all.
-                liveStatus:
-                    readOnly: true
+        room.v1.GetRoomResponse:
+            type: object
+            properties:
+                room:
+                    $ref: '#/components/schemas/room.v1.Room'
+        room.v1.ListRoomsRequest:
+            type: object
+            properties:
+                pageSize:
                     type: integer
-                    description: Broadcast state reported by the platform. Runtime state, server-populated.
-                    format: enum
-                recordStatus:
-                    readOnly: true
-                    type: integer
-                    description: Recorder state for this room. Runtime state, server-populated.
-                    format: enum
-                currentFile:
-                    readOnly: true
+                    format: int32
+                pageToken:
                     type: string
-                    description: |-
-                        Path of the segment file currently being written. Empty when idle.
-                         Runtime state, server-populated.
-                bytesWritten:
-                    readOnly: true
+                filter:
                     type: string
-                    description: |-
-                        Bytes written across the current session. Zero when idle.
-                         Runtime state, server-populated.
-                sessionStartedAt:
-                    readOnly: true
+                orderBy:
                     type: string
-                    description: |-
-                        Time at which the current session started. Absent when idle.
-                         Runtime state, server-populated.
-                    format: date-time
-                lastError:
-                    readOnly: true
-                    type: string
-                    description: |-
-                        Last error observed for this room. Empty when healthy.
-                         Runtime state, server-populated.
-                createTime:
-                    readOnly: true
-                    type: string
-                    description: Time at which the room was registered. Server-assigned, read-only.
-                    format: date-time
-                updateTime:
-                    readOnly: true
-                    type: string
-                    description: Time at which the room was last modified. Server-assigned, read-only.
-                    format: date-time
-            description: |-
-                Room is the canonical representation of one monitored room: persisted
-                 fields plus the runtime state merged in on read.
-        room.v1.RoomSet:
+        room.v1.ListRoomsResponse:
             type: object
             properties:
                 rooms:
                     type: array
                     items:
                         $ref: '#/components/schemas/room.v1.Room'
-                    description: The page of rooms in the order requested by ListRoomsRequest.order_by.
                 nextPageToken:
                     type: string
-                    description: |-
-                        Token used to retrieve the next page via ListRoomsRequest.page_token.
-                         Empty when there are no more results.
-            description: RoomSet is a paginated collection of rooms returned by ListRooms.
+        room.v1.Room:
+            type: object
+            properties:
+                roomId:
+                    type: string
+                name:
+                    type: string
+                enabled:
+                    type: boolean
+                liveStatus:
+                    readOnly: true
+                    type: integer
+                    format: enum
+                recordStatus:
+                    readOnly: true
+                    type: integer
+                    format: enum
+                currentFile:
+                    readOnly: true
+                    type: string
+                bytesWritten:
+                    readOnly: true
+                    type: string
+                sessionStartedAt:
+                    readOnly: true
+                    type: string
+                    format: date-time
+                lastError:
+                    readOnly: true
+                    type: string
+                createTime:
+                    readOnly: true
+                    type: string
+                    format: date-time
+                updateTime:
+                    readOnly: true
+                    type: string
+                    format: date-time
+        room.v1.UpdateRoomRequest:
+            required:
+                - room
+                - updateMask
+            type: object
+            properties:
+                room:
+                    $ref: '#/components/schemas/room.v1.Room'
+                updateMask:
+                    type: string
+                    format: field-mask
+        room.v1.UpdateRoomResponse:
+            type: object
+            properties:
+                room:
+                    $ref: '#/components/schemas/room.v1.Room'
 tags:
     - name: RoomService

@@ -4,3 +4,6 @@ modules:
   - path: internal
 deps:
   - buf.build/googleapis/googleapis
+lint:
+  use:
+    - STANDARD

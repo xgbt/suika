@@ -18,12 +18,12 @@ import (
 // Typed errors surfaced through the API error reason enum.
 var (
 	// ErrRoomNotFound is returned when a room does not exist.
-	ErrRoomNotFound = errors.NotFound(v1.ErrorReason_ROOM_NOT_FOUND.String(), "room not found")
+	ErrRoomNotFound = errors.NotFound(v1.ErrorReason_ERROR_REASON_NOT_FOUND.String(), "room not found")
 	// ErrRoomInvalidArgument is returned when a room request is invalid.
-	ErrRoomInvalidArgument = errors.BadRequest(v1.ErrorReason_ROOM_INVALID_ARGUMENT.String(), "invalid room argument")
+	ErrRoomInvalidArgument = errors.BadRequest(v1.ErrorReason_ERROR_REASON_INVALID_ARGUMENT.String(), "invalid room argument")
 	// ErrRoomAlreadyExists is returned when a room with the same room_id
 	// is already registered.
-	ErrRoomAlreadyExists = errors.Conflict(v1.ErrorReason_ROOM_ALREADY_EXISTS.String(), "room already exists")
+	ErrRoomAlreadyExists = errors.Conflict(v1.ErrorReason_ERROR_REASON_ALREADY_EXISTS.String(), "room already exists")
 )
 
 // LiveState is the broadcast state of a room known to the recorder.

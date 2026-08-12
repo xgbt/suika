@@ -24,28 +24,28 @@ const (
 type ErrorReason int32
 
 const (
-	ErrorReason_ROOM_UNSPECIFIED      ErrorReason = 0
-	ErrorReason_ROOM_INTERNAL         ErrorReason = 1
-	ErrorReason_ROOM_NOT_FOUND        ErrorReason = 2
-	ErrorReason_ROOM_INVALID_ARGUMENT ErrorReason = 3
-	ErrorReason_ROOM_ALREADY_EXISTS   ErrorReason = 4
+	ErrorReason_ERROR_REASON_UNSPECIFIED      ErrorReason = 0
+	ErrorReason_ERROR_REASON_INTERNAL         ErrorReason = 1
+	ErrorReason_ERROR_REASON_NOT_FOUND        ErrorReason = 2
+	ErrorReason_ERROR_REASON_INVALID_ARGUMENT ErrorReason = 3
+	ErrorReason_ERROR_REASON_ALREADY_EXISTS   ErrorReason = 4
 )
 
 // Enum value maps for ErrorReason.
 var (
 	ErrorReason_name = map[int32]string{
-		0: "ROOM_UNSPECIFIED",
-		1: "ROOM_INTERNAL",
-		2: "ROOM_NOT_FOUND",
-		3: "ROOM_INVALID_ARGUMENT",
-		4: "ROOM_ALREADY_EXISTS",
+		0: "ERROR_REASON_UNSPECIFIED",
+		1: "ERROR_REASON_INTERNAL",
+		2: "ERROR_REASON_NOT_FOUND",
+		3: "ERROR_REASON_INVALID_ARGUMENT",
+		4: "ERROR_REASON_ALREADY_EXISTS",
 	}
 	ErrorReason_value = map[string]int32{
-		"ROOM_UNSPECIFIED":      0,
-		"ROOM_INTERNAL":         1,
-		"ROOM_NOT_FOUND":        2,
-		"ROOM_INVALID_ARGUMENT": 3,
-		"ROOM_ALREADY_EXISTS":   4,
+		"ERROR_REASON_UNSPECIFIED":      0,
+		"ERROR_REASON_INTERNAL":         1,
+		"ERROR_REASON_NOT_FOUND":        2,
+		"ERROR_REASON_INVALID_ARGUMENT": 3,
+		"ERROR_REASON_ALREADY_EXISTS":   4,
 	}
 )
 
@@ -80,13 +80,13 @@ var File_room_v1_error_reason_proto protoreflect.FileDescriptor
 
 const file_room_v1_error_reason_proto_rawDesc = "" +
 	"\n" +
-	"\x1aroom/v1/error_reason.proto\x12\aroom.v1*~\n" +
-	"\vErrorReason\x12\x14\n" +
-	"\x10ROOM_UNSPECIFIED\x10\x00\x12\x11\n" +
-	"\rROOM_INTERNAL\x10\x01\x12\x12\n" +
-	"\x0eROOM_NOT_FOUND\x10\x02\x12\x19\n" +
-	"\x15ROOM_INVALID_ARGUMENT\x10\x03\x12\x17\n" +
-	"\x13ROOM_ALREADY_EXISTS\x10\x04B-\n" +
+	"\x1aroom/v1/error_reason.proto\x12\aroom.v1*\xa6\x01\n" +
+	"\vErrorReason\x12\x1c\n" +
+	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15ERROR_REASON_INTERNAL\x10\x01\x12\x1a\n" +
+	"\x16ERROR_REASON_NOT_FOUND\x10\x02\x12!\n" +
+	"\x1dERROR_REASON_INVALID_ARGUMENT\x10\x03\x12\x1f\n" +
+	"\x1bERROR_REASON_ALREADY_EXISTS\x10\x04B-\n" +
 	"\aroom.v1P\x01Z\x14suika/api/room/v1;v1\xa2\x02\tAPIRoomV1b\x06proto3"
 
 var (

@@ -83,20 +83,21 @@ func TestRoomServiceCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRoom() error = %v", err)
 	}
-	if created.GetRoomId() != 1001 || created.GetName() != "streamer-a" || !created.GetEnabled() {
+	createdRoom := created.GetRoom()
+	if createdRoom.GetRoomId() != 1001 || createdRoom.GetName() != "streamer-a" || !createdRoom.GetEnabled() {
 		t.Fatalf("CreateRoom() = %+v, want created room", created)
 	}
-	if created.GetCreateTime() == nil || created.GetUpdateTime() == nil {
+	if createdRoom.GetCreateTime() == nil || createdRoom.GetUpdateTime() == nil {
 		t.Fatal("CreateRoom() did not set timestamps")
 	}
 	// Runtime fields carry default values on create responses.
-	if created.GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED {
-		t.Fatalf("CreateRoom() live_status = %v, want LIVE_STATUS_UNSPECIFIED", created.GetLiveStatus())
+	if createdRoom.GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED {
+		t.Fatalf("CreateRoom() live_status = %v, want LIVE_STATUS_UNSPECIFIED", createdRoom.GetLiveStatus())
 	}
-	if created.GetRecordStatus() != v1.RecordStatus_IDLE {
-		t.Fatalf("CreateRoom() record_status = %v, want IDLE", created.GetRecordStatus())
+	if createdRoom.GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_IDLE {
+		t.Fatalf("CreateRoom() record_status = %v, want IDLE", createdRoom.GetRecordStatus())
 	}
-	if created.GetSessionStartedAt() != nil || created.GetCurrentFile() != "" || created.GetBytesWritten() != 0 || created.GetLastError() != "" {
+	if createdRoom.GetSessionStartedAt() != nil || createdRoom.GetCurrentFile() != "" || createdRoom.GetBytesWritten() != 0 || createdRoom.GetLastError() != "" {
 		t.Fatalf("CreateRoom() runtime progress = %+v, want zero values", created)
 	}
 
@@ -104,7 +105,8 @@ func TestRoomServiceCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRoom() error = %v", err)
 	}
-	if got.GetName() != "streamer-a" || !got.GetEnabled() {
+	gotRoom := got.GetRoom()
+	if gotRoom.GetName() != "streamer-a" || !gotRoom.GetEnabled() {
 		t.Fatalf("GetRoom() = %+v, want created room", got)
 	}
 
@@ -115,7 +117,8 @@ func TestRoomServiceCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateRoom(name) error = %v", err)
 	}
-	if updated.GetName() != "streamer-b" || !updated.GetEnabled() {
+	updatedRoom := updated.GetRoom()
+	if updatedRoom.GetName() != "streamer-b" || !updatedRoom.GetEnabled() {
 		t.Fatalf("UpdateRoom(name) = %+v, want renamed room with enabled kept", updated)
 	}
 
@@ -126,7 +129,8 @@ func TestRoomServiceCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateRoom(enabled) error = %v", err)
 	}
-	if disabled.GetEnabled() || disabled.GetName() != "streamer-b" {
+	disabledRoom := disabled.GetRoom()
+	if disabledRoom.GetEnabled() || disabledRoom.GetName() != "streamer-b" {
 		t.Fatalf("UpdateRoom(enabled) = %+v, want disabled room with name kept", disabled)
 	}
 
@@ -341,7 +345,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if rooms[0].GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED {
 		t.Fatalf("ListRooms() live_status = %v, want LIVE_STATUS_UNSPECIFIED", rooms[0].GetLiveStatus())
 	}
-	if rooms[0].GetRecordStatus() != v1.RecordStatus_IDLE {
+	if rooms[0].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_IDLE {
 		t.Fatalf("ListRooms() record_status = %v, want IDLE", rooms[0].GetRecordStatus())
 	}
 	if rooms[0].GetSessionStartedAt() != nil {
@@ -351,10 +355,10 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if rooms[2].GetRoomId() != 3003 || rooms[2].GetName() != "recording-room" {
 		t.Fatalf("ListRooms() third room = %+v, want recording room 3003", rooms[2])
 	}
-	if rooms[2].GetLiveStatus() != v1.LiveStatus_LIVE {
+	if rooms[2].GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_LIVE {
 		t.Fatalf("ListRooms() recording room live_status = %v, want LIVE", rooms[2].GetLiveStatus())
 	}
-	if rooms[2].GetRecordStatus() != v1.RecordStatus_RECORDING {
+	if rooms[2].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_RECORDING {
 		t.Fatalf("ListRooms() recording room record_status = %v, want RECORDING", rooms[2].GetRecordStatus())
 	}
 	if rooms[2].GetCurrentFile() != "recordings/recording-room/part-0001.flv" || rooms[2].GetBytesWritten() != 123456789 {
@@ -364,14 +368,14 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 		t.Fatalf("ListRooms() recording room session_started_at = %v, want set", rooms[2].GetSessionStartedAt())
 	}
 	// A recording room whose stats lookup fails is still listed, without progress.
-	if rooms[3].GetRoomId() != 4004 || rooms[3].GetRecordStatus() != v1.RecordStatus_RECORDING {
+	if rooms[3].GetRoomId() != 4004 || rooms[3].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_RECORDING {
 		t.Fatalf("ListRooms() fourth room = %+v, want recording room 4004", rooms[3])
 	}
 	if rooms[3].GetCurrentFile() != "" || rooms[3].GetBytesWritten() != 0 {
 		t.Fatalf("ListRooms() stats-error room progress = %+v, want zero values on stats error", rooms[3])
 	}
 	// Remuxing rooms stay listed without a stats lookup.
-	if rooms[4].GetRoomId() != 5005 || rooms[4].GetRecordStatus() != v1.RecordStatus_REMUXING {
+	if rooms[4].GetRoomId() != 5005 || rooms[4].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_REMUXING {
 		t.Fatalf("ListRooms() fifth room = %+v, want remuxing room 5005", rooms[4])
 	}
 	// Session stats are only queried for recording rooms.
@@ -390,8 +394,9 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRoom(late) error = %v", err)
 	}
-	if late.GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED || late.GetRecordStatus() != v1.RecordStatus_IDLE {
-		t.Fatalf("GetRoom(late) runtime = %v/%v, want default values", late.GetLiveStatus(), late.GetRecordStatus())
+	lateRoom := late.GetRoom()
+	if lateRoom.GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED || lateRoom.GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_IDLE {
+		t.Fatalf("GetRoom(late) runtime = %v/%v, want default values", lateRoom.GetLiveStatus(), lateRoom.GetRecordStatus())
 	}
 }
 
@@ -414,7 +419,7 @@ func TestConvertRoomReply(t *testing.T) {
 				Name:         "room-one",
 				Enabled:      true,
 				LiveStatus:   v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
-				RecordStatus: v1.RecordStatus_IDLE,
+				RecordStatus: v1.RecordStatus_RECORD_STATUS_IDLE,
 			},
 		},
 		{
@@ -426,8 +431,8 @@ func TestConvertRoomReply(t *testing.T) {
 			want: &v1.Room{
 				RoomId:       2,
 				Name:         "room-two",
-				LiveStatus:   v1.LiveStatus_PREPARING,
-				RecordStatus: v1.RecordStatus_IDLE,
+				LiveStatus:   v1.LiveStatus_LIVE_STATUS_PREPARING,
+				RecordStatus: v1.RecordStatus_RECORD_STATUS_IDLE,
 			},
 		},
 		{
@@ -444,8 +449,8 @@ func TestConvertRoomReply(t *testing.T) {
 				RoomId:           3,
 				Name:             "room-three",
 				Enabled:          true,
-				LiveStatus:       v1.LiveStatus_LIVE,
-				RecordStatus:     v1.RecordStatus_RECORDING,
+				LiveStatus:       v1.LiveStatus_LIVE_STATUS_LIVE,
+				RecordStatus:     v1.RecordStatus_RECORD_STATUS_RECORDING,
 				CurrentFile:      "recordings/room-three/part-0001.flv",
 				BytesWritten:     123456789,
 				SessionStartedAt: timestamppb.New(startedAt),
@@ -463,7 +468,7 @@ func TestConvertRoomReply(t *testing.T) {
 				RoomId:       4,
 				Name:         "room-four",
 				LiveStatus:   v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
-				RecordStatus: v1.RecordStatus_REMUXING,
+				RecordStatus: v1.RecordStatus_RECORD_STATUS_REMUXING,
 			},
 		},
 		{
@@ -478,8 +483,8 @@ func TestConvertRoomReply(t *testing.T) {
 				RoomId:       5,
 				Name:         "room-five",
 				Enabled:      true,
-				LiveStatus:   v1.LiveStatus_PREPARING,
-				RecordStatus: v1.RecordStatus_ERROR,
+				LiveStatus:   v1.LiveStatus_LIVE_STATUS_PREPARING,
+				RecordStatus: v1.RecordStatus_RECORD_STATUS_ERROR,
 				LastError:    "prepare session failed: disk full",
 			},
 		},

@@ -19,7 +19,7 @@ import (
 // Typed errors surfaced through the API error reason enum.
 var (
 	// ErrRoomInternal is returned when the recorder fails internally.
-	ErrRoomInternal = errors.InternalServer(v1.ErrorReason_ROOM_INTERNAL.String(), "recorder internal error")
+	ErrRoomInternal = errors.InternalServer(v1.ErrorReason_ERROR_REASON_INTERNAL.String(), "recorder internal error")
 )
 
 // Sentinel errors used to classify stream interruptions. Declared here so
@@ -319,7 +319,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 					active = uc.launchSession(ctx, roomID, info, conn.Events())
 				}
 			} else if active != nil {
-				active.cancel()
+				ErrRoomInternal = errors.InternalServer(v1.ErrorReason_ERROR_REASON_INTERNAL.String(), "recorder internal error")
 			}
 		case <-poll.C:
 			info, err := uc.lc.RoomStatus(ctx, roomID)
