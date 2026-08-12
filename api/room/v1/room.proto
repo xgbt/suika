@@ -29,22 +29,25 @@ service RoomService {
     };
   }
 
+  // ListRooms returns a page of rooms, optionally filtered and ordered,
+  // with the runtime state merged in from the room registry.
+  // Use the next_page_token from RoomSet to retrieve subsequent pages.
+  // Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
+  // Declared before GetRoom so the generated router registers the literal
+  // "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
+  // (gorilla/mux matches in registration order).
+  rpc ListRooms (ListRoomsRequest) returns (RoomSet) {
+    option (google.api.http) = {
+      get: "/v1/rooms/list"
+    };
+  }
+
   // GetRoom returns one room by its platform room id with the runtime
   // state merged in from the room registry.
   // Returns NOT_FOUND if no room exists with the supplied room id.
   rpc GetRoom (GetRoomRequest) returns (Room) {
     option (google.api.http) = {
       get: "/v1/rooms/{room_id}"
-    };
-  }
-
-  // ListRooms returns a page of rooms, optionally filtered and ordered,
-  // with the runtime state merged in from the room registry.
-  // Use the next_page_token from RoomSet to retrieve subsequent pages.
-  // Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
-  rpc ListRooms (ListRoomsRequest) returns (RoomSet) {
-    option (google.api.http) = {
-      get: "/v1/rooms/list"
     };
   }
 

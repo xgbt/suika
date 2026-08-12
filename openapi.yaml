@@ -46,6 +46,9 @@ paths:
                  with the runtime state merged in from the room registry.
                  Use the next_page_token from RoomSet to retrieve subsequent pages.
                  Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
+                 Declared before GetRoom so the generated router registers the literal
+                 "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
+                 (gorilla/mux matches in registration order).
             operationId: RoomService_ListRooms
             parameters:
                 - name: pageSize

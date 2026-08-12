@@ -42,6 +42,9 @@ type RoomServiceHTTPServer interface {
 	// with the runtime state merged in from the room registry.
 	// Use the next_page_token from RoomSet to retrieve subsequent pages.
 	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
+	// Declared before GetRoom so the generated router registers the literal
+	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
+	// (gorilla/mux matches in registration order).
 	ListRooms(context.Context, *ListRoomsRequest) (*RoomSet, error)
 	// UpdateRoom UpdateRoom applies a partial update to an existing room using a
 	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
@@ -54,8 +57,8 @@ type RoomServiceHTTPServer interface {
 func RegisterRoomServiceHTTPServer(s *http.Server, srv RoomServiceHTTPServer) {
 	r := s.Route("/")
 	r.Handle("POST", "/v1/rooms/create", _RoomService_CreateRoom0_HTTP_Handler(srv))
-	r.Handle("GET", "/v1/rooms/{room_id}", _RoomService_GetRoom0_HTTP_Handler(srv))
 	r.Handle("GET", "/v1/rooms/list", _RoomService_ListRooms0_HTTP_Handler(srv))
+	r.Handle("GET", "/v1/rooms/{room_id}", _RoomService_GetRoom0_HTTP_Handler(srv))
 	r.Handle("PUT", "/v1/rooms/update", _RoomService_UpdateRoom0_HTTP_Handler(srv))
 	r.Handle("DELETE", "/v1/rooms/{room_id}", _RoomService_DeleteRoom0_HTTP_Handler(srv))
 }
@@ -82,6 +85,25 @@ func _RoomService_CreateRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx h
 	}
 }
 
+func _RoomService_ListRooms0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in ListRoomsRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationRoomServiceListRooms)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.ListRooms(ctx, req.(*ListRoomsRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*RoomSet)
+		return ctx.Result(200, reply)
+	}
+}
+
 func _RoomService_GetRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in GetRoomRequest
@@ -100,25 +122,6 @@ func _RoomService_GetRoom0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http
 			return err
 		}
 		reply := out.(*Room)
-		return ctx.Result(200, reply)
-	}
-}
-
-func _RoomService_ListRooms0_HTTP_Handler(srv RoomServiceHTTPServer) func(ctx http.Context) error {
-	return func(ctx http.Context) error {
-		var in ListRoomsRequest
-		if err := ctx.BindQuery(&in); err != nil {
-			return err
-		}
-		http.SetOperation(ctx, OperationRoomServiceListRooms)
-		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
-			return srv.ListRooms(ctx, req.(*ListRoomsRequest))
-		})
-		out, err := h(ctx, &in)
-		if err != nil {
-			return err
-		}
-		reply := out.(*RoomSet)
 		return ctx.Result(200, reply)
 	}
 }
@@ -185,6 +188,9 @@ type RoomServiceHTTPClient interface {
 	// with the runtime state merged in from the room registry.
 	// Use the next_page_token from RoomSet to retrieve subsequent pages.
 	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
+	// Declared before GetRoom so the generated router registers the literal
+	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
+	// (gorilla/mux matches in registration order).
 	ListRooms(ctx context.Context, req *ListRoomsRequest, opts ...http.CallOption) (rsp *RoomSet, err error)
 	// UpdateRoom UpdateRoom applies a partial update to an existing room using a
 	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
@@ -265,6 +271,9 @@ func (c *RoomServiceHTTPClientImpl) GetRoom(ctx context.Context, in *GetRoomRequ
 // with the runtime state merged in from the room registry.
 // Use the next_page_token from RoomSet to retrieve subsequent pages.
 // Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
+// Declared before GetRoom so the generated router registers the literal
+// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
+// (gorilla/mux matches in registration order).
 func (c *RoomServiceHTTPClientImpl) ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...http.CallOption) (*RoomSet, error) {
 	var out RoomSet
 	pattern := "/v1/rooms/list"

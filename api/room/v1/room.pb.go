@@ -679,9 +679,9 @@ const file_room_v1_room_proto_rawDesc = "" +
 	"\x05ERROR\x10\x042\xc0\x03\n" +
 	"\vRoomService\x12W\n" +
 	"\n" +
-	"CreateRoom\x12\x1a.room.v1.CreateRoomRequest\x1a\r.room.v1.Room\"\x1e\x82\xd3\xe4\x93\x02\x18:\x04room\"\x10/v1/rooms/create\x12N\n" +
-	"\aGetRoom\x12\x17.room.v1.GetRoomRequest\x1a\r.room.v1.Room\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/v1/rooms/{room_id}\x12P\n" +
-	"\tListRooms\x12\x19.room.v1.ListRoomsRequest\x1a\x10.room.v1.RoomSet\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/rooms/list\x12W\n" +
+	"CreateRoom\x12\x1a.room.v1.CreateRoomRequest\x1a\r.room.v1.Room\"\x1e\x82\xd3\xe4\x93\x02\x18:\x04room\"\x10/v1/rooms/create\x12P\n" +
+	"\tListRooms\x12\x19.room.v1.ListRoomsRequest\x1a\x10.room.v1.RoomSet\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/rooms/list\x12N\n" +
+	"\aGetRoom\x12\x17.room.v1.GetRoomRequest\x1a\r.room.v1.Room\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/v1/rooms/{room_id}\x12W\n" +
 	"\n" +
 	"UpdateRoom\x12\x1a.room.v1.UpdateRoomRequest\x1a\r.room.v1.Room\"\x1e\x82\xd3\xe4\x93\x02\x18:\x04room\x1a\x10/v1/rooms/update\x12]\n" +
 	"\n" +
@@ -726,13 +726,13 @@ var file_room_v1_room_proto_depIdxs = []int32{
 	2,  // 7: room.v1.UpdateRoomRequest.room:type_name -> room.v1.Room
 	10, // 8: room.v1.UpdateRoomRequest.update_mask:type_name -> google.protobuf.FieldMask
 	4,  // 9: room.v1.RoomService.CreateRoom:input_type -> room.v1.CreateRoomRequest
-	5,  // 10: room.v1.RoomService.GetRoom:input_type -> room.v1.GetRoomRequest
-	6,  // 11: room.v1.RoomService.ListRooms:input_type -> room.v1.ListRoomsRequest
+	6,  // 10: room.v1.RoomService.ListRooms:input_type -> room.v1.ListRoomsRequest
+	5,  // 11: room.v1.RoomService.GetRoom:input_type -> room.v1.GetRoomRequest
 	7,  // 12: room.v1.RoomService.UpdateRoom:input_type -> room.v1.UpdateRoomRequest
 	8,  // 13: room.v1.RoomService.DeleteRoom:input_type -> room.v1.DeleteRoomRequest
 	2,  // 14: room.v1.RoomService.CreateRoom:output_type -> room.v1.Room
-	2,  // 15: room.v1.RoomService.GetRoom:output_type -> room.v1.Room
-	3,  // 16: room.v1.RoomService.ListRooms:output_type -> room.v1.RoomSet
+	3,  // 15: room.v1.RoomService.ListRooms:output_type -> room.v1.RoomSet
+	2,  // 16: room.v1.RoomService.GetRoom:output_type -> room.v1.Room
 	2,  // 17: room.v1.RoomService.UpdateRoom:output_type -> room.v1.Room
 	11, // 18: room.v1.RoomService.DeleteRoom:output_type -> google.protobuf.Empty
 	14, // [14:19] is the sub-list for method output_type

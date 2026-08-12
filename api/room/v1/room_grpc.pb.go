@@ -21,8 +21,8 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	RoomService_CreateRoom_FullMethodName = "/room.v1.RoomService/CreateRoom"
-	RoomService_GetRoom_FullMethodName    = "/room.v1.RoomService/GetRoom"
 	RoomService_ListRooms_FullMethodName  = "/room.v1.RoomService/ListRooms"
+	RoomService_GetRoom_FullMethodName    = "/room.v1.RoomService/GetRoom"
 	RoomService_UpdateRoom_FullMethodName = "/room.v1.RoomService/UpdateRoom"
 	RoomService_DeleteRoom_FullMethodName = "/room.v1.RoomService/DeleteRoom"
 )
@@ -44,15 +44,18 @@ type RoomServiceClient interface {
 	// Returns INVALID_ARGUMENT if the request payload fails validation, or
 	// ALREADY_EXISTS if a room with the same room_id is already registered.
 	CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (*Room, error)
-	// GetRoom returns one room by its platform room id with the runtime
-	// state merged in from the room registry.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*Room, error)
 	// ListRooms returns a page of rooms, optionally filtered and ordered,
 	// with the runtime state merged in from the room registry.
 	// Use the next_page_token from RoomSet to retrieve subsequent pages.
 	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
+	// Declared before GetRoom so the generated router registers the literal
+	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
+	// (gorilla/mux matches in registration order).
 	ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...grpc.CallOption) (*RoomSet, error)
+	// GetRoom returns one room by its platform room id with the runtime
+	// state merged in from the room registry.
+	// Returns NOT_FOUND if no room exists with the supplied room id.
+	GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*Room, error)
 	// UpdateRoom applies a partial update to an existing room using a
 	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
 	// immutable. Fields not listed in update_mask are left unchanged.
@@ -82,20 +85,20 @@ func (c *roomServiceClient) CreateRoom(ctx context.Context, in *CreateRoomReques
 	return out, nil
 }
 
-func (c *roomServiceClient) GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*Room, error) {
+func (c *roomServiceClient) ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...grpc.CallOption) (*RoomSet, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Room)
-	err := c.cc.Invoke(ctx, RoomService_GetRoom_FullMethodName, in, out, cOpts...)
+	out := new(RoomSet)
+	err := c.cc.Invoke(ctx, RoomService_ListRooms_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *roomServiceClient) ListRooms(ctx context.Context, in *ListRoomsRequest, opts ...grpc.CallOption) (*RoomSet, error) {
+func (c *roomServiceClient) GetRoom(ctx context.Context, in *GetRoomRequest, opts ...grpc.CallOption) (*Room, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RoomSet)
-	err := c.cc.Invoke(ctx, RoomService_ListRooms_FullMethodName, in, out, cOpts...)
+	out := new(Room)
+	err := c.cc.Invoke(ctx, RoomService_GetRoom_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -139,15 +142,18 @@ type RoomServiceServer interface {
 	// Returns INVALID_ARGUMENT if the request payload fails validation, or
 	// ALREADY_EXISTS if a room with the same room_id is already registered.
 	CreateRoom(context.Context, *CreateRoomRequest) (*Room, error)
-	// GetRoom returns one room by its platform room id with the runtime
-	// state merged in from the room registry.
-	// Returns NOT_FOUND if no room exists with the supplied room id.
-	GetRoom(context.Context, *GetRoomRequest) (*Room, error)
 	// ListRooms returns a page of rooms, optionally filtered and ordered,
 	// with the runtime state merged in from the room registry.
 	// Use the next_page_token from RoomSet to retrieve subsequent pages.
 	// Returns INVALID_ARGUMENT if filter, order_by, or page_token are malformed.
+	// Declared before GetRoom so the generated router registers the literal
+	// "/v1/rooms/list" path ahead of the "/v1/rooms/{room_id}" wildcard
+	// (gorilla/mux matches in registration order).
 	ListRooms(context.Context, *ListRoomsRequest) (*RoomSet, error)
+	// GetRoom returns one room by its platform room id with the runtime
+	// state merged in from the room registry.
+	// Returns NOT_FOUND if no room exists with the supplied room id.
+	GetRoom(context.Context, *GetRoomRequest) (*Room, error)
 	// UpdateRoom applies a partial update to an existing room using a
 	// FieldMask. Only `name` and `enabled` may be changed; `room_id` is
 	// immutable. Fields not listed in update_mask are left unchanged.
@@ -170,11 +176,11 @@ type UnimplementedRoomServiceServer struct{}
 func (UnimplementedRoomServiceServer) CreateRoom(context.Context, *CreateRoomRequest) (*Room, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateRoom not implemented")
 }
-func (UnimplementedRoomServiceServer) GetRoom(context.Context, *GetRoomRequest) (*Room, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetRoom not implemented")
-}
 func (UnimplementedRoomServiceServer) ListRooms(context.Context, *ListRoomsRequest) (*RoomSet, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRooms not implemented")
+}
+func (UnimplementedRoomServiceServer) GetRoom(context.Context, *GetRoomRequest) (*Room, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRoom not implemented")
 }
 func (UnimplementedRoomServiceServer) UpdateRoom(context.Context, *UpdateRoomRequest) (*Room, error) {
 	return nil, status.Error(codes.Unimplemented, "method UpdateRoom not implemented")
@@ -221,24 +227,6 @@ func _RoomService_CreateRoom_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
-func _RoomService_GetRoom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetRoomRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(RoomServiceServer).GetRoom(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: RoomService_GetRoom_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RoomServiceServer).GetRoom(ctx, req.(*GetRoomRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _RoomService_ListRooms_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListRoomsRequest)
 	if err := dec(in); err != nil {
@@ -253,6 +241,24 @@ func _RoomService_ListRooms_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RoomServiceServer).ListRooms(ctx, req.(*ListRoomsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RoomService_GetRoom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRoomRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoomServiceServer).GetRoom(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoomService_GetRoom_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoomServiceServer).GetRoom(ctx, req.(*GetRoomRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -305,12 +311,12 @@ var RoomService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _RoomService_CreateRoom_Handler,
 		},
 		{
-			MethodName: "GetRoom",
-			Handler:    _RoomService_GetRoom_Handler,
-		},
-		{
 			MethodName: "ListRooms",
 			Handler:    _RoomService_ListRooms_Handler,
+		},
+		{
+			MethodName: "GetRoom",
+			Handler:    _RoomService_GetRoom_Handler,
 		},
 		{
 			MethodName: "UpdateRoom",
