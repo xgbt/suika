@@ -3,10 +3,10 @@ package biz
 import (
 	"context"
 	stderrors "errors"
+	"maps"
+	"slices"
 	"testing"
 	"time"
-
-	"suika/internal/conf"
 )
 
 // fakeStatsRepo scripts SessionStatsRepo behavior for the room API tests.
@@ -27,22 +27,72 @@ func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionS
 	return nil, nil
 }
 
-func TestNewRoomRegistryNilConfig(t *testing.T) {
-	reg := NewRoomRegistry(nil)
-	if rooms := reg.Rooms(); len(rooms) != 0 {
-		t.Fatalf("rooms = %d, want 0", len(rooms))
-	}
-	if snap := reg.Snapshot(); len(snap) != 0 {
-		t.Fatalf("snapshot = %d, want 0", len(snap))
-	}
+// fakeRoomRepo scripts RoomRepo behavior for registry and usecase tests.
+type fakeRoomRepo struct {
+	rooms     map[int64]*Room
+	listErr   error
+	updateErr error
+	updates   []*Room
 }
 
-func TestNewRoomRegistryParsesRooms(t *testing.T) {
-	c := &conf.Recorder{Rooms: []*conf.Recorder_Room{
-		{RoomId: 1, Name: "a", Enabled: true},
-		{RoomId: 2, Name: "b", Enabled: false},
+func (r *fakeRoomRepo) FindByRoomID(_ context.Context, roomID int64) (*Room, error) {
+	if room, ok := r.rooms[roomID]; ok {
+		return room, nil
+	}
+	return nil, ErrRoomNotFound
+}
+
+func (r *fakeRoomRepo) ListRooms(_ context.Context, _ ...ListOption) ([]*Room, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	out := make([]*Room, 0, len(r.rooms))
+	for _, id := range slices.Sorted(maps.Keys(r.rooms)) {
+		out = append(out, r.rooms[id])
+	}
+	return out, nil
+}
+
+func (r *fakeRoomRepo) CreateRoom(_ context.Context, room *Room) (*Room, error) {
+	if r.rooms == nil {
+		r.rooms = make(map[int64]*Room)
+	}
+	if _, ok := r.rooms[room.RoomID]; ok {
+		return nil, ErrRoomAlreadyExists
+	}
+	r.rooms[room.RoomID] = room
+	return room, nil
+}
+
+func (r *fakeRoomRepo) UpdateRoom(_ context.Context, room *Room) (*Room, error) {
+	r.updates = append(r.updates, room)
+	if r.updateErr != nil {
+		return nil, r.updateErr
+	}
+	if _, ok := r.rooms[room.RoomID]; !ok {
+		return nil, ErrRoomNotFound
+	}
+	r.rooms[room.RoomID] = room
+	return room, nil
+}
+
+func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
+	if _, ok := r.rooms[roomID]; !ok {
+		return ErrRoomNotFound
+	}
+	delete(r.rooms, roomID)
+	return nil
+}
+
+func TestNewRoomRegistryLoadsRooms(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{
+		2: {RoomID: 2, Name: "b"},
+		1: {RoomID: 1, Name: "a", Enabled: true},
 	}}
-	reg := NewRoomRegistry(c)
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
 	rooms := reg.Rooms()
 	if len(rooms) != 2 {
 		t.Fatalf("rooms = %d, want 2", len(rooms))
@@ -52,6 +102,61 @@ func TestNewRoomRegistryParsesRooms(t *testing.T) {
 	}
 	if rooms[1].RoomID != 2 || rooms[1].Name != "b" || rooms[1].Enabled {
 		t.Fatalf("room[1] = %+v", rooms[1])
+	}
+}
+
+func TestNewRoomRegistryNilRepo(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry(nil) error = %v", err)
+	}
+	if rooms := reg.Rooms(); len(rooms) != 0 {
+		t.Fatalf("rooms = %d, want 0", len(rooms))
+	}
+}
+
+func TestNewRoomRegistryLoadError(t *testing.T) {
+	repo := &fakeRoomRepo{listErr: stderrors.New("db down")}
+	if _, err := NewRoomRegistry(repo); err == nil {
+		t.Fatal("NewRoomRegistry() error = nil, want load error")
+	}
+}
+
+func TestApplyRoomInfoBackfillsNameThroughRepo(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Enabled: true}}}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer"})
+
+	if got := reg.Room(1).Name; got != "streamer" {
+		t.Fatalf("backfilled name = %q, want streamer", got)
+	}
+	if len(repo.updates) != 1 || repo.updates[0].RoomID != 1 || repo.updates[0].Name != "streamer" {
+		t.Fatalf("repo updates = %+v, want one backfilled room", repo.updates)
+	}
+
+	// A second apply with the name already set must not write again.
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other"})
+	if len(repo.updates) != 1 {
+		t.Fatalf("repo updates = %d, want exactly 1", len(repo.updates))
+	}
+}
+
+func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, updateErr: stderrors.New("db locked")}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer"})
+
+	// The in-memory backfill still lands when persistence fails.
+	if got := reg.Room(1).Name; got != "streamer" {
+		t.Fatalf("backfilled name = %q, want streamer", got)
 	}
 }
 
@@ -65,13 +170,16 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 		},
 		failures: map[int64]error{3: stderrors.New("stats unavailable")},
 	}
-	c := &conf.Recorder{Rooms: []*conf.Recorder_Room{
-		{RoomId: 1, Name: "a", Enabled: true},
-		{RoomId: 2, Name: "b", Enabled: false},
-		{RoomId: 3, Name: "c", Enabled: true},
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{
+		1: {RoomID: 1, Name: "a", Enabled: true},
+		2: {RoomID: 2, Name: "b"},
+		3: {RoomID: 3, Name: "c", Enabled: true},
 	}}
-	reg := NewRoomRegistry(c)
-	reg.ApplyRoomInfo(1, liveInfo(1, true))
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	reg.ApplyRoomInfo(context.Background(), 1, liveInfo(1, true))
 	reg.setState(1, func(st *roomState) {
 		st.record = RecordRecording
 		st.sessionStartedAt = time.Unix(100, 0)
@@ -79,7 +187,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	reg.NoteError(2, stderrors.New("boom"))
 	reg.StartRecording(3)
 
-	uc := NewRoomUsecase(reg, stats)
+	uc := NewRoomUsecase(repo, reg, stats)
 	out, err := uc.ListRooms(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +196,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 		t.Fatalf("len(out) = %d, want 3", len(out))
 	}
 	if out[0].Room.RoomID != 1 || out[1].Room.RoomID != 2 || out[2].Room.RoomID != 3 {
-		t.Fatalf("configuration order not preserved: %+v", out)
+		t.Fatalf("room order not preserved: %+v", out)
 	}
 	if out[0].Live != LiveOnAir || out[0].Record != RecordRecording {
 		t.Fatalf("room 1 state = %v/%v", out[0].Live, out[0].Record)
@@ -115,5 +223,58 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	// stats are only requested for RecordRecording rooms.
 	if len(stats.calls) != 2 || stats.calls[0] != 1 || stats.calls[1] != 3 {
 		t.Fatalf("stats calls = %v, want [1 3]", stats.calls)
+	}
+}
+
+func TestRoomUsecaseValidation(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	repo := &fakeRoomRepo{}
+	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	ctx := context.Background()
+
+	if _, err := uc.CreateRoom(ctx, nil); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("CreateRoom(nil) error = %v, want invalid argument", err)
+	}
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 0}); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("CreateRoom(zero id) error = %v, want invalid argument", err)
+	}
+	if _, err := uc.GetRoom(ctx, 0); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("GetRoom(zero id) error = %v, want invalid argument", err)
+	}
+	if _, err := uc.UpdateRoom(ctx, nil); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("UpdateRoom(nil) error = %v, want invalid argument", err)
+	}
+	if err := uc.DeleteRoom(ctx, -1); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("DeleteRoom(negative id) error = %v, want invalid argument", err)
+	}
+	// An empty name is allowed: the platform API backfills it later.
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 7}); err != nil {
+		t.Fatalf("CreateRoom(empty name) error = %v, want success", err)
+	}
+}
+
+func TestRoomUsecaseRepoErrors(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Name: "a"}}}
+	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	ctx := context.Background()
+
+	if _, err := uc.GetRoom(ctx, 2); !stderrors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("GetRoom(missing) error = %v, want not found", err)
+	}
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 1}); !stderrors.Is(err, ErrRoomAlreadyExists) {
+		t.Fatalf("CreateRoom(duplicate) error = %v, want already exists", err)
+	}
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, Name: "x"}); !stderrors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("UpdateRoom(missing) error = %v, want not found", err)
+	}
+	if err := uc.DeleteRoom(ctx, 2); !stderrors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("DeleteRoom(missing) error = %v, want not found", err)
 	}
 }

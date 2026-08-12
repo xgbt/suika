@@ -98,12 +98,16 @@ func (c *fakeLiveClient) DanmakuConn(context.Context, int64) (DanmakuConn, error
 func newTestUsecase(t *testing.T, repo RecorderRepo, lc LiveClient, mutate func(*RecorderUsecase)) *RecorderUsecase {
 	t.Helper()
 	c := &conf.Recorder{
-		Rooms: []*conf.Recorder_Room{{RoomId: 42, Name: "tester", Enabled: true}},
 		Reconnect: &conf.Recorder_ReconnectOptions{
 			ReconnectDelay: durationpb.New(time.Millisecond),
 		},
 	}
-	uc := NewRecorderUsecase(c, NewRoomRegistry(c), repo, lc)
+	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{42: {RoomID: 42, Name: "tester", Enabled: true}}}
+	reg, err := NewRoomRegistry(roomRepo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	uc := NewRecorderUsecase(c, reg, repo, lc)
 	uc.cdnBackoffBase = time.Millisecond
 	if mutate != nil {
 		mutate(uc)
@@ -236,7 +240,11 @@ func TestRecordLoopContextCancelStopsImmediately(t *testing.T) {
 }
 
 func TestNewRecorderUsecaseNilConfig(t *testing.T) {
-	uc := NewRecorderUsecase(nil, NewRoomRegistry(nil), &fakeRepo{}, &fakeLiveClient{})
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	uc := NewRecorderUsecase(nil, reg, &fakeRepo{}, &fakeLiveClient{})
 	if !uc.rec.AutoReconnect || uc.rec.MaxReconnect != defaultMaxReconnect ||
 		uc.rec.ReconnectDelay != defaultReconnectDelay ||
 		uc.rec.CDNTransientBudget != defaultCDNTransientBudget ||
@@ -247,10 +255,6 @@ func TestNewRecorderUsecaseNilConfig(t *testing.T) {
 
 func TestNewRecorderUsecaseConfigOverrides(t *testing.T) {
 	c := &conf.Recorder{
-		Rooms: []*conf.Recorder_Room{
-			{RoomId: 1, Name: "a", Enabled: true},
-			{RoomId: 2, Name: "b", Enabled: false},
-		},
 		FallbackPollInterval: durationpb.New(30 * time.Second),
 		MaxConcurrent:        2,
 		Reconnect: &conf.Recorder_ReconnectOptions{
@@ -260,7 +264,15 @@ func TestNewRecorderUsecaseConfigOverrides(t *testing.T) {
 			CdnTransientBudget: 9,
 		},
 	}
-	uc := NewRecorderUsecase(c, NewRoomRegistry(c), &fakeRepo{}, &fakeLiveClient{})
+	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{
+		1: {RoomID: 1, Name: "a", Enabled: true},
+		2: {RoomID: 2, Name: "b"},
+	}}
+	reg, err := NewRoomRegistry(roomRepo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	uc := NewRecorderUsecase(c, reg, &fakeRepo{}, &fakeLiveClient{})
 	if uc.pollInterval != 30*time.Second || uc.maxConcurrent != 2 {
 		t.Fatalf("unexpected: poll=%s max=%d", uc.pollInterval, uc.maxConcurrent)
 	}

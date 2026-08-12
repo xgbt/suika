@@ -24,14 +24,19 @@ import (
 
 // wireApp init kratos application.
 func wireApp(confServer *conf.Server, confData *conf.Data, recorder *conf.Recorder, logger *slog.Logger) (*kratos.App, func(), error) {
-	roomRegistry := biz.NewRoomRegistry(recorder)
 	dataData, cleanup, err := data.NewData(confData, recorder)
 	if err != nil {
 		return nil, nil, err
 	}
+	roomRepo := data.NewRoomRepo(dataData)
+	roomRegistry, err := biz.NewRoomRegistry(roomRepo)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	recorderRepo := data.NewRecorderRepo(dataData, recorder)
 	sessionStatsRepo := data.NewSessionStatsRepo(recorderRepo)
-	roomUsecase := biz.NewRoomUsecase(roomRegistry, sessionStatsRepo)
+	roomUsecase := biz.NewRoomUsecase(roomRepo, roomRegistry, sessionStatsRepo)
 	roomService := service.NewRoomService(roomUsecase)
 	grpcServer := server.NewGRPCServer(confServer, roomService)
 	httpServer := server.NewHTTPServer(confServer, roomService)

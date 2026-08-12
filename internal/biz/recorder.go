@@ -313,7 +313,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 		case <-done:
 			active = nil
 		case info := <-conn.Control():
-			uc.reg.ApplyRoomInfo(roomID, info)
+			uc.reg.ApplyRoomInfo(ctx, roomID, info)
 			if info.Live {
 				if active == nil {
 					active = uc.launchSession(ctx, roomID, info, conn.Events())
@@ -327,7 +327,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
 				uc.reg.NoteError(roomID, err)
 			} else {
-				uc.reg.ApplyRoomInfo(roomID, info)
+				uc.reg.ApplyRoomInfo(ctx, roomID, info)
 				if info.Live && active == nil {
 					active = uc.launchSession(ctx, roomID, info, conn.Events())
 				} else if !info.Live && active != nil {
@@ -419,7 +419,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			uc.reg.NoteError(roomID, err)
 			return
 		}
-		uc.reg.ApplyRoomInfo(roomID, info)
+		uc.reg.ApplyRoomInfo(ctx, roomID, info)
 		if !info.Live {
 			return
 		}
