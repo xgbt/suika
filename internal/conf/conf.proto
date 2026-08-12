@@ -11,21 +11,12 @@ message Bootstrap {
   Recorder recorder = 3;
 }
 
-// Recorder configures the Bilibili live recorder: which rooms to watch,
-// where recordings land, and how recording/danmaku/reconnect behave.
+// Recorder configures the Bilibili live recorder: where recordings land
+// and how recording/danmaku/reconnect behave. Rooms to watch live in the
+// sqlite database (rooms table), not in config files.
 // Sensitive credentials (cookie) belong in configs/credentials.yaml,
 // which is merged into Bootstrap by the config file source and gitignored.
 message Recorder {
-  // Room is one monitored live room.
-  message Room {
-    // Bilibili room id.
-    int64 room_id = 1;
-    // Streamer display name, used in the recording directory name.
-    // When empty it is fetched from the room API on first contact.
-    string name = 2;
-    // Whether this room is monitored.
-    bool enabled = 3;
-  }
   // DanmakuOptions tune danmaku event recording.
   message DanmakuOptions {
     // Also record INTERACT_WORD (room-entry) events. Off by default:
@@ -54,8 +45,6 @@ message Recorder {
     // Zero falls back to the default of 3.
     int32 health_check_fail_rounds = 6;
   }
-  // Rooms to monitor.
-  repeated Room rooms = 1;
   // Full cookie header including SESSDATA, required for source quality.
   // Keep in configs/credentials.yaml (gitignored), never in config.yaml.
   string cookie = 2;

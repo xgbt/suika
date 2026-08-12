@@ -34,6 +34,7 @@ Thumbs.db
 bin/
 configs/credentials.yaml
 recordings/
+/data/
 
 # Develop tools
 .vscode/

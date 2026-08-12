@@ -7,22 +7,15 @@ server:
     timeout: 1s
 data:
   database:
-    driver: mysql
-    source: root:root@tcp(127.0.0.1:3306)/test?parseTime=True&loc=Local
+    driver: sqlite
+    source: ./data/suika.db
   redis:
     addr: 127.0.0.1:6379
     read_timeout: 0.2s
     write_timeout: 0.2s
 recorder:
-  # 示例房间:改成 enabled: true 才会真正监控。
-  # 冒烟阶段保持 false,避免没有 cookie 时打真实 API。
-  rooms:
-    - room_id: 6
-      name: example-room-a
-      enabled: false
-    - room_id: 21452505
-      name: example-room-b
-      enabled: false
+  # 监控的房间统一存在 sqlite(data.database.source)的 rooms 表里,
+  # 通过 Room CRUD API 管理,不再写在配置文件中。
   # 真实 cookie 一律放 configs/credentials.yaml(已 gitignore),
   # 参照 configs/credentials.example.yaml,切勿写在本文件里。
   cookie: ""
