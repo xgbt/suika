@@ -25,19 +25,16 @@ var updatableRoomFields = map[string]bool{
 	"enabled": true,
 }
 
-// RoomService is a room service.
 type RoomService struct {
 	v1.UnimplementedRoomServiceServer
 
 	uc *biz.RoomUsecase
 }
 
-// NewRoomService new a room service.
 func NewRoomService(uc *biz.RoomUsecase) *RoomService {
 	return &RoomService{uc: uc}
 }
 
-// CreateRoom registers a new room.
 func (s *RoomService) CreateRoom(ctx context.Context, req *v1.CreateRoomRequest) (*v1.CreateRoomResponse, error) {
 	rt, err := s.uc.CreateRoom(ctx, convertRoom(req.GetRoom()))
 	if err != nil {
@@ -46,16 +43,14 @@ func (s *RoomService) CreateRoom(ctx context.Context, req *v1.CreateRoomRequest)
 	return &v1.CreateRoomResponse{Room: convertRoomReply(rt)}, nil
 }
 
-// GetRoom returns one room with its runtime state merged in.
 func (s *RoomService) GetRoom(ctx context.Context, req *v1.GetRoomRequest) (*v1.GetRoomResponse, error) {
-	rt, err := s.uc.GetRoom(ctx, req.GetRoomId())
+	roomRuntime, err := s.uc.GetRoom(ctx, req.GetRoomId())
 	if err != nil {
 		return nil, err
 	}
-	return &v1.GetRoomResponse{Room: convertRoomReply(rt)}, nil
+	return &v1.GetRoomResponse{Room: convertRoomReply(roomRuntime)}, nil
 }
 
-// ListRooms lists rooms with filtering, ordering, and pagination.
 func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (*v1.ListRoomsResponse, error) {
 	declarations, err := filtering.NewDeclarations(
 		filtering.DeclareStandardFunctions(),
@@ -86,7 +81,7 @@ func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (
 	if req.PageSize <= 0 {
 		req.PageSize = defaultPageSize
 	}
-	rts, err := s.uc.ListRooms(ctx,
+	roomRuntimes, err := s.uc.ListRoomRuntimes(ctx,
 		biz.ListFilter(filter),
 		biz.ListOrderBy(orderBy),
 		biz.ListLimit(int(req.PageSize)),
@@ -95,19 +90,20 @@ func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (
 	if err != nil {
 		return nil, err
 	}
-	set := &v1.ListRoomsResponse{
-		Rooms: make([]*v1.Room, 0, len(rts)),
+
+	response := &v1.ListRoomsResponse{
+		Rooms: make([]*v1.Room, 0, len(roomRuntimes)),
 	}
-	if len(rts) >= int(req.PageSize) {
-		set.NextPageToken = pageToken.Next(req).String()
+	if len(roomRuntimes) >= int(req.PageSize) {
+		response.NextPageToken = pageToken.Next(req).String()
 	}
-	for _, rt := range rts {
-		set.Rooms = append(set.Rooms, convertRoomReply(rt))
+	for _, rt := range roomRuntimes {
+		response.Rooms = append(response.Rooms, convertRoomReply(rt))
 	}
-	return set, nil
+
+	return response, nil
 }
 
-// UpdateRoom applies a partial update to an existing room.
 func (s *RoomService) UpdateRoom(ctx context.Context, req *v1.UpdateRoomRequest) (*v1.UpdateRoomResponse, error) {
 	if req.GetRoom().GetRoomId() <= 0 || req.GetUpdateMask() == nil || len(req.GetUpdateMask().GetPaths()) == 0 {
 		return nil, biz.ErrRoomInvalidArgument
@@ -117,20 +113,19 @@ func (s *RoomService) UpdateRoom(ctx context.Context, req *v1.UpdateRoomRequest)
 			return nil, biz.ErrRoomInvalidArgument
 		}
 	}
-	currentResponse, err := s.GetRoom(ctx, &v1.GetRoomRequest{RoomId: req.GetRoom().GetRoomId()})
+	curResp, err := s.GetRoom(ctx, &v1.GetRoomRequest{RoomId: req.GetRoom().GetRoomId()})
 	if err != nil {
 		return nil, err
 	}
-	current := currentResponse.GetRoom()
-	fieldmask.Update(req.GetUpdateMask(), current, req.GetRoom())
-	rt, err := s.uc.UpdateRoom(ctx, convertRoom(current))
+	curRoom := curResp.GetRoom()
+	fieldmask.Update(req.GetUpdateMask(), curRoom, req.GetRoom())
+	rt, err := s.uc.UpdateRoom(ctx, convertRoom(curRoom))
 	if err != nil {
 		return nil, err
 	}
 	return &v1.UpdateRoomResponse{Room: convertRoomReply(rt)}, nil
 }
 
-// DeleteRoom removes a room.
 func (s *RoomService) DeleteRoom(ctx context.Context, req *v1.DeleteRoomRequest) (*v1.DeleteRoomResponse, error) {
 	if err := s.uc.DeleteRoom(ctx, req.GetRoomId()); err != nil {
 		return nil, err
@@ -149,12 +144,12 @@ func convertRoom(in *v1.Room) *biz.Room {
 	}
 }
 
-// convertRoomReply converts the merged runtime view back to a DTO. It is a
-// free function so unary handlers share the runtime enum mapping.
+// convertRoomReply converts the merged runtime view back to a DTO.
 func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 	if rt == nil {
 		return nil
 	}
+
 	var liveStatus v1.LiveStatus
 	switch rt.Live {
 	case biz.LivePreparing:
@@ -175,6 +170,7 @@ func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 	default:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_IDLE
 	}
+
 	room := &v1.Room{
 		RoomId:       rt.Room.RoomID,
 		Name:         rt.Room.Name,

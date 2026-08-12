@@ -188,7 +188,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	reg.StartRecording(3)
 
 	uc := NewRoomUsecase(repo, reg, stats)
-	out, err := uc.ListRooms(context.Background())
+	out, err := uc.ListRoomRuntimes(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

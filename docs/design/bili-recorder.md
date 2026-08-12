@@ -134,6 +134,12 @@ configs/
   credentials.yaml       真实 cookie（gitignore，file source 自动合并）
 ```
 
+### 2.2.1 DDD 领域模型设计图
+
+DDD 领域模型已独立到文档：`docs/design/ddd-domain-model.md`。
+
+本节仅保留运行时与实现细节；领域对象关系、边界上下文与仓储/防腐层关系请参考独立 DDD 文档。
+
 ### 2.3 三条缝与决策/IO 分工
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |

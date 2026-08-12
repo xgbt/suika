@@ -15,31 +15,22 @@ import (
 	"go.einride.tech/aip/ordering"
 )
 
-// Typed errors surfaced through the API error reason enum.
 var (
-	// ErrRoomNotFound is returned when a room does not exist.
-	ErrRoomNotFound = errors.NotFound(v1.ErrorReason_ERROR_REASON_NOT_FOUND.String(), "room not found")
-	// ErrRoomInvalidArgument is returned when a room request is invalid.
+	ErrRoomNotFound        = errors.NotFound(v1.ErrorReason_ERROR_REASON_NOT_FOUND.String(), "room not found")
 	ErrRoomInvalidArgument = errors.BadRequest(v1.ErrorReason_ERROR_REASON_INVALID_ARGUMENT.String(), "invalid room argument")
-	// ErrRoomAlreadyExists is returned when a room with the same room_id
-	// is already registered.
-	ErrRoomAlreadyExists = errors.Conflict(v1.ErrorReason_ERROR_REASON_ALREADY_EXISTS.String(), "room already exists")
+	ErrRoomAlreadyExists   = errors.Conflict(v1.ErrorReason_ERROR_REASON_ALREADY_EXISTS.String(), "room already exists")
 )
 
-// LiveState is the broadcast state of a room known to the recorder.
 type LiveState int
 
-// LiveState values.
 const (
 	LiveUnknown LiveState = iota
 	LivePreparing
 	LiveOnAir
 )
 
-// RecordState is the recorder's own state for a room.
 type RecordState int
 
-// RecordState values.
 const (
 	RecordIdle RecordState = iota
 	RecordRecording
@@ -47,9 +38,7 @@ const (
 	RecordError
 )
 
-// Room is one monitored live room. RoomID is the caller-provided platform
-// room id and doubles as the unique key; Name may stay empty until the
-// recorder backfills it from the platform API.
+// Room DO
 type Room struct {
 	RoomID     int64
 	Name       string
@@ -310,17 +299,18 @@ func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime,
 	return uc.withRuntime(ctx, room), nil
 }
 
-// ListRooms lists rooms with the runtime state merged from the registry.
-func (uc *RoomUsecase) ListRooms(ctx context.Context, opts ...ListOption) ([]*RoomRuntime, error) {
+// ListRoomRuntimes lists rooms with the runtime state merged from the registry.
+func (uc *RoomUsecase) ListRoomRuntimes(ctx context.Context, opts ...ListOption) ([]*RoomRuntime, error) {
 	rooms, err := uc.repo.ListRooms(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*RoomRuntime, 0, len(rooms))
+
+	roomRuntimes := make([]*RoomRuntime, 0, len(rooms))
 	for _, room := range rooms {
-		out = append(out, uc.withRuntime(ctx, room))
+		roomRuntimes = append(roomRuntimes, uc.withRuntime(ctx, room))
 	}
-	return out, nil
+	return roomRuntimes, nil
 }
 
 // CreateRoom registers a new room. The returned view carries default
