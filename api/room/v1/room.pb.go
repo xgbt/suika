@@ -10,6 +10,8 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
+	fieldmaskpb "google.golang.org/protobuf/types/known/fieldmaskpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -23,7 +25,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// LiveStatus is the broadcast state of a room as reported by Bilibili.
+// LiveStatus is the broadcast state of a room as reported by the platform.
 type LiveStatus int32
 
 const (
@@ -135,45 +137,56 @@ func (RecordStatus) EnumDescriptor() ([]byte, []int) {
 	return file_room_v1_room_proto_rawDescGZIP(), []int{1}
 }
 
-// RoomStatus is the combined live/record status of one configured room.
-type RoomStatus struct {
+// Room is the canonical representation of one monitored room: persisted
+// fields plus the runtime state merged in on read.
+type Room struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Bilibili room id.
+	// Platform room id supplied by the caller. Serves as the unique
+	// identifier; immutable once created.
 	RoomId int64 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
-	// Streamer display name used for the recording directory.
+	// Streamer display name used for the recording directory. May be empty
+	// on create; the recorder backfills it from the platform API.
 	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	// Whether this room is monitored at all.
 	Enabled bool `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	// Broadcast state reported by Bilibili.
+	// Broadcast state reported by the platform. Runtime state, server-populated.
 	LiveStatus LiveStatus `protobuf:"varint,4,opt,name=live_status,json=liveStatus,proto3,enum=room.v1.LiveStatus" json:"live_status,omitempty"`
-	// Recorder state for this room.
+	// Recorder state for this room. Runtime state, server-populated.
 	RecordStatus RecordStatus `protobuf:"varint,5,opt,name=record_status,json=recordStatus,proto3,enum=room.v1.RecordStatus" json:"record_status,omitempty"`
 	// Path of the segment file currently being written. Empty when idle.
+	// Runtime state, server-populated.
 	CurrentFile string `protobuf:"bytes,6,opt,name=current_file,json=currentFile,proto3" json:"current_file,omitempty"`
 	// Bytes written across the current session. Zero when idle.
+	// Runtime state, server-populated.
 	BytesWritten int64 `protobuf:"varint,7,opt,name=bytes_written,json=bytesWritten,proto3" json:"bytes_written,omitempty"`
 	// Time at which the current session started. Absent when idle.
+	// Runtime state, server-populated.
 	SessionStartedAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=session_started_at,json=sessionStartedAt,proto3" json:"session_started_at,omitempty"`
 	// Last error observed for this room. Empty when healthy.
-	LastError     string `protobuf:"bytes,9,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// Runtime state, server-populated.
+	LastError string `protobuf:"bytes,9,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// Time at which the room was registered. Server-assigned, read-only.
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	// Time at which the room was last modified. Server-assigned, read-only.
+	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RoomStatus) Reset() {
-	*x = RoomStatus{}
+func (x *Room) Reset() {
+	*x = Room{}
 	mi := &file_room_v1_room_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RoomStatus) String() string {
+func (x *Room) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RoomStatus) ProtoMessage() {}
+func (*Room) ProtoMessage() {}
 
-func (x *RoomStatus) ProtoReflect() protoreflect.Message {
+func (x *Room) ProtoReflect() protoreflect.Message {
 	mi := &file_room_v1_room_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -185,84 +198,275 @@ func (x *RoomStatus) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RoomStatus.ProtoReflect.Descriptor instead.
-func (*RoomStatus) Descriptor() ([]byte, []int) {
+// Deprecated: Use Room.ProtoReflect.Descriptor instead.
+func (*Room) Descriptor() ([]byte, []int) {
 	return file_room_v1_room_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *RoomStatus) GetRoomId() int64 {
+func (x *Room) GetRoomId() int64 {
 	if x != nil {
 		return x.RoomId
 	}
 	return 0
 }
 
-func (x *RoomStatus) GetName() string {
+func (x *Room) GetName() string {
 	if x != nil {
 		return x.Name
 	}
 	return ""
 }
 
-func (x *RoomStatus) GetEnabled() bool {
+func (x *Room) GetEnabled() bool {
 	if x != nil {
 		return x.Enabled
 	}
 	return false
 }
 
-func (x *RoomStatus) GetLiveStatus() LiveStatus {
+func (x *Room) GetLiveStatus() LiveStatus {
 	if x != nil {
 		return x.LiveStatus
 	}
 	return LiveStatus_LIVE_STATUS_UNSPECIFIED
 }
 
-func (x *RoomStatus) GetRecordStatus() RecordStatus {
+func (x *Room) GetRecordStatus() RecordStatus {
 	if x != nil {
 		return x.RecordStatus
 	}
 	return RecordStatus_RECORD_STATUS_UNSPECIFIED
 }
 
-func (x *RoomStatus) GetCurrentFile() string {
+func (x *Room) GetCurrentFile() string {
 	if x != nil {
 		return x.CurrentFile
 	}
 	return ""
 }
 
-func (x *RoomStatus) GetBytesWritten() int64 {
+func (x *Room) GetBytesWritten() int64 {
 	if x != nil {
 		return x.BytesWritten
 	}
 	return 0
 }
 
-func (x *RoomStatus) GetSessionStartedAt() *timestamppb.Timestamp {
+func (x *Room) GetSessionStartedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.SessionStartedAt
 	}
 	return nil
 }
 
-func (x *RoomStatus) GetLastError() string {
+func (x *Room) GetLastError() string {
 	if x != nil {
 		return x.LastError
 	}
 	return ""
 }
 
+func (x *Room) GetCreateTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreateTime
+	}
+	return nil
+}
+
+func (x *Room) GetUpdateTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdateTime
+	}
+	return nil
+}
+
+// RoomSet is a paginated collection of rooms returned by ListRooms.
+type RoomSet struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The page of rooms in the order requested by ListRoomsRequest.order_by.
+	Rooms []*Room `protobuf:"bytes,1,rep,name=rooms,proto3" json:"rooms,omitempty"`
+	// Token used to retrieve the next page via ListRoomsRequest.page_token.
+	// Empty when there are no more results.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RoomSet) Reset() {
+	*x = RoomSet{}
+	mi := &file_room_v1_room_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RoomSet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RoomSet) ProtoMessage() {}
+
+func (x *RoomSet) ProtoReflect() protoreflect.Message {
+	mi := &file_room_v1_room_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RoomSet.ProtoReflect.Descriptor instead.
+func (*RoomSet) Descriptor() ([]byte, []int) {
+	return file_room_v1_room_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RoomSet) GetRooms() []*Room {
+	if x != nil {
+		return x.Rooms
+	}
+	return nil
+}
+
+func (x *RoomSet) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
+// CreateRoomRequest is the input for RoomService.CreateRoom.
+type CreateRoomRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The room to register. room_id must be the platform room id; the
+	// create_time, update_time, and runtime fields are ignored on input and
+	// populated by the server in the response.
+	Room          *Room `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateRoomRequest) Reset() {
+	*x = CreateRoomRequest{}
+	mi := &file_room_v1_room_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRoomRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRoomRequest) ProtoMessage() {}
+
+func (x *CreateRoomRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_room_v1_room_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRoomRequest.ProtoReflect.Descriptor instead.
+func (*CreateRoomRequest) Descriptor() ([]byte, []int) {
+	return file_room_v1_room_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CreateRoomRequest) GetRoom() *Room {
+	if x != nil {
+		return x.Room
+	}
+	return nil
+}
+
+// GetRoomRequest is the input for RoomService.GetRoom.
+type GetRoomRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Platform room id of the room to retrieve.
+	RoomId        int64 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRoomRequest) Reset() {
+	*x = GetRoomRequest{}
+	mi := &file_room_v1_room_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRoomRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRoomRequest) ProtoMessage() {}
+
+func (x *GetRoomRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_room_v1_room_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRoomRequest.ProtoReflect.Descriptor instead.
+func (*GetRoomRequest) Descriptor() ([]byte, []int) {
+	return file_room_v1_room_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetRoomRequest) GetRoomId() int64 {
+	if x != nil {
+		return x.RoomId
+	}
+	return 0
+}
+
 // ListRoomsRequest is the input for RoomService.ListRooms.
 type ListRoomsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. Maximum number of rooms to return in a single page.
+	// The server applies a default of 20 when unset or out of range.
+	PageSize int32 `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// Optional. Token from a previous response's next_page_token used to fetch
+	// the next page. Leave empty to request the first page.
+	PageToken string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	// Optional. The standard list filter. Only persisted fields are
+	// supported; runtime fields are server-populated and not filterable.
+	// Supported fields:
+	//   - `room_id` (i.e. `room_id=123`)
+	//   - `name` (i.e. `name:"streamer"`)
+	//   - `enabled` (i.e. `enabled` or `NOT enabled`)
+	//   - `create_time` range (i.e. `create_time>="2026-01-01T00:00:00Z"`)
+	//   - `update_time` range (i.e. `update_time>="2026-01-01T00:00:00Z"`)
+	Filter string `protobuf:"bytes,3,opt,name=filter,proto3" json:"filter,omitempty"`
+	// Optional. A comma-separated list of fields to order by. Only persisted
+	// fields are supported; runtime fields are not orderable.
+	// Supported fields:
+	//   - `room_id`
+	//   - `name`
+	//   - `enabled`
+	//   - `create_time`
+	//   - `update_time`
+	//
+	// Append ` desc` to a field for descending order, e.g. `create_time desc`.
+	// Defaults to ascending order when no direction is supplied.
+	OrderBy       string `protobuf:"bytes,4,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListRoomsRequest) Reset() {
 	*x = ListRoomsRequest{}
-	mi := &file_room_v1_room_proto_msgTypes[1]
+	mi := &file_room_v1_room_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -274,7 +478,7 @@ func (x *ListRoomsRequest) String() string {
 func (*ListRoomsRequest) ProtoMessage() {}
 
 func (x *ListRoomsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_room_v1_room_proto_msgTypes[1]
+	mi := &file_room_v1_room_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -287,33 +491,65 @@ func (x *ListRoomsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRoomsRequest.ProtoReflect.Descriptor instead.
 func (*ListRoomsRequest) Descriptor() ([]byte, []int) {
-	return file_room_v1_room_proto_rawDescGZIP(), []int{1}
+	return file_room_v1_room_proto_rawDescGZIP(), []int{4}
 }
 
-// ListRoomsResponse is the output for RoomService.ListRooms.
-type ListRoomsResponse struct {
+func (x *ListRoomsRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListRoomsRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+func (x *ListRoomsRequest) GetFilter() string {
+	if x != nil {
+		return x.Filter
+	}
+	return ""
+}
+
+func (x *ListRoomsRequest) GetOrderBy() string {
+	if x != nil {
+		return x.OrderBy
+	}
+	return ""
+}
+
+// UpdateRoomRequest is the input for RoomService.UpdateRoom.
+type UpdateRoomRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Status of every configured room, in configuration order.
-	Rooms         []*RoomStatus `protobuf:"bytes,1,rep,name=rooms,proto3" json:"rooms,omitempty"`
+	// The room carrying the new field values. room.room_id identifies the
+	// target record and must be set.
+	Room *Room `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
+	// Set of field paths in room to overwrite. Only `name` and `enabled` are
+	// supported; fields not listed are left unchanged.
+	UpdateMask    *fieldmaskpb.FieldMask `protobuf:"bytes,2,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ListRoomsResponse) Reset() {
-	*x = ListRoomsResponse{}
-	mi := &file_room_v1_room_proto_msgTypes[2]
+func (x *UpdateRoomRequest) Reset() {
+	*x = UpdateRoomRequest{}
+	mi := &file_room_v1_room_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ListRoomsResponse) String() string {
+func (x *UpdateRoomRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ListRoomsResponse) ProtoMessage() {}
+func (*UpdateRoomRequest) ProtoMessage() {}
 
-func (x *ListRoomsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_room_v1_room_proto_msgTypes[2]
+func (x *UpdateRoomRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_room_v1_room_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -324,39 +560,112 @@ func (x *ListRoomsResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ListRoomsResponse.ProtoReflect.Descriptor instead.
-func (*ListRoomsResponse) Descriptor() ([]byte, []int) {
-	return file_room_v1_room_proto_rawDescGZIP(), []int{2}
+// Deprecated: Use UpdateRoomRequest.ProtoReflect.Descriptor instead.
+func (*UpdateRoomRequest) Descriptor() ([]byte, []int) {
+	return file_room_v1_room_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *ListRoomsResponse) GetRooms() []*RoomStatus {
+func (x *UpdateRoomRequest) GetRoom() *Room {
 	if x != nil {
-		return x.Rooms
+		return x.Room
 	}
 	return nil
+}
+
+func (x *UpdateRoomRequest) GetUpdateMask() *fieldmaskpb.FieldMask {
+	if x != nil {
+		return x.UpdateMask
+	}
+	return nil
+}
+
+// DeleteRoomRequest is the input for RoomService.DeleteRoom.
+type DeleteRoomRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Platform room id of the room to delete.
+	RoomId        int64 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRoomRequest) Reset() {
+	*x = DeleteRoomRequest{}
+	mi := &file_room_v1_room_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRoomRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRoomRequest) ProtoMessage() {}
+
+func (x *DeleteRoomRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_room_v1_room_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRoomRequest.ProtoReflect.Descriptor instead.
+func (*DeleteRoomRequest) Descriptor() ([]byte, []int) {
+	return file_room_v1_room_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *DeleteRoomRequest) GetRoomId() int64 {
+	if x != nil {
+		return x.RoomId
+	}
+	return 0
 }
 
 var File_room_v1_room_proto protoreflect.FileDescriptor
 
 const file_room_v1_room_proto_rawDesc = "" +
 	"\n" +
-	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf6\x02\n" +
-	"\n" +
-	"RoomStatus\x12\x17\n" +
+	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x92\x04\n" +
+	"\x04Room\x12\x17\n" +
 	"\aroom_id\x18\x01 \x01(\x03R\x06roomId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
-	"\aenabled\x18\x03 \x01(\bR\aenabled\x124\n" +
-	"\vlive_status\x18\x04 \x01(\x0e2\x13.room.v1.LiveStatusR\n" +
-	"liveStatus\x12:\n" +
-	"\rrecord_status\x18\x05 \x01(\x0e2\x15.room.v1.RecordStatusR\frecordStatus\x12!\n" +
-	"\fcurrent_file\x18\x06 \x01(\tR\vcurrentFile\x12#\n" +
-	"\rbytes_written\x18\a \x01(\x03R\fbytesWritten\x12H\n" +
-	"\x12session_started_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x10sessionStartedAt\x12\x1d\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\x129\n" +
+	"\vlive_status\x18\x04 \x01(\x0e2\x13.room.v1.LiveStatusB\x03\xe0A\x03R\n" +
+	"liveStatus\x12?\n" +
+	"\rrecord_status\x18\x05 \x01(\x0e2\x15.room.v1.RecordStatusB\x03\xe0A\x03R\frecordStatus\x12&\n" +
+	"\fcurrent_file\x18\x06 \x01(\tB\x03\xe0A\x03R\vcurrentFile\x12(\n" +
+	"\rbytes_written\x18\a \x01(\x03B\x03\xe0A\x03R\fbytesWritten\x12M\n" +
+	"\x12session_started_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampB\x03\xe0A\x03R\x10sessionStartedAt\x12\"\n" +
 	"\n" +
-	"last_error\x18\t \x01(\tR\tlastError\"\x12\n" +
-	"\x10ListRoomsRequest\">\n" +
-	"\x11ListRoomsResponse\x12)\n" +
-	"\x05rooms\x18\x01 \x03(\v2\x13.room.v1.RoomStatusR\x05rooms*B\n" +
+	"last_error\x18\t \x01(\tB\x03\xe0A\x03R\tlastError\x12@\n" +
+	"\vcreate_time\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampB\x03\xe0A\x03R\n" +
+	"createTime\x12@\n" +
+	"\vupdate_time\x18\v \x01(\v2\x1a.google.protobuf.TimestampB\x03\xe0A\x03R\n" +
+	"updateTime\"V\n" +
+	"\aRoomSet\x12#\n" +
+	"\x05rooms\x18\x01 \x03(\v2\r.room.v1.RoomR\x05rooms\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\";\n" +
+	"\x11CreateRoomRequest\x12&\n" +
+	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomB\x03\xe0A\x02R\x04room\".\n" +
+	"\x0eGetRoomRequest\x12\x1c\n" +
+	"\aroom_id\x18\x01 \x01(\x03B\x03\xe0A\x02R\x06roomId\"\x81\x01\n" +
+	"\x10ListRoomsRequest\x12\x1b\n" +
+	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\x12\x16\n" +
+	"\x06filter\x18\x03 \x01(\tR\x06filter\x12\x19\n" +
+	"\border_by\x18\x04 \x01(\tR\aorderBy\"}\n" +
+	"\x11UpdateRoomRequest\x12&\n" +
+	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomB\x03\xe0A\x02R\x04room\x12@\n" +
+	"\vupdate_mask\x18\x02 \x01(\v2\x1a.google.protobuf.FieldMaskB\x03\xe0A\x02R\n" +
+	"updateMask\"1\n" +
+	"\x11DeleteRoomRequest\x12\x1c\n" +
+	"\aroom_id\x18\x01 \x01(\x03B\x03\xe0A\x02R\x06roomId*B\n" +
 	"\n" +
 	"LiveStatus\x12\x1b\n" +
 	"\x17LIVE_STATUS_UNSPECIFIED\x10\x00\x12\r\n" +
@@ -367,9 +676,16 @@ const file_room_v1_room_proto_rawDesc = "" +
 	"\x04IDLE\x10\x01\x12\r\n" +
 	"\tRECORDING\x10\x02\x12\f\n" +
 	"\bREMUXING\x10\x03\x12\t\n" +
-	"\x05ERROR\x10\x042i\n" +
-	"\vRoomService\x12Z\n" +
-	"\tListRooms\x12\x19.room.v1.ListRoomsRequest\x1a\x1a.room.v1.ListRoomsResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/rooms/listB\x16Z\x14suika/api/room/v1;v1b\x06proto3"
+	"\x05ERROR\x10\x042\xc0\x03\n" +
+	"\vRoomService\x12W\n" +
+	"\n" +
+	"CreateRoom\x12\x1a.room.v1.CreateRoomRequest\x1a\r.room.v1.Room\"\x1e\x82\xd3\xe4\x93\x02\x18:\x04room\"\x10/v1/rooms/create\x12N\n" +
+	"\aGetRoom\x12\x17.room.v1.GetRoomRequest\x1a\r.room.v1.Room\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/v1/rooms/{room_id}\x12P\n" +
+	"\tListRooms\x12\x19.room.v1.ListRoomsRequest\x1a\x10.room.v1.RoomSet\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/rooms/list\x12W\n" +
+	"\n" +
+	"UpdateRoom\x12\x1a.room.v1.UpdateRoomRequest\x1a\r.room.v1.Room\"\x1e\x82\xd3\xe4\x93\x02\x18:\x04room\x1a\x10/v1/rooms/update\x12]\n" +
+	"\n" +
+	"DeleteRoom\x12\x1a.room.v1.DeleteRoomRequest\x1a\x16.google.protobuf.Empty\"\x1b\x82\xd3\xe4\x93\x02\x15*\x13/v1/rooms/{room_id}B\x16Z\x14suika/api/room/v1;v1b\x06proto3"
 
 var (
 	file_room_v1_room_proto_rawDescOnce sync.Once
@@ -384,27 +700,46 @@ func file_room_v1_room_proto_rawDescGZIP() []byte {
 }
 
 var file_room_v1_room_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_room_v1_room_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_room_v1_room_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_room_v1_room_proto_goTypes = []any{
 	(LiveStatus)(0),               // 0: room.v1.LiveStatus
 	(RecordStatus)(0),             // 1: room.v1.RecordStatus
-	(*RoomStatus)(nil),            // 2: room.v1.RoomStatus
-	(*ListRoomsRequest)(nil),      // 3: room.v1.ListRoomsRequest
-	(*ListRoomsResponse)(nil),     // 4: room.v1.ListRoomsResponse
-	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
+	(*Room)(nil),                  // 2: room.v1.Room
+	(*RoomSet)(nil),               // 3: room.v1.RoomSet
+	(*CreateRoomRequest)(nil),     // 4: room.v1.CreateRoomRequest
+	(*GetRoomRequest)(nil),        // 5: room.v1.GetRoomRequest
+	(*ListRoomsRequest)(nil),      // 6: room.v1.ListRoomsRequest
+	(*UpdateRoomRequest)(nil),     // 7: room.v1.UpdateRoomRequest
+	(*DeleteRoomRequest)(nil),     // 8: room.v1.DeleteRoomRequest
+	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
+	(*fieldmaskpb.FieldMask)(nil), // 10: google.protobuf.FieldMask
+	(*emptypb.Empty)(nil),         // 11: google.protobuf.Empty
 }
 var file_room_v1_room_proto_depIdxs = []int32{
-	0, // 0: room.v1.RoomStatus.live_status:type_name -> room.v1.LiveStatus
-	1, // 1: room.v1.RoomStatus.record_status:type_name -> room.v1.RecordStatus
-	5, // 2: room.v1.RoomStatus.session_started_at:type_name -> google.protobuf.Timestamp
-	2, // 3: room.v1.ListRoomsResponse.rooms:type_name -> room.v1.RoomStatus
-	3, // 4: room.v1.RoomService.ListRooms:input_type -> room.v1.ListRoomsRequest
-	4, // 5: room.v1.RoomService.ListRooms:output_type -> room.v1.ListRoomsResponse
-	5, // [5:6] is the sub-list for method output_type
-	4, // [4:5] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	0,  // 0: room.v1.Room.live_status:type_name -> room.v1.LiveStatus
+	1,  // 1: room.v1.Room.record_status:type_name -> room.v1.RecordStatus
+	9,  // 2: room.v1.Room.session_started_at:type_name -> google.protobuf.Timestamp
+	9,  // 3: room.v1.Room.create_time:type_name -> google.protobuf.Timestamp
+	9,  // 4: room.v1.Room.update_time:type_name -> google.protobuf.Timestamp
+	2,  // 5: room.v1.RoomSet.rooms:type_name -> room.v1.Room
+	2,  // 6: room.v1.CreateRoomRequest.room:type_name -> room.v1.Room
+	2,  // 7: room.v1.UpdateRoomRequest.room:type_name -> room.v1.Room
+	10, // 8: room.v1.UpdateRoomRequest.update_mask:type_name -> google.protobuf.FieldMask
+	4,  // 9: room.v1.RoomService.CreateRoom:input_type -> room.v1.CreateRoomRequest
+	5,  // 10: room.v1.RoomService.GetRoom:input_type -> room.v1.GetRoomRequest
+	6,  // 11: room.v1.RoomService.ListRooms:input_type -> room.v1.ListRoomsRequest
+	7,  // 12: room.v1.RoomService.UpdateRoom:input_type -> room.v1.UpdateRoomRequest
+	8,  // 13: room.v1.RoomService.DeleteRoom:input_type -> room.v1.DeleteRoomRequest
+	2,  // 14: room.v1.RoomService.CreateRoom:output_type -> room.v1.Room
+	2,  // 15: room.v1.RoomService.GetRoom:output_type -> room.v1.Room
+	3,  // 16: room.v1.RoomService.ListRooms:output_type -> room.v1.RoomSet
+	2,  // 17: room.v1.RoomService.UpdateRoom:output_type -> room.v1.Room
+	11, // 18: room.v1.RoomService.DeleteRoom:output_type -> google.protobuf.Empty
+	14, // [14:19] is the sub-list for method output_type
+	9,  // [9:14] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_room_v1_room_proto_init() }
@@ -418,7 +753,7 @@ func file_room_v1_room_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_room_v1_room_proto_rawDesc), len(file_room_v1_room_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   3,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

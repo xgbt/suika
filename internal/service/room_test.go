@@ -123,19 +123,19 @@ func TestRoomServiceListRooms(t *testing.T) {
 	}
 }
 
-func TestConvertRoomStatus(t *testing.T) {
+func TestConvertRoomReply(t *testing.T) {
 	startedAt := time.Date(2026, 8, 11, 12, 30, 0, 0, time.UTC)
 	tests := []struct {
 		name string
 		in   *biz.RoomRuntime
-		want *v1.RoomStatus
+		want *v1.Room
 	}{
 		{
 			name: "unknown and idle with zero time",
 			in: &biz.RoomRuntime{
 				Room: biz.Room{RoomID: 1, Name: "room-one", Enabled: true},
 			},
-			want: &v1.RoomStatus{
+			want: &v1.Room{
 				RoomId:       1,
 				Name:         "room-one",
 				Enabled:      true,
@@ -149,7 +149,7 @@ func TestConvertRoomStatus(t *testing.T) {
 				Room: biz.Room{RoomID: 2, Name: "room-two"},
 				Live: biz.LivePreparing,
 			},
-			want: &v1.RoomStatus{
+			want: &v1.Room{
 				RoomId:       2,
 				Name:         "room-two",
 				LiveStatus:   v1.LiveStatus_PREPARING,
@@ -166,7 +166,7 @@ func TestConvertRoomStatus(t *testing.T) {
 				BytesWritten:     123456789,
 				SessionStartedAt: startedAt,
 			},
-			want: &v1.RoomStatus{
+			want: &v1.Room{
 				RoomId:           3,
 				Name:             "room-three",
 				Enabled:          true,
@@ -183,7 +183,7 @@ func TestConvertRoomStatus(t *testing.T) {
 				Room:   biz.Room{RoomID: 4, Name: "room-four"},
 				Record: biz.RecordRemuxing,
 			},
-			want: &v1.RoomStatus{
+			want: &v1.Room{
 				RoomId:       4,
 				Name:         "room-four",
 				LiveStatus:   v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
@@ -198,7 +198,7 @@ func TestConvertRoomStatus(t *testing.T) {
 				Record:    biz.RecordError,
 				LastError: "prepare session failed: disk full",
 			},
-			want: &v1.RoomStatus{
+			want: &v1.Room{
 				RoomId:       5,
 				Name:         "room-five",
 				Enabled:      true,
@@ -210,14 +210,14 @@ func TestConvertRoomStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := convertRoomStatus(tt.in)
+			got := convertRoomReply(tt.in)
 			if !proto.Equal(got, tt.want) {
-				t.Fatalf("convertRoomStatus() = %+v, want %+v", got, tt.want)
+				t.Fatalf("convertRoomReply() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
 
-	if got := convertRoomStatus(nil); got != nil {
-		t.Fatalf("convertRoomStatus(nil) = %+v, want nil", got)
+	if got := convertRoomReply(nil); got != nil {
+		t.Fatalf("convertRoomReply(nil) = %+v, want nil", got)
 	}
 }

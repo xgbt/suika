@@ -22,21 +22,21 @@ func NewRoomService(uc *biz.RoomUsecase) *RoomService {
 }
 
 // ListRooms returns the live/record status of every configured room.
-func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (*v1.ListRoomsResponse, error) {
+func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (*v1.RoomSet, error) {
 	rts, err := s.uc.ListRooms(ctx)
 	if err != nil {
 		return nil, err
 	}
-	reply := &v1.ListRoomsResponse{
-		Rooms: make([]*v1.RoomStatus, 0, len(rts)),
+	reply := &v1.RoomSet{
+		Rooms: make([]*v1.Room, 0, len(rts)),
 	}
 	for _, rt := range rts {
-		reply.Rooms = append(reply.Rooms, convertRoomStatus(rt))
+		reply.Rooms = append(reply.Rooms, convertRoomReply(rt))
 	}
 	return reply, nil
 }
 
-func convertRoomStatus(rt *biz.RoomRuntime) *v1.RoomStatus {
+func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 	if rt == nil {
 		return nil
 	}
@@ -60,7 +60,7 @@ func convertRoomStatus(rt *biz.RoomRuntime) *v1.RoomStatus {
 	default:
 		recordStatus = v1.RecordStatus_IDLE
 	}
-	status := &v1.RoomStatus{
+	room := &v1.Room{
 		RoomId:       rt.Room.RoomID,
 		Name:         rt.Room.Name,
 		Enabled:      rt.Room.Enabled,
@@ -71,7 +71,7 @@ func convertRoomStatus(rt *biz.RoomRuntime) *v1.RoomStatus {
 		LastError:    rt.LastError,
 	}
 	if !rt.SessionStartedAt.IsZero() {
-		status.SessionStartedAt = timestamppb.New(rt.SessionStartedAt)
+		room.SessionStartedAt = timestamppb.New(rt.SessionStartedAt)
 	}
-	return status
+	return room
 }
