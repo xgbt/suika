@@ -52,7 +52,7 @@ const RECORD_STATUS_MAP: Record<RecordStatus, React.ReactNode> = {
 type ModalMode = 'create' | 'edit';
 
 export default function RoomList() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
 
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(false);
@@ -203,13 +203,21 @@ export default function RoomList() {
         <Switch
           size="small"
           checked={v}
-          onChange={async (checked) => {
-            try {
-              await roomsApi.update({ room_id: record.room_id, enabled: checked }, ['enabled']);
-              loadPage(pageTokenStack[currentPage] ?? '');
-            } catch (e: unknown) {
-              message.error((e as Error).message ?? '更新失败');
-            }
+          onChange={(checked) => {
+            modal.confirm({
+              title: checked ? `启用房间 ${record.room_id}？` : `禁用房间 ${record.room_id}？`,
+              okText: checked ? '启用' : '禁用',
+              cancelText: '取消',
+              okButtonProps: checked ? {} : { danger: true },
+              onOk: async () => {
+                try {
+                  await roomsApi.update({ room_id: record.room_id, enabled: checked }, ['enabled']);
+                  loadPage(pageTokenStack[currentPage] ?? '');
+                } catch (e: unknown) {
+                  message.error((e as Error).message ?? '更新失败');
+                }
+              },
+            });
           }}
         />
       ),
