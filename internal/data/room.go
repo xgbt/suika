@@ -75,34 +75,35 @@ func (r *roomRepo) FindByRoomID(ctx context.Context, roomID int64) (*biz.Room, e
 }
 
 func (r *roomRepo) ListRooms(ctx context.Context, queryOpt biz.ListQuery) ([]*biz.Room, error) {
-	query := queryOpt
-	if query.Limit <= 0 {
-		query.Limit = 20
+
+	if queryOpt.Limit <= 0 {
+		queryOpt.Limit = 20
 	}
-	if query.Offset < 0 || query.Limit <= 0 {
+	if queryOpt.Offset < 0 {
 		return nil, biz.ErrRoomInvalidArgument
 	}
 
-	dbQuery := r.data.db.WithContext(ctx).Model(&roomPO{})
-	if query.RoomID != nil {
-		dbQuery = dbQuery.Where("room_id = ?", *query.RoomID)
+	query := r.data.db.WithContext(ctx).Model(&roomPO{})
+	if queryOpt.RoomID != nil {
+		query = query.Where("room_id = ?", *queryOpt.RoomID)
 	}
-	if query.Name != nil {
-		dbQuery = dbQuery.Where("name = ?", *query.Name)
+	if queryOpt.Name != nil {
+		query = query.Where("name = ?", *queryOpt.Name)
 	}
-	if query.Enabled != nil {
-		dbQuery = dbQuery.Where("enabled = ?", *query.Enabled)
+	if queryOpt.Enabled != nil {
+		query = query.Where("enabled = ?", *queryOpt.Enabled)
 	}
-	dbQuery = dbQuery.Order("room_id ASC")
+	query = query.Order("room_id ASC")
 
 	var pos []roomPO
-	if err := dbQuery.Offset(query.Offset).Limit(query.Limit).Find(&pos).Error; err != nil {
+	if err := query.Offset(queryOpt.Offset).Limit(queryOpt.Limit).Find(&pos).Error; err != nil {
 		return nil, err
 	}
 	rooms := make([]*biz.Room, 0, len(pos))
 	for i := range pos {
 		rooms = append(rooms, toBiz(&pos[i]))
 	}
+
 	return rooms, nil
 }
 
