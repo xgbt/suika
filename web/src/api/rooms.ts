@@ -1,22 +1,27 @@
 // Room API types matching room.proto
 
-export enum LiveStatus {
-  LIVE_STATUS_UNSPECIFIED = 0,
-  LIVE_STATUS_PREPARING = 1,
-  LIVE_STATUS_LIVE = 2,
-}
+export const LiveStatus = {
+  LIVE_STATUS_UNSPECIFIED: 0,
+  LIVE_STATUS_PREPARING: 1,
+  LIVE_STATUS_LIVE: 2,
+} as const;
 
-export enum RecordStatus {
-  RECORD_STATUS_UNSPECIFIED = 0,
-  RECORD_STATUS_IDLE = 1,
-  RECORD_STATUS_RECORDING = 2,
-  RECORD_STATUS_REMUXING = 3,
-  RECORD_STATUS_ERROR = 4,
-}
+export type LiveStatus = (typeof LiveStatus)[keyof typeof LiveStatus];
+
+export const RecordStatus = {
+  RECORD_STATUS_UNSPECIFIED: 0,
+  RECORD_STATUS_IDLE: 1,
+  RECORD_STATUS_RECORDING: 2,
+  RECORD_STATUS_REMUXING: 3,
+  RECORD_STATUS_ERROR: 4,
+} as const;
+
+export type RecordStatus = (typeof RecordStatus)[keyof typeof RecordStatus];
 
 export interface Room {
   room_id: number;
-  name: string;
+  streamer_name: string;
+  room_title: string;
   enabled: boolean;
   live_status: LiveStatus;
   record_status: RecordStatus;
@@ -45,7 +50,8 @@ export interface ListRoomsParams {
   page_size?: number;
   page_token?: string;
   room_id?: number;
-  name?: string;
+  streamer_name?: string;
+  room_title?: string;
   enabled?: boolean;
 }
 
@@ -63,12 +69,12 @@ export const roomsApi = {
     return request('/v1/rooms/get', { room_id });
   },
 
-  create(room: Pick<Room, 'room_id' | 'name' | 'enabled'>): Promise<{ room: Room }> {
+  create(room: Pick<Room, 'room_id' | 'streamer_name' | 'room_title' | 'enabled'>): Promise<{ room: Room }> {
     return request('/v1/rooms/create', { room });
   },
 
   update(
-    room: Pick<Room, 'room_id'> & Partial<Pick<Room, 'name' | 'enabled'>>,
+    room: Pick<Room, 'room_id'> & Partial<Pick<Room, 'streamer_name' | 'room_title' | 'enabled'>>,
     paths: string[],
   ): Promise<{ room: Room }> {
     return request('/v1/rooms/update', {

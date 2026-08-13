@@ -71,7 +71,7 @@ func (reg *RoomRegistry) Rooms() []Room {
 }
 
 // Room returns the current configuration snapshot of one room, including
-// any streamer-name backfill. Unknown room IDs fall back to a bare room.
+// any streamer metadata backfill. Unknown room IDs fall back to a bare room.
 func (reg *RoomRegistry) Room(roomID int64) Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -100,8 +100,8 @@ func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 }
 
 // ApplyRoomInfo records the platform-reported live state of a room and
-// backfills the room name from the streamer name when unset. A backfilled
-// name is written back through the room repo so restarts keep it.
+// backfills streamer metadata when unset. Backfilled values are written
+// back through the room repo so restarts keep them.
 func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *RoomInfo) {
 	if info == nil {
 		return
@@ -117,22 +117,36 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	} else {
 		st.live = LivePreparing
 	}
-	var backfilledName string
-	if st.room.Name == "" && info.StreamerName != "" {
-		backfilledName = info.StreamerName
+	var backfilledStreamerName string
+	var backfilledRoomTitle string
+	if st.room.StreamerName == "" && info.StreamerName != "" {
+		backfilledStreamerName = info.StreamerName
+	}
+	if st.room.RoomTitle == "" && info.Title != "" {
+		backfilledRoomTitle = info.Title
 	}
 	reg.mu.Unlock()
 
-	if backfilledName != "" && reg.repo != nil {
-		updated, err := reg.repo.BackfillRoomName(ctx, roomID, backfilledName)
+	if (backfilledStreamerName != "" || backfilledRoomTitle != "") && reg.repo != nil {
+		updated, err := reg.repo.BackfillRoomIdentity(ctx, roomID, backfilledStreamerName, backfilledRoomTitle)
 		if err != nil {
-			log.Warn("room registry: persist backfilled room name failed", "room", roomID, "err", err)
+			log.Warn("room registry: persist backfilled room metadata failed", "room", roomID, "err", err)
 			reg.mu.Lock()
-			if st, ok := reg.states[roomID]; ok && st.room.Name == "" {
-				st.room.Name = backfilledName
+			if st, ok := reg.states[roomID]; ok {
+				if st.room.StreamerName == "" && backfilledStreamerName != "" {
+					st.room.StreamerName = backfilledStreamerName
+				}
+				if st.room.RoomTitle == "" && backfilledRoomTitle != "" {
+					st.room.RoomTitle = backfilledRoomTitle
+				}
 				for i := range reg.rooms {
 					if reg.rooms[i].RoomID == roomID {
-						reg.rooms[i].Name = backfilledName
+						if reg.rooms[i].StreamerName == "" && backfilledStreamerName != "" {
+							reg.rooms[i].StreamerName = backfilledStreamerName
+						}
+						if reg.rooms[i].RoomTitle == "" && backfilledRoomTitle != "" {
+							reg.rooms[i].RoomTitle = backfilledRoomTitle
+						}
 						break
 					}
 				}
@@ -142,11 +156,21 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 		}
 		if updated {
 			reg.mu.Lock()
-			if st, ok := reg.states[roomID]; ok && st.room.Name == "" {
-				st.room.Name = backfilledName
+			if st, ok := reg.states[roomID]; ok {
+				if st.room.StreamerName == "" && backfilledStreamerName != "" {
+					st.room.StreamerName = backfilledStreamerName
+				}
+				if st.room.RoomTitle == "" && backfilledRoomTitle != "" {
+					st.room.RoomTitle = backfilledRoomTitle
+				}
 				for i := range reg.rooms {
 					if reg.rooms[i].RoomID == roomID {
-						reg.rooms[i].Name = backfilledName
+						if reg.rooms[i].StreamerName == "" && backfilledStreamerName != "" {
+							reg.rooms[i].StreamerName = backfilledStreamerName
+						}
+						if reg.rooms[i].RoomTitle == "" && backfilledRoomTitle != "" {
+							reg.rooms[i].RoomTitle = backfilledRoomTitle
+						}
 						break
 					}
 				}

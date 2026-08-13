@@ -102,7 +102,7 @@ func newTestUsecase(t *testing.T, repo RecorderRepo, lc LiveClient, mutate func(
 			ReconnectDelay: durationpb.New(time.Millisecond),
 		},
 	}
-	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{42: {RoomID: 42, Name: "tester", Enabled: true}}}
+	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{42: {RoomID: 42, StreamerName: "tester", Enabled: true}}}
 	reg, err := NewRoomRegistry(roomRepo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
@@ -265,8 +265,8 @@ func TestNewRecorderUsecaseConfigOverrides(t *testing.T) {
 		},
 	}
 	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{
-		1: {RoomID: 1, Name: "a", Enabled: true},
-		2: {RoomID: 2, Name: "b"},
+		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		2: {RoomID: 2, StreamerName: "b"},
 	}}
 	reg, err := NewRoomRegistry(roomRepo)
 	if err != nil {

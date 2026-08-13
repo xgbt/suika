@@ -368,7 +368,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	room := uc.registry.Room(roomID)
 	session := &Session{
 		RoomID:        roomID,
-		RoomName:      firstNonEmpty(room.Name, info.StreamerName, fmt.Sprintf("%d", roomID)),
+		RoomName:      firstNonEmpty(room.StreamerName, info.StreamerName, fmt.Sprintf("%d", roomID)),
 		Title:         info.Title,
 		LiveStartTime: info.LiveStartTime,
 	}

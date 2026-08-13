@@ -142,7 +142,6 @@ func (RecordStatus) EnumDescriptor() ([]byte, []int) {
 type Room struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	RoomId           int64                  `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
-	Name             string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Enabled          bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	LiveStatus       LiveStatus             `protobuf:"varint,4,opt,name=live_status,json=liveStatus,proto3,enum=room.v1.LiveStatus" json:"live_status,omitempty"`
 	RecordStatus     RecordStatus           `protobuf:"varint,5,opt,name=record_status,json=recordStatus,proto3,enum=room.v1.RecordStatus" json:"record_status,omitempty"`
@@ -152,6 +151,8 @@ type Room struct {
 	LastError        string                 `protobuf:"bytes,9,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	CreateTime       *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
 	UpdateTime       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	StreamerName     string                 `protobuf:"bytes,12,opt,name=streamer_name,json=streamerName,proto3" json:"streamer_name,omitempty"`
+	RoomTitle        string                 `protobuf:"bytes,13,opt,name=room_title,json=roomTitle,proto3" json:"room_title,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -191,13 +192,6 @@ func (x *Room) GetRoomId() int64 {
 		return x.RoomId
 	}
 	return 0
-}
-
-func (x *Room) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
 }
 
 func (x *Room) GetEnabled() bool {
@@ -261,6 +255,20 @@ func (x *Room) GetUpdateTime() *timestamppb.Timestamp {
 		return x.UpdateTime
 	}
 	return nil
+}
+
+func (x *Room) GetStreamerName() string {
+	if x != nil {
+		return x.StreamerName
+	}
+	return ""
+}
+
+func (x *Room) GetRoomTitle() string {
+	if x != nil {
+		return x.RoomTitle
+	}
+	return ""
 }
 
 type CreateRoomRequest struct {
@@ -444,8 +452,9 @@ type ListRoomsRequest struct {
 	PageSize      int32                  `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	PageToken     string                 `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	RoomId        *int64                 `protobuf:"varint,3,opt,name=room_id,json=roomId,proto3,oneof" json:"room_id,omitempty"`
-	Name          *string                `protobuf:"bytes,4,opt,name=name,proto3,oneof" json:"name,omitempty"`
 	Enabled       *bool                  `protobuf:"varint,5,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
+	StreamerName  *string                `protobuf:"bytes,6,opt,name=streamer_name,json=streamerName,proto3,oneof" json:"streamer_name,omitempty"`
+	RoomTitle     *string                `protobuf:"bytes,7,opt,name=room_title,json=roomTitle,proto3,oneof" json:"room_title,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -501,18 +510,25 @@ func (x *ListRoomsRequest) GetRoomId() int64 {
 	return 0
 }
 
-func (x *ListRoomsRequest) GetName() string {
-	if x != nil && x.Name != nil {
-		return *x.Name
-	}
-	return ""
-}
-
 func (x *ListRoomsRequest) GetEnabled() bool {
 	if x != nil && x.Enabled != nil {
 		return *x.Enabled
 	}
 	return false
+}
+
+func (x *ListRoomsRequest) GetStreamerName() string {
+	if x != nil && x.StreamerName != nil {
+		return *x.StreamerName
+	}
+	return ""
+}
+
+func (x *ListRoomsRequest) GetRoomTitle() string {
+	if x != nil && x.RoomTitle != nil {
+		return *x.RoomTitle
+	}
+	return ""
 }
 
 type ListRoomsResponse struct {
@@ -755,10 +771,9 @@ var File_room_v1_room_proto protoreflect.FileDescriptor
 
 const file_room_v1_room_proto_rawDesc = "" +
 	"\n" +
-	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x92\x04\n" +
+	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc2\x04\n" +
 	"\x04Room\x12\x17\n" +
-	"\aroom_id\x18\x01 \x01(\x03R\x06roomId\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\aroom_id\x18\x01 \x01(\x03R\x06roomId\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x129\n" +
 	"\vlive_status\x18\x04 \x01(\x0e2\x13.room.v1.LiveStatusB\x03\xe0A\x03R\n" +
 	"liveStatus\x12?\n" +
@@ -772,7 +787,10 @@ const file_room_v1_room_proto_rawDesc = "" +
 	" \x01(\v2\x1a.google.protobuf.TimestampB\x03\xe0A\x03R\n" +
 	"createTime\x12@\n" +
 	"\vupdate_time\x18\v \x01(\v2\x1a.google.protobuf.TimestampB\x03\xe0A\x03R\n" +
-	"updateTime\";\n" +
+	"updateTime\x12#\n" +
+	"\rstreamer_name\x18\f \x01(\tR\fstreamerName\x12\x1d\n" +
+	"\n" +
+	"room_title\x18\r \x01(\tR\troomTitle\";\n" +
 	"\x11CreateRoomRequest\x12&\n" +
 	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomB\x03\xe0A\x02R\x04room\"7\n" +
 	"\x12CreateRoomResponse\x12!\n" +
@@ -780,19 +798,22 @@ const file_room_v1_room_proto_rawDesc = "" +
 	"\x0eGetRoomRequest\x12\x1c\n" +
 	"\aroom_id\x18\x01 \x01(\x03B\x03\xe0A\x02R\x06roomId\"4\n" +
 	"\x0fGetRoomResponse\x12!\n" +
-	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomR\x04room\"\xc5\x01\n" +
+	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomR\x04room\"\x92\x02\n" +
 	"\x10ListRoomsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tR\tpageToken\x12\x1c\n" +
-	"\aroom_id\x18\x03 \x01(\x03H\x00R\x06roomId\x88\x01\x01\x12\x17\n" +
-	"\x04name\x18\x04 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x1d\n" +
-	"\aenabled\x18\x05 \x01(\bH\x02R\aenabled\x88\x01\x01B\n" +
+	"\aroom_id\x18\x03 \x01(\x03H\x00R\x06roomId\x88\x01\x01\x12\x1d\n" +
+	"\aenabled\x18\x05 \x01(\bH\x01R\aenabled\x88\x01\x01\x12(\n" +
+	"\rstreamer_name\x18\x06 \x01(\tH\x02R\fstreamerName\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"\b_room_idB\a\n" +
-	"\x05_nameB\n" +
+	"room_title\x18\a \x01(\tH\x03R\troomTitle\x88\x01\x01B\n" +
 	"\n" +
-	"\b_enabled\"`\n" +
+	"\b_room_idB\n" +
+	"\n" +
+	"\b_enabledB\x10\n" +
+	"\x0e_streamer_nameB\r\n" +
+	"\v_room_title\"`\n" +
 	"\x11ListRoomsResponse\x12#\n" +
 	"\x05rooms\x18\x01 \x03(\v2\r.room.v1.RoomR\x05rooms\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"}\n" +

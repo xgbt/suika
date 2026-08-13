@@ -19,8 +19,9 @@ const (
 // updatableRoomFields are the only field paths accepted by UpdateRoom;
 // room_id is immutable and the runtime fields are server-populated.
 var updatableRoomFields = map[string]bool{
-	"name":    true,
-	"enabled": true,
+	"streamer_name": true,
+	"room_title":    true,
+	"enabled":       true,
 }
 
 type RoomService struct {
@@ -68,9 +69,13 @@ func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (
 		roomID := req.GetRoomId()
 		query.RoomID = &roomID
 	}
-	if req.Name != nil {
-		name := req.GetName()
-		query.Name = &name
+	if req.StreamerName != nil {
+		streamerName := req.GetStreamerName()
+		query.StreamerName = &streamerName
+	}
+	if req.RoomTitle != nil {
+		roomTitle := req.GetRoomTitle()
+		query.RoomTitle = &roomTitle
 	}
 	if req.Enabled != nil {
 		enabled := req.GetEnabled()
@@ -129,9 +134,10 @@ func convertRoom(in *v1.Room) *biz.Room {
 		return nil
 	}
 	return &biz.Room{
-		RoomID:  in.GetRoomId(),
-		Name:    in.GetName(),
-		Enabled: in.GetEnabled(),
+		RoomID:       in.GetRoomId(),
+		StreamerName: in.GetStreamerName(),
+		RoomTitle:    in.GetRoomTitle(),
+		Enabled:      in.GetEnabled(),
 	}
 }
 
@@ -164,7 +170,8 @@ func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 
 	room := &v1.Room{
 		RoomId:       rt.Room.RoomID,
-		Name:         rt.Room.Name,
+		StreamerName: rt.Room.StreamerName,
+		RoomTitle:    rt.Room.RoomTitle,
 		Enabled:      rt.Room.Enabled,
 		LiveStatus:   liveStatus,
 		RecordStatus: recordStatus,

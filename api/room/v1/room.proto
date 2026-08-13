@@ -76,7 +76,6 @@ enum RecordStatus {
 
 message Room {
   int64 room_id = 1;
-  string name = 2;
   bool enabled = 3;
   LiveStatus live_status = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
   RecordStatus record_status = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
@@ -86,6 +85,8 @@ message Room {
   string last_error = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp create_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string streamer_name = 12;
+  string room_title = 13;
 }
 
 message CreateRoomRequest {
@@ -108,8 +109,9 @@ message ListRoomsRequest {
   int32 page_size = 1;
   string page_token = 2;
   optional int64 room_id = 3;
-  optional string name = 4;
   optional bool enabled = 5;
+  optional string streamer_name = 6;
+  optional string room_title = 7;
 }
 
 message ListRoomsResponse {

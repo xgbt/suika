@@ -34,11 +34,12 @@ const (
 
 // Room DO
 type Room struct {
-	RoomID     int64
-	Name       string
-	Enabled    bool
-	CreateTime time.Time
-	UpdateTime time.Time
+	RoomID       int64
+	StreamerName string
+	RoomTitle    string
+	Enabled      bool
+	CreateTime   time.Time
+	UpdateTime   time.Time
 }
 
 // RoomRuntime is the status-API view of one room: persisted fields, live
@@ -59,16 +60,17 @@ type RoomRepo interface {
 	ListRooms(context.Context, ListQuery) ([]*Room, error)
 	CreateRoom(context.Context, *Room) (*Room, error)
 	UpdateRoom(context.Context, *Room) (*Room, error)
-	BackfillRoomName(context.Context, int64, string) (bool, error)
+	BackfillRoomIdentity(context.Context, int64, string, string) (bool, error)
 	DeleteRoom(context.Context, int64) error
 }
 
 type ListQuery struct {
-	RoomID  *int64
-	Name    *string
-	Enabled *bool
-	Offset  int
-	Limit   int
+	RoomID       *int64
+	StreamerName *string
+	RoomTitle    *string
+	Enabled      *bool
+	Offset       int
+	Limit        int
 }
 
 // SessionStatsRepo is the narrow stats seam consumed by the room API: it

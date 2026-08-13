@@ -142,10 +142,12 @@ components:
                     type: string
                 roomId:
                     type: string
-                name:
-                    type: string
                 enabled:
                     type: boolean
+                streamerName:
+                    type: string
+                roomTitle:
+                    type: string
         room.v1.ListRoomsResponse:
             type: object
             properties:
@@ -159,8 +161,6 @@ components:
             type: object
             properties:
                 roomId:
-                    type: string
-                name:
                     type: string
                 enabled:
                     type: boolean
@@ -193,6 +193,10 @@ components:
                     readOnly: true
                     type: string
                     format: date-time
+                streamerName:
+                    type: string
+                roomTitle:
+                    type: string
         room.v1.UpdateRoomRequest:
             required:
                 - room

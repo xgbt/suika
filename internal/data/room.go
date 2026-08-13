@@ -12,11 +12,12 @@ import (
 )
 
 type roomPO struct {
-	RoomID     int64 `gorm:"primaryKey"`
-	Name       string
-	Enabled    bool
-	CreateTime time.Time `gorm:"autoCreateTime"`
-	UpdateTime time.Time `gorm:"autoUpdateTime"`
+	RoomID       int64 `gorm:"primaryKey"`
+	StreamerName string
+	RoomTitle    string
+	Enabled      bool
+	CreateTime   time.Time `gorm:"autoCreateTime"`
+	UpdateTime   time.Time `gorm:"autoUpdateTime"`
 }
 
 func (roomPO) TableName() string { return "rooms" }
@@ -26,11 +27,12 @@ func toRoomPO(room *biz.Room) *roomPO {
 		return nil
 	}
 	return &roomPO{
-		RoomID:     room.RoomID,
-		Name:       room.Name,
-		Enabled:    room.Enabled,
-		CreateTime: room.CreateTime,
-		UpdateTime: room.UpdateTime,
+		RoomID:       room.RoomID,
+		StreamerName: room.StreamerName,
+		RoomTitle:    room.RoomTitle,
+		Enabled:      room.Enabled,
+		CreateTime:   room.CreateTime,
+		UpdateTime:   room.UpdateTime,
 	}
 }
 
@@ -39,11 +41,12 @@ func toRoomDO(po *roomPO) *biz.Room {
 		return nil
 	}
 	return &biz.Room{
-		RoomID:     po.RoomID,
-		Name:       po.Name,
-		Enabled:    po.Enabled,
-		CreateTime: po.CreateTime,
-		UpdateTime: po.UpdateTime,
+		RoomID:       po.RoomID,
+		StreamerName: po.StreamerName,
+		RoomTitle:    po.RoomTitle,
+		Enabled:      po.Enabled,
+		CreateTime:   po.CreateTime,
+		UpdateTime:   po.UpdateTime,
 	}
 }
 
@@ -79,8 +82,11 @@ func (r *roomRepo) ListRooms(ctx context.Context, queryOpt biz.ListQuery) ([]*bi
 	if queryOpt.RoomID != nil {
 		query = query.Where("room_id = ?", *queryOpt.RoomID)
 	}
-	if queryOpt.Name != nil {
-		query = query.Where("name = ?", *queryOpt.Name)
+	if queryOpt.StreamerName != nil {
+		query = query.Where("streamer_name = ?", *queryOpt.StreamerName)
+	}
+	if queryOpt.RoomTitle != nil {
+		query = query.Where("room_title = ?", *queryOpt.RoomTitle)
 	}
 	if queryOpt.Enabled != nil {
 		query = query.Where("enabled = ?", *queryOpt.Enabled)
@@ -116,8 +122,9 @@ func (r *roomRepo) UpdateRoom(ctx context.Context, room *biz.Room) (*biz.Room, e
 	result := r.data.db.WithContext(ctx).Model(&roomPO{}).
 		Where("room_id = ?", po.RoomID).
 		Updates(map[string]any{
-			"name":    po.Name,
-			"enabled": po.Enabled,
+			"streamer_name": po.StreamerName,
+			"room_title":    po.RoomTitle,
+			"enabled":       po.Enabled,
 		})
 	if result.Error != nil {
 		return nil, result.Error
@@ -129,10 +136,20 @@ func (r *roomRepo) UpdateRoom(ctx context.Context, room *biz.Room) (*biz.Room, e
 	return r.FindByRoomID(ctx, room.RoomID)
 }
 
-func (r *roomRepo) BackfillRoomName(ctx context.Context, roomID int64, name string) (bool, error) {
+func (r *roomRepo) BackfillRoomIdentity(ctx context.Context, roomID int64, streamerName string, roomTitle string) (bool, error) {
+	if streamerName == "" && roomTitle == "" {
+		return false, nil
+	}
+	updates := map[string]any{}
+	if streamerName != "" {
+		updates["streamer_name"] = gorm.Expr("CASE WHEN streamer_name = '' THEN ? ELSE streamer_name END", streamerName)
+	}
+	if roomTitle != "" {
+		updates["room_title"] = gorm.Expr("CASE WHEN room_title = '' THEN ? ELSE room_title END", roomTitle)
+	}
 	result := r.data.db.WithContext(ctx).Model(&roomPO{}).
-		Where("room_id = ? AND name = ''", roomID).
-		Update("name", name)
+		Where("room_id = ?", roomID).
+		Updates(updates)
 	if result.Error != nil {
 		return false, result.Error
 	}

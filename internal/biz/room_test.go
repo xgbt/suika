@@ -38,9 +38,10 @@ type fakeRoomRepo struct {
 }
 
 type backfillCall struct {
-	roomID  int64
-	name    string
-	updated bool
+	roomID       int64
+	streamerName string
+	roomTitle    string
+	updated      bool
 }
 
 func (r *fakeRoomRepo) FindByRoomID(_ context.Context, roomID int64) (*Room, error) {
@@ -84,17 +85,23 @@ func (r *fakeRoomRepo) UpdateRoom(_ context.Context, room *Room) (*Room, error) 
 	return room, nil
 }
 
-func (r *fakeRoomRepo) BackfillRoomName(_ context.Context, roomID int64, name string) (bool, error) {
+func (r *fakeRoomRepo) BackfillRoomIdentity(_ context.Context, roomID int64, streamerName string, roomTitle string) (bool, error) {
 	if r.backfillErr != nil {
-		r.backfills = append(r.backfills, backfillCall{roomID: roomID, name: name, updated: false})
+		r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: false})
 		return false, r.backfillErr
 	}
 	updated := false
-	if room, ok := r.rooms[roomID]; ok && room.Name == "" {
-		room.Name = name
-		updated = true
+	if room, ok := r.rooms[roomID]; ok {
+		if room.StreamerName == "" && streamerName != "" {
+			room.StreamerName = streamerName
+			updated = true
+		}
+		if room.RoomTitle == "" && roomTitle != "" {
+			room.RoomTitle = roomTitle
+			updated = true
+		}
 	}
-	r.backfills = append(r.backfills, backfillCall{roomID: roomID, name: name, updated: updated})
+	r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: updated})
 	return updated, nil
 }
 
@@ -108,8 +115,8 @@ func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
 
 func TestNewRoomRegistryLoadsRooms(t *testing.T) {
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{
-		2: {RoomID: 2, Name: "b"},
-		1: {RoomID: 1, Name: "a", Enabled: true},
+		2: {RoomID: 2, StreamerName: "b"},
+		1: {RoomID: 1, StreamerName: "a", Enabled: true},
 	}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
@@ -119,10 +126,10 @@ func TestNewRoomRegistryLoadsRooms(t *testing.T) {
 	if len(rooms) != 2 {
 		t.Fatalf("rooms = %d, want 2", len(rooms))
 	}
-	if rooms[0].RoomID != 1 || rooms[0].Name != "a" || !rooms[0].Enabled {
+	if rooms[0].RoomID != 1 || rooms[0].StreamerName != "a" || !rooms[0].Enabled {
 		t.Fatalf("room[0] = %+v", rooms[0])
 	}
-	if rooms[1].RoomID != 2 || rooms[1].Name != "b" || rooms[1].Enabled {
+	if rooms[1].RoomID != 2 || rooms[1].StreamerName != "b" || rooms[1].Enabled {
 		t.Fatalf("room[1] = %+v", rooms[1])
 	}
 }
@@ -144,24 +151,27 @@ func TestNewRoomRegistryLoadError(t *testing.T) {
 	}
 }
 
-func TestApplyRoomInfoBackfillsNameThroughRepo(t *testing.T) {
+func TestApplyRoomInfoBackfillsIdentityThroughRepo(t *testing.T) {
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Enabled: true}}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 
-	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer"})
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
 
-	if got := reg.Room(1).Name; got != "streamer" {
-		t.Fatalf("backfilled name = %q, want streamer", got)
+	if got := reg.Room(1).StreamerName; got != "streamer" {
+		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
 	}
-	if len(repo.backfills) != 1 || !repo.backfills[0].updated || repo.backfills[0].roomID != 1 || repo.backfills[0].name != "streamer" {
+	if got := reg.Room(1).RoomTitle; got != "title-a" {
+		t.Fatalf("backfilled room_title = %q, want title-a", got)
+	}
+	if len(repo.backfills) != 1 || !repo.backfills[0].updated || repo.backfills[0].roomID != 1 || repo.backfills[0].streamerName != "streamer" || repo.backfills[0].roomTitle != "title-a" {
 		t.Fatalf("repo backfills = %+v, want one successful backfill", repo.backfills)
 	}
 
-	// A second apply with the name already set must not write again.
-	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other"})
+	// A second apply with metadata already set must not write again.
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other", Title: "title-b"})
 	if len(repo.backfills) != 1 {
 		t.Fatalf("repo backfills = %d, want exactly 1", len(repo.backfills))
 	}
@@ -174,11 +184,14 @@ func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 
-	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer"})
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
 
 	// The in-memory backfill still lands when persistence fails.
-	if got := reg.Room(1).Name; got != "streamer" {
-		t.Fatalf("backfilled name = %q, want streamer", got)
+	if got := reg.Room(1).StreamerName; got != "streamer" {
+		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
+	}
+	if got := reg.Room(1).RoomTitle; got != "title-a" {
+		t.Fatalf("backfilled room_title = %q, want title-a", got)
 	}
 }
 
@@ -193,9 +206,9 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 		failures: map[int64]error{3: stderrors.New("stats unavailable")},
 	}
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{
-		1: {RoomID: 1, Name: "a", Enabled: true},
-		2: {RoomID: 2, Name: "b"},
-		3: {RoomID: 3, Name: "c", Enabled: true},
+		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		2: {RoomID: 2, StreamerName: "b"},
+		3: {RoomID: 3, StreamerName: "c", Enabled: true},
 	}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
@@ -272,9 +285,9 @@ func TestRoomUsecaseValidation(t *testing.T) {
 	if err := uc.DeleteRoom(ctx, -1); !stderrors.Is(err, ErrRoomInvalidArgument) {
 		t.Fatalf("DeleteRoom(negative id) error = %v, want invalid argument", err)
 	}
-	// An empty name is allowed: the platform API backfills it later.
+	// Empty streamer metadata is allowed: the platform API backfills it later.
 	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 7}); err != nil {
-		t.Fatalf("CreateRoom(empty name) error = %v, want success", err)
+		t.Fatalf("CreateRoom(empty metadata) error = %v, want success", err)
 	}
 }
 
@@ -283,7 +296,7 @@ func TestRoomUsecaseRepoErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
-	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Name: "a"}}}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, StreamerName: "a"}}}
 	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
 	ctx := context.Background()
 
@@ -293,7 +306,7 @@ func TestRoomUsecaseRepoErrors(t *testing.T) {
 	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 1}); !stderrors.Is(err, ErrRoomAlreadyExists) {
 		t.Fatalf("CreateRoom(duplicate) error = %v, want already exists", err)
 	}
-	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, Name: "x"}); !stderrors.Is(err, ErrRoomNotFound) {
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, StreamerName: "x"}); !stderrors.Is(err, ErrRoomNotFound) {
 		t.Fatalf("UpdateRoom(missing) error = %v, want not found", err)
 	}
 	if err := uc.DeleteRoom(ctx, 2); !stderrors.Is(err, ErrRoomNotFound) {

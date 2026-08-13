@@ -129,7 +129,11 @@ export default function RoomList() {
   function openEdit(room: Room) {
     setModalMode('edit');
     setEditingRoom(room);
-    form.setFieldsValue({ name: room.name, enabled: room.enabled });
+    form.setFieldsValue({
+      streamer_name: room.streamer_name,
+      room_title: room.room_title,
+      enabled: room.enabled,
+    });
     setModalOpen(true);
   }
 
@@ -140,13 +144,15 @@ export default function RoomList() {
       if (modalMode === 'create') {
         await roomsApi.create({
           room_id: values.room_id,
-          name: values.name,
+          streamer_name: values.streamer_name,
+          room_title: values.room_title,
           enabled: values.enabled ?? false,
         });
         message.success('添加成功');
       } else if (editingRoom) {
         const paths: string[] = [];
-        if (values.name !== editingRoom.name) paths.push('name');
+        if (values.streamer_name !== editingRoom.streamer_name) paths.push('streamer_name');
+        if (values.room_title !== editingRoom.room_title) paths.push('room_title');
         if (values.enabled !== editingRoom.enabled) paths.push('enabled');
         if (paths.length === 0) {
           message.info('没有改动');
@@ -154,7 +160,12 @@ export default function RoomList() {
           return;
         }
         await roomsApi.update(
-          { room_id: editingRoom.room_id, name: values.name, enabled: values.enabled },
+          {
+            room_id: editingRoom.room_id,
+            streamer_name: values.streamer_name,
+            room_title: values.room_title,
+            enabled: values.enabled,
+          },
           paths,
         );
         message.success('更新成功');
@@ -190,10 +201,16 @@ export default function RoomList() {
       ),
     },
     {
-      title: '名称',
-      dataIndex: 'name',
+      title: '主播',
+      dataIndex: 'streamer_name',
       ellipsis: true,
-      render: (name: string) => name || <Text type="secondary">—</Text>,
+      render: (streamerName: string) => streamerName || <Text type="secondary">—</Text>,
+    },
+    {
+      title: '房间标题',
+      dataIndex: 'room_title',
+      ellipsis: true,
+      render: (roomTitle: string) => roomTitle || <Text type="secondary">—</Text>,
     },
     {
       title: '启用',
@@ -339,7 +356,10 @@ export default function RoomList() {
               <InputNumber style={{ width: '100%' }} placeholder="Bilibili 直播间 ID" min={1} precision={0} />
             </Form.Item>
           )}
-          <Form.Item label="名称" name="name">
+          <Form.Item label="主播名称" name="streamer_name">
+            <Input placeholder="可选，留空则由平台自动填充" allowClear />
+          </Form.Item>
+          <Form.Item label="房间标题" name="room_title">
             <Input placeholder="可选，留空则由平台自动填充" allowClear />
           </Form.Item>
           <Form.Item label="启用录制" name="enabled" valuePropName="checked">
