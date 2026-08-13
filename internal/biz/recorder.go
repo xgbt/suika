@@ -319,7 +319,10 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 					active = uc.launchSession(ctx, roomID, info, conn.Events())
 				}
 			} else if active != nil {
-				ErrRoomInternal = errors.InternalServer(v1.ErrorReason_ERROR_REASON_INTERNAL.String(), "recorder internal error")
+				// Mirror the fallback-poll path: an offline control event
+				// ends the active session promptly instead of waiting for
+				// the stream to drop or the next poll.
+				active.cancel()
 			}
 		case <-poll.C:
 			info, err := uc.lc.RoomStatus(ctx, roomID)

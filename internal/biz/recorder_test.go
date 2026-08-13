@@ -295,3 +295,105 @@ func TestJitterDurationWithinBand(t *testing.T) {
 		}
 	}
 }
+
+// fakeDanmakuConn is a scripted DanmakuConn for watchRoom tests.
+type fakeDanmakuConn struct {
+	events  chan *DanmakuEvent
+	control chan *RoomInfo
+}
+
+func (c *fakeDanmakuConn) Events() <-chan *DanmakuEvent { return c.events }
+func (c *fakeDanmakuConn) Control() <-chan *RoomInfo    { return c.control }
+func (c *fakeDanmakuConn) Close() error                 { return nil }
+
+// watchClient is a LiveClient driven entirely through its danmaku conn;
+// status probes report offline so only control events steer the test.
+type watchClient struct{ conn DanmakuConn }
+
+func (c *watchClient) RoomStatus(_ context.Context, roomID int64) (*RoomInfo, error) {
+	return &RoomInfo{RoomID: roomID}, nil
+}
+
+func (c *watchClient) OpenStream(_ context.Context, roomID int64) (*StreamHandle, error) {
+	return &StreamHandle{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+}
+
+func (c *watchClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
+	return c.conn, nil
+}
+
+// pumpBlockRepo blocks RecordSession until its context is cancelled, like
+// a pump attached to a live stream that never drops on its own.
+type pumpBlockRepo struct {
+	finished []*Session
+}
+
+func (r *pumpBlockRepo) PrepareSession(context.Context, *Session) error { return nil }
+
+func (r *pumpBlockRepo) RecordSession(ctx context.Context, _ *Session, _ *StreamHandle, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (r *pumpBlockRepo) FinishSession(_ context.Context, session *Session) error {
+	r.finished = append(r.finished, session)
+	return nil
+}
+
+func (r *pumpBlockRepo) RecoverPending(context.Context) error { return nil }
+
+func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
+	repo := &pumpBlockRepo{}
+	conn := &fakeDanmakuConn{
+		events:  make(chan *DanmakuEvent),
+		control: make(chan *RoomInfo),
+	}
+	uc := newTestUsecase(t, repo, &watchClient{conn: conn}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		if err := uc.watchRoom(ctx, 42); err != nil {
+			t.Errorf("watchRoom: %v", err)
+		}
+	}()
+
+	// waitRecord polls the registry until room 42 reaches the wanted
+	// record state, or the deadline passes.
+	waitRecord := func(want RecordState) bool {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			var got RecordState
+			var ok bool
+			uc.reg.mu.Lock()
+			st, found := uc.reg.states[42]
+			if found {
+				got, ok = st.record, true
+			}
+			uc.reg.mu.Unlock()
+			if ok && got == want {
+				return true
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		return false
+	}
+
+	conn.control <- liveInfo(42, true)
+	if !waitRecord(RecordRecording) {
+		t.Fatal("session did not start recording after live control event")
+	}
+
+	conn.control <- liveInfo(42, false)
+	if !waitRecord(RecordIdle) {
+		t.Fatal("offline control event did not cancel the active session")
+	}
+	if len(repo.finished) != 1 {
+		t.Fatalf("finished sessions = %d, want 1", len(repo.finished))
+	}
+
+	cancel()
+	<-watchDone
+}
