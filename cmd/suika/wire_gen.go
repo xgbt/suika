@@ -42,8 +42,8 @@ func wireApp(confServer *conf.Server, confData *conf.Data, recorder *conf.Record
 	httpServer := server.NewHTTPServer(confServer, roomService)
 	liveClient := data.NewLiveClient(dataData)
 	recorderUsecase := biz.NewRecorderUsecase(recorder, roomRegistry, recorderRepo, liveClient)
-	recorderJob := server.NewRecorderJob(recorderUsecase)
-	app := newApp(logger, grpcServer, httpServer, recorderJob)
+	daemon := server.NewDaemon(recorderUsecase)
+	app := newApp(logger, grpcServer, httpServer, daemon)
 	return app, func() {
 		cleanup()
 	}, nil

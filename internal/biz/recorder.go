@@ -172,9 +172,9 @@ type ReconnectPolicy struct {
 // all platform IO and RecorderRepo performs all storage IO. Room
 // configuration and live/record state live in the shared RoomRegistry.
 type RecorderUsecase struct {
-	reg  *RoomRegistry
-	repo RecorderRepo
-	lc   LiveClient
+	registry   *RoomRegistry
+	repo       RecorderRepo
+	liveClient LiveClient
 
 	pollInterval  time.Duration
 	maxConcurrent int
@@ -196,9 +196,9 @@ type sessionHandle struct {
 // NewRecorderUsecase new a Recorder usecase.
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
 	uc := &RecorderUsecase{
-		reg:          reg,
+		registry:     reg,
 		repo:         repo,
-		lc:           lc,
+		liveClient:   lc,
 		pollInterval: defaultFallbackPollInterval,
 		rec: ReconnectPolicy{
 			AutoReconnect:      true,
@@ -237,18 +237,18 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 	return uc
 }
 
-// Run blocks until ctx is cancelled, monitoring every enabled room. It is
-// the recorder daemon's main loop (invoked by the recorderJob server).
 func (uc *RecorderUsecase) Run(ctx context.Context) error {
-	rooms := uc.reg.Rooms()
+	rooms := uc.registry.Rooms()
 	if len(rooms) == 0 {
 		log.Warn("recorder has no configured rooms, idling")
 		<-ctx.Done()
 		return nil
 	}
+
 	if err := uc.repo.RecoverPending(ctx); err != nil {
 		log.Error("recorder: recover pending remux", "err", err)
 	}
+
 	var wg sync.WaitGroup
 	for _, room := range rooms {
 		if !room.Enabled {
@@ -270,7 +270,7 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomID int64) {
 	for ctx.Err() == nil {
 		if err := uc.watchRoom(ctx, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
-			uc.reg.NoteError(roomID, err)
+			uc.registry.NoteError(roomID, err)
 		}
 		if sleepCtx(ctx, uc.redialDelay) != nil {
 			return
@@ -283,12 +283,15 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomID int64) {
 // drained (discarded) while no session is active; the active session's
 // RecordSession consumes them directly.
 func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
-	conn, err := uc.lc.DanmakuConn(ctx, roomID)
+
+	// 1. danmaku connection
+	conn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
 		return fmt.Errorf("open danmaku conn: %w", err)
 	}
 	defer conn.Close()
 
+	// 2. jittered fallback poller
 	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
 	defer poll.Stop()
 
@@ -313,7 +316,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 		case <-done:
 			active = nil
 		case info := <-conn.Control():
-			uc.reg.ApplyRoomInfo(ctx, roomID, info)
+			uc.registry.ApplyRoomInfo(ctx, roomID, info)
 			if info.Live {
 				if active == nil {
 					active = uc.launchSession(ctx, roomID, info, conn.Events())
@@ -325,12 +328,12 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 				active.cancel()
 			}
 		case <-poll.C:
-			info, err := uc.lc.RoomStatus(ctx, roomID)
+			info, err := uc.liveClient.RoomStatus(ctx, roomID)
 			if err != nil {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
-				uc.reg.NoteError(roomID, err)
+				uc.registry.NoteError(roomID, err)
 			} else {
-				uc.reg.ApplyRoomInfo(ctx, roomID, info)
+				uc.registry.ApplyRoomInfo(ctx, roomID, info)
 				if info.Live && active == nil {
 					active = uc.launchSession(ctx, roomID, info, conn.Events())
 				} else if !info.Live && active != nil {
@@ -362,18 +365,18 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	}
 	defer uc.releaseSlot()
 
-	room := uc.reg.Room(roomID)
+	room := uc.registry.Room(roomID)
 	session := &Session{
 		RoomID:        roomID,
 		RoomName:      firstNonEmpty(room.Name, info.StreamerName, fmt.Sprintf("%d", roomID)),
 		Title:         info.Title,
 		LiveStartTime: info.LiveStartTime,
 	}
-	uc.reg.StartRecording(roomID)
+	uc.registry.StartRecording(roomID)
 
 	if err := uc.repo.PrepareSession(ctx, session); err != nil {
 		log.Error("prepare session failed", "room", roomID, "err", err)
-		uc.reg.FailRecording(roomID, err)
+		uc.registry.FailRecording(roomID, err)
 		return
 	}
 
@@ -382,15 +385,15 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	// Finish detached from the (possibly cancelled) run context so the
 	// remux marking still lands during shutdown; leftovers are picked up
 	// by RecoverPending on the next start.
-	uc.reg.SetRemuxing(roomID)
+	uc.registry.SetRemuxing(roomID)
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishGracePeriod)
 	defer cancel()
 	if err := uc.repo.FinishSession(fctx, session); err != nil {
 		log.Error("finish session failed", "room", roomID, "err", err)
-		uc.reg.FailRecording(roomID, err)
+		uc.registry.FailRecording(roomID, err)
 		return
 	}
-	uc.reg.FinishRecording(roomID)
+	uc.registry.FinishRecording(roomID)
 }
 
 // recordLoop is the stream-drop decision tree: pump until the connection
@@ -401,10 +404,10 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 	cdnBudget := uc.rec.CDNTransientBudget
 	cdnAttempt := 0
 	for {
-		stream, err := uc.lc.OpenStream(ctx, roomID)
+		stream, err := uc.liveClient.OpenStream(ctx, roomID)
 		if err != nil {
 			log.Error("open stream failed", "room", roomID, "err", err)
-			uc.reg.NoteError(roomID, err)
+			uc.registry.NoteError(roomID, err)
 			return
 		}
 		session.Quality = stream.Quality
@@ -416,13 +419,13 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			return
 		}
 
-		info, err := uc.lc.RoomStatus(ctx, roomID)
+		info, err := uc.liveClient.RoomStatus(ctx, roomID)
 		if err != nil {
 			log.Error("probe live status failed, ending session", "room", roomID, "err", err)
-			uc.reg.NoteError(roomID, err)
+			uc.registry.NoteError(roomID, err)
 			return
 		}
-		uc.reg.ApplyRoomInfo(ctx, roomID, info)
+		uc.registry.ApplyRoomInfo(ctx, roomID, info)
 		if !info.Live {
 			return
 		}

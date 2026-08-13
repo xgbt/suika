@@ -347,8 +347,6 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 	return best.url, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
 }
 
-// DanmakuConn opens a resident danmaku websocket for the room. Reconnects
-// happen inside the returned conn; it never fails to construct.
 func (lc *liveClient) DanmakuConn(ctx context.Context, roomID int64) (biz.DanmakuConn, error) {
 	conn := &danmakuConn{
 		lc:             lc,

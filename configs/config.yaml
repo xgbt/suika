@@ -14,10 +14,6 @@ data:
     read_timeout: 0.2s
     write_timeout: 0.2s
 recorder:
-  # 监控的房间统一存在 sqlite(data.database.source)的 rooms 表里,
-  # 通过 Room CRUD API 管理,不再写在配置文件中。
-  # 真实 cookie 一律放 configs/credentials.yaml(已 gitignore),
-  # 参照 configs/credentials.example.yaml,切勿写在本文件里。
   cookie: ""
   record_root: ./recordings
   # 房间状态轮询兜底间隔(弹幕 WS 是主要的开播探测通道)。
