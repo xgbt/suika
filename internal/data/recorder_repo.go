@@ -184,6 +184,21 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// A session (re)start zeros the in-flight progress, mirroring how
+	// biz's StartRecording resets sessionStartedAt/lastError: without
+	// this, RecordSession's baseBytes resume logic would accumulate a
+	// room's new broadcast onto its previous session's byte total for
+	// as long as the process lives. Restart-resume is unaffected —
+	// stats are in-memory and already zero in a fresh process.
+	ps, ok := r.stats[session.RoomID]
+	if !ok {
+		ps = &pumpStats{}
+		r.stats[session.RoomID] = ps
+	}
+	ps.bytes.Store(0)
+	ps.file.Store("")
+
 	if meta, err := loadMeta(metaPath); err == nil {
 		// restart resume: same session directory, keep recorded segments.
 		meta.Status = metaStatusRecording

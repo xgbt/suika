@@ -453,6 +453,62 @@ func TestPrepareSessionResumeUpdatesTitleVariants(t *testing.T) {
 	}
 }
 
+func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
+	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40}
+	var wantBytes int64
+	for _, tag := range tags {
+		wantBytes += int64(len(tag.AppendTo(nil)))
+	}
+	pump := func(session *biz.Session) {
+		t.Helper()
+		stream := &biz.StreamHandle{
+			Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+			Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+		}
+		if _, err := repo.RecordSession(ctx, session, stream, nil); err != nil {
+			t.Fatalf("RecordSession: %v", err)
+		}
+	}
+
+	first := testSession()
+	if err := repo.PrepareSession(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	pump(first)
+	stats, err := repo.SessionStats(ctx, first.RoomID)
+	if err != nil || stats == nil || stats.BytesWritten != wantBytes {
+		t.Fatalf("stats after first session = %+v, %v; want %d bytes", stats, err, wantBytes)
+	}
+
+	// Same room, next broadcast: PrepareSession must zero the in-flight
+	// progress so bytes_written does not accumulate across sessions.
+	second := testSession()
+	second.LiveStartTime = first.LiveStartTime.Add(2 * time.Hour)
+	if err := repo.PrepareSession(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = repo.SessionStats(ctx, second.RoomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats == nil || stats.BytesWritten != 0 || stats.CurrentFile != "" {
+		t.Fatalf("stats at second session start = %+v, want zeroed", stats)
+	}
+	pump(second)
+	stats, err = repo.SessionStats(ctx, second.RoomID)
+	if err != nil || stats == nil || stats.BytesWritten != wantBytes {
+		t.Fatalf("stats after second session = %+v, %v; want %d bytes (no cross-session accumulation)", stats, err, wantBytes)
+	}
+}
+
 // --- segment files ---
 
 func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
