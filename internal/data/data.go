@@ -137,6 +137,8 @@ func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
 //   - ./data/suika.db
 //   - /var/lib/suika/suika.db
 //
+// A leading "file:" prefix is tolerated and stripped.
+//
 // It returns the normalized file path that should be passed to sqlite.Open.
 // The database file itself is not created here; sqlite will create it on open
 // when it does not exist.
@@ -158,6 +160,9 @@ func ensureSQLiteDir(source string) (string, error) {
 //
 // Rules:
 //   - source must be non-empty after trimming spaces.
+//   - a leading "file:" prefix is tolerated and stripped for familiarity
+//     with sqlite DSNs, but file URIs with an authority ("file://...")
+//     are rejected — only plain file paths are supported.
 //   - query parameters are rejected to keep config semantics simple and
 //     deterministic (we only support plain file paths).
 //   - directory-like inputs (for example "./data/" or "/") are rejected.
@@ -168,6 +173,12 @@ func sqliteFilePath(source string) (string, error) {
 	pathPart := strings.TrimSpace(source)
 	if pathPart == "" {
 		return "", fmt.Errorf("data: database source is empty")
+	}
+	if rest, ok := strings.CutPrefix(pathPart, "file:"); ok {
+		if strings.HasPrefix(rest, "//") {
+			return "", fmt.Errorf("data: invalid database source %q: file URIs with an authority are not supported, use a plain file path like ./data/suika.db", source)
+		}
+		pathPart = rest
 	}
 	if _, _, ok := strings.Cut(pathPart, "?"); ok {
 		return "", fmt.Errorf("data: invalid database source %q: query parameters are not supported, use a plain file path like ./data/suika.db", source)

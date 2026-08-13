@@ -23,6 +23,8 @@ func TestSQLiteFilePath(t *testing.T) {
 		{name: "plain relative", source: "./data/suika.db", wantPath: filepath.Clean("./data/suika.db")},
 		{name: "file prefix relative", source: "file:./data/suika.db", wantPath: filepath.Clean("./data/suika.db")},
 		{name: "file prefix absolute", source: "file:/tmp/suika.db", wantPath: "/tmp/suika.db"},
+		{name: "bare file prefix rejected", source: "file:", wantErr: true, errContains: "invalid database source"},
+		{name: "file uri with authority rejected", source: "file:///tmp/suika.db", wantErr: true, errContains: "authority"},
 		{name: "query is rejected", source: "./data/suika.db?cache=shared", wantErr: true, errContains: "query parameters are not supported"},
 		{name: "trailing slash rejected", source: "./data/", wantErr: true, errContains: "directory path"},
 	}
