@@ -11,8 +11,6 @@ import (
 
 	"github.com/go-kratos/kratos/v3/errors"
 	"github.com/go-kratos/kratos/v3/log"
-	"go.einride.tech/aip/filtering"
-	"go.einride.tech/aip/ordering"
 )
 
 var (
@@ -62,49 +60,19 @@ type RoomRuntime struct {
 // RoomRepo is a room repo.
 type RoomRepo interface {
 	FindByRoomID(context.Context, int64) (*Room, error)
-	ListRooms(context.Context, ...ListOption) ([]*Room, error)
+	ListRooms(context.Context, ListQuery) ([]*Room, error)
 	CreateRoom(context.Context, *Room) (*Room, error)
 	UpdateRoom(context.Context, *Room) (*Room, error)
 	DeleteRoom(context.Context, int64) error
 }
 
-// ListOption configures room list queries.
-type ListOption func(*ListOptions)
-
-// ListOptions are room list query options.
-type ListOptions struct {
-	Filter  filtering.Filter
-	OrderBy ordering.OrderBy
+// ListQuery is the room list query contract shared by service/biz/data.
+type ListQuery struct {
+	RoomID  *int64
+	Name    *string
+	Enabled *bool
 	Offset  int
 	Limit   int
-}
-
-// ListFilter sets a standard AIP filter.
-func ListFilter(filter filtering.Filter) ListOption {
-	return func(o *ListOptions) {
-		o.Filter = filter
-	}
-}
-
-// ListOrderBy sets a standard AIP order_by value.
-func ListOrderBy(orderBy ordering.OrderBy) ListOption {
-	return func(o *ListOptions) {
-		o.OrderBy = orderBy
-	}
-}
-
-// ListOffset sets an offset.
-func ListOffset(offset int) ListOption {
-	return func(o *ListOptions) {
-		o.Offset = offset
-	}
-}
-
-// ListLimit sets a limit.
-func ListLimit(limit int) ListOption {
-	return func(o *ListOptions) {
-		o.Limit = limit
-	}
 }
 
 // roomState is the mutable runtime state of one registered room.
@@ -139,7 +107,7 @@ func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 		log.Warn("room repo missing, registering zero rooms")
 		return reg, nil
 	}
-	rooms, err := repo.ListRooms(context.Background(), ListOffset(0), ListLimit(math.MaxInt32))
+	rooms, err := repo.ListRooms(context.Background(), ListQuery{Offset: 0, Limit: math.MaxInt32})
 	if err != nil {
 		return nil, fmt.Errorf("room registry: load rooms: %w", err)
 	}
@@ -300,8 +268,8 @@ func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime,
 }
 
 // ListRoomRuntimes lists rooms with the runtime state merged from the registry.
-func (uc *RoomUsecase) ListRoomRuntimes(ctx context.Context, opts ...ListOption) ([]*RoomRuntime, error) {
-	rooms, err := uc.repo.ListRooms(ctx, opts...)
+func (uc *RoomUsecase) ListRoomRuntimes(ctx context.Context, query ListQuery) ([]*RoomRuntime, error) {
+	rooms, err := uc.repo.ListRooms(ctx, query)
 	if err != nil {
 		return nil, err
 	}

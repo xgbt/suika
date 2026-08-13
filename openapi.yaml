@@ -140,10 +140,12 @@ components:
                     format: int32
                 pageToken:
                     type: string
-                filter:
+                roomId:
                     type: string
-                orderBy:
+                name:
                     type: string
+                enabled:
+                    type: boolean
         room.v1.ListRoomsResponse:
             type: object
             properties:

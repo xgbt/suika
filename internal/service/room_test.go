@@ -191,7 +191,7 @@ func TestRoomServiceListRoomsPagination(t *testing.T) {
 	}
 }
 
-func TestRoomServiceListRoomsFilterAndOrderBy(t *testing.T) {
+func TestRoomServiceListRoomsOptionalQuery(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestRoomEnv(t, newTestData(t)).svc
 
@@ -205,39 +205,37 @@ func TestRoomServiceListRoomsFilterAndOrderBy(t *testing.T) {
 		}
 	}
 
-	// Substring match on name combined with a bare boolean ident.
-	filtered, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
+	byEnabled, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
 		PageSize: 10,
-		Filter:   `name:"streamer" AND enabled`,
+		Enabled:  proto.Bool(true),
 	})
 	if err != nil {
-		t.Fatalf("ListRooms(filter) error = %v", err)
+		t.Fatalf("ListRooms(enabled=true) error = %v", err)
 	}
-	if len(filtered.GetRooms()) != 1 || filtered.GetRooms()[0].GetRoomId() != 1 {
-		t.Fatalf("ListRooms(filter) = %+v, want only enabled streamer room 1", filtered.GetRooms())
-	}
-
-	ordered, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{PageSize: 10, OrderBy: "room_id desc"})
-	if err != nil {
-		t.Fatalf("ListRooms(order_by) error = %v", err)
-	}
-	if len(ordered.GetRooms()) != 3 ||
-		ordered.GetRooms()[0].GetRoomId() != 3 ||
-		ordered.GetRooms()[1].GetRoomId() != 2 ||
-		ordered.GetRooms()[2].GetRoomId() != 1 {
-		t.Fatalf("ListRooms(order_by) = %+v, want room_id desc", ordered.GetRooms())
+	if len(byEnabled.GetRooms()) != 2 || byEnabled.GetRooms()[0].GetRoomId() != 1 || byEnabled.GetRooms()[1].GetRoomId() != 3 {
+		t.Fatalf("ListRooms(enabled=true) = %+v, want rooms 1 and 3", byEnabled.GetRooms())
 	}
 
-	// Timestamp ranges accept bare RFC3339 strings.
-	ranged, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
+	byRoomID, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
 		PageSize: 10,
-		Filter:   `create_time >= "2020-01-01T00:00:00Z"`,
+		RoomId:   proto.Int64(2),
 	})
 	if err != nil {
-		t.Fatalf("ListRooms(create_time range) error = %v", err)
+		t.Fatalf("ListRooms(room_id=2) error = %v", err)
 	}
-	if len(ranged.GetRooms()) != 3 {
-		t.Fatalf("ListRooms(create_time range) len = %d, want 3", len(ranged.GetRooms()))
+	if len(byRoomID.GetRooms()) != 1 || byRoomID.GetRooms()[0].GetRoomId() != 2 {
+		t.Fatalf("ListRooms(room_id=2) = %+v, want only room 2", byRoomID.GetRooms())
+	}
+
+	byName, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
+		PageSize: 10,
+		Name:     proto.String("gamma"),
+	})
+	if err != nil {
+		t.Fatalf("ListRooms(name=gamma) error = %v", err)
+	}
+	if len(byName.GetRooms()) != 1 || byName.GetRooms()[0].GetRoomId() != 3 {
+		t.Fatalf("ListRooms(name=gamma) = %+v, want only room 3", byName.GetRooms())
 	}
 }
 
@@ -284,14 +282,8 @@ func TestRoomServiceValidation(t *testing.T) {
 	if _, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{PageToken: "bad-token"}); err == nil {
 		t.Fatal("ListRooms(bad token) error = nil, want error")
 	}
-	if _, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{Filter: `unknown:"value"`}); err == nil {
-		t.Fatal("ListRooms(unsupported filter) error = nil, want error")
-	}
-	if _, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{Filter: `live_status=2`}); err == nil {
-		t.Fatal("ListRooms(runtime filter) error = nil, want error")
-	}
-	if _, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{OrderBy: "live_status"}); err == nil {
-		t.Fatal("ListRooms(unsupported order_by) error = nil, want error")
+	if _, err := svc.ListRooms(ctx, nil); !kratoserrors.IsBadRequest(err) {
+		t.Fatalf("ListRooms(nil req) error = %v, want bad request", err)
 	}
 }
 

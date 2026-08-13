@@ -443,8 +443,9 @@ type ListRoomsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PageSize      int32                  `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	PageToken     string                 `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	Filter        string                 `protobuf:"bytes,3,opt,name=filter,proto3" json:"filter,omitempty"`
-	OrderBy       string                 `protobuf:"bytes,4,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
+	RoomId        *int64                 `protobuf:"varint,3,opt,name=room_id,json=roomId,proto3,oneof" json:"room_id,omitempty"`
+	Name          *string                `protobuf:"bytes,4,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Enabled       *bool                  `protobuf:"varint,5,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -493,18 +494,25 @@ func (x *ListRoomsRequest) GetPageToken() string {
 	return ""
 }
 
-func (x *ListRoomsRequest) GetFilter() string {
-	if x != nil {
-		return x.Filter
+func (x *ListRoomsRequest) GetRoomId() int64 {
+	if x != nil && x.RoomId != nil {
+		return *x.RoomId
+	}
+	return 0
+}
+
+func (x *ListRoomsRequest) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
 	}
 	return ""
 }
 
-func (x *ListRoomsRequest) GetOrderBy() string {
-	if x != nil {
-		return x.OrderBy
+func (x *ListRoomsRequest) GetEnabled() bool {
+	if x != nil && x.Enabled != nil {
+		return *x.Enabled
 	}
-	return ""
+	return false
 }
 
 type ListRoomsResponse struct {
@@ -772,13 +780,19 @@ const file_room_v1_room_proto_rawDesc = "" +
 	"\x0eGetRoomRequest\x12\x1c\n" +
 	"\aroom_id\x18\x01 \x01(\x03B\x03\xe0A\x02R\x06roomId\"4\n" +
 	"\x0fGetRoomResponse\x12!\n" +
-	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomR\x04room\"\x81\x01\n" +
+	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomR\x04room\"\xc5\x01\n" +
 	"\x10ListRoomsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x02 \x01(\tR\tpageToken\x12\x16\n" +
-	"\x06filter\x18\x03 \x01(\tR\x06filter\x12\x19\n" +
-	"\border_by\x18\x04 \x01(\tR\aorderBy\"`\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\x12\x1c\n" +
+	"\aroom_id\x18\x03 \x01(\x03H\x00R\x06roomId\x88\x01\x01\x12\x17\n" +
+	"\x04name\x18\x04 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x1d\n" +
+	"\aenabled\x18\x05 \x01(\bH\x02R\aenabled\x88\x01\x01B\n" +
+	"\n" +
+	"\b_room_idB\a\n" +
+	"\x05_nameB\n" +
+	"\n" +
+	"\b_enabled\"`\n" +
 	"\x11ListRoomsResponse\x12#\n" +
 	"\x05rooms\x18\x01 \x03(\v2\r.room.v1.RoomR\x05rooms\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"}\n" +
@@ -882,6 +896,7 @@ func file_room_v1_room_proto_init() {
 	if File_room_v1_room_proto != nil {
 		return
 	}
+	file_room_v1_room_proto_msgTypes[5].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

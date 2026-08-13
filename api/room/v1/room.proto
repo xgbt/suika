@@ -107,8 +107,9 @@ message GetRoomResponse {
 message ListRoomsRequest {
   int32 page_size = 1;
   string page_token = 2;
-  string filter = 3;
-  string order_by = 4;
+  optional int64 room_id = 3;
+  optional string name = 4;
+  optional bool enabled = 5;
 }
 
 message ListRoomsResponse {

@@ -42,7 +42,7 @@ func (r *fakeRoomRepo) FindByRoomID(_ context.Context, roomID int64) (*Room, err
 	return nil, ErrRoomNotFound
 }
 
-func (r *fakeRoomRepo) ListRooms(_ context.Context, _ ...ListOption) ([]*Room, error) {
+func (r *fakeRoomRepo) ListRooms(_ context.Context, _ ListQuery) ([]*Room, error) {
 	if r.listErr != nil {
 		return nil, r.listErr
 	}
@@ -188,7 +188,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	reg.StartRecording(3)
 
 	uc := NewRoomUsecase(repo, reg, stats)
-	out, err := uc.ListRoomRuntimes(context.Background())
+	out, err := uc.ListRoomRuntimes(context.Background(), ListQuery{Offset: 0, Limit: 20})
 	if err != nil {
 		t.Fatal(err)
 	}

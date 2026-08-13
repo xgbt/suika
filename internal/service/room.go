@@ -7,8 +7,6 @@ import (
 	"suika/internal/biz"
 
 	"go.einride.tech/aip/fieldmask"
-	"go.einride.tech/aip/filtering"
-	"go.einride.tech/aip/ordering"
 	"go.einride.tech/aip/pagination"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -52,41 +50,34 @@ func (s *RoomService) GetRoom(ctx context.Context, req *v1.GetRoomRequest) (*v1.
 }
 
 func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (*v1.ListRoomsResponse, error) {
-	declarations, err := filtering.NewDeclarations(
-		filtering.DeclareStandardFunctions(),
-		filtering.DeclareIdent("room_id", filtering.TypeInt),
-		filtering.DeclareIdent("name", filtering.TypeString),
-		filtering.DeclareIdent("enabled", filtering.TypeBool),
-		filtering.DeclareIdent("create_time", filtering.TypeTimestamp),
-		filtering.DeclareIdent("update_time", filtering.TypeTimestamp),
-	)
-	if err != nil {
-		return nil, err
-	}
-	filter, err := filtering.ParseFilter(req, declarations)
-	if err != nil {
-		return nil, err
+	if req == nil {
+		return nil, biz.ErrRoomInvalidArgument
 	}
 	pageToken, err := pagination.ParsePageToken(req)
 	if err != nil {
 		return nil, err
 	}
-	orderBy, err := ordering.ParseOrderBy(req)
-	if err != nil {
-		return nil, err
-	}
-	if err := orderBy.ValidateForPaths("room_id", "name", "enabled", "create_time", "update_time"); err != nil {
-		return nil, err
-	}
 	if req.PageSize <= 0 {
 		req.PageSize = defaultPageSize
 	}
-	roomRuntimes, err := s.uc.ListRoomRuntimes(ctx,
-		biz.ListFilter(filter),
-		biz.ListOrderBy(orderBy),
-		biz.ListLimit(int(req.PageSize)),
-		biz.ListOffset(int(pageToken.Offset)),
-	)
+	query := biz.ListQuery{
+		Offset: int(pageToken.Offset),
+		Limit:  int(req.PageSize),
+	}
+	if req.RoomId != nil {
+		roomID := req.GetRoomId()
+		query.RoomID = &roomID
+	}
+	if req.Name != nil {
+		name := req.GetName()
+		query.Name = &name
+	}
+	if req.Enabled != nil {
+		enabled := req.GetEnabled()
+		query.Enabled = &enabled
+	}
+
+	roomRuntimes, err := s.uc.ListRoomRuntimes(ctx, query)
 	if err != nil {
 		return nil, err
 	}
