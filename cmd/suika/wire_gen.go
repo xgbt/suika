@@ -23,17 +23,27 @@ import (
 // Injectors from wire.go:
 
 // wireApp init kratos application.
-func wireApp(confServer *conf.Server, confData *conf.Data, logger *slog.Logger) (*kratos.App, func(), error) {
-	dataData, cleanup, err := data.NewData(confData)
+func wireApp(confServer *conf.Server, confData *conf.Data, recorder *conf.Recorder, logger *slog.Logger) (*kratos.App, func(), error) {
+	dataData, cleanup, err := data.NewData(confData, recorder)
 	if err != nil {
 		return nil, nil, err
 	}
-	todoRepo := data.NewTodoRepo(dataData)
-	todoUsecase := biz.NewTodoUsecase(todoRepo)
-	todoService := service.NewTodoService(todoUsecase)
-	grpcServer := server.NewGRPCServer(confServer, todoService)
-	httpServer := server.NewHTTPServer(confServer, todoService)
-	app := newApp(logger, grpcServer, httpServer)
+	roomRepo := data.NewRoomRepo(dataData)
+	roomRegistry, err := biz.NewRoomRegistry(roomRepo)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	recorderRepo := data.NewRecorderRepo(dataData, recorder)
+	sessionStatsRepo := data.NewSessionStatsRepo(recorderRepo)
+	roomUsecase := biz.NewRoomUsecase(roomRepo, roomRegistry, sessionStatsRepo)
+	roomService := service.NewRoomService(roomUsecase)
+	grpcServer := server.NewGRPCServer(confServer, roomService)
+	httpServer := server.NewHTTPServer(confServer, roomService)
+	liveClient := data.NewLiveClient(dataData)
+	recorderUsecase := biz.NewRecorderUsecase(recorder, roomRegistry, recorderRepo, liveClient)
+	daemon := server.NewDaemon(recorderUsecase)
+	app := newApp(logger, grpcServer, httpServer, daemon)
 	return app, func() {
 		cleanup()
 	}, nil

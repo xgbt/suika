@@ -1,0 +1,315 @@
+package biz
+
+import (
+	"context"
+	stderrors "errors"
+	"maps"
+	"slices"
+	"testing"
+	"time"
+)
+
+// fakeStatsRepo scripts SessionStatsRepo behavior for the room API tests.
+type fakeStatsRepo struct {
+	stats    map[int64]*SessionStats
+	failures map[int64]error
+	calls    []int64
+}
+
+func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionStats, error) {
+	r.calls = append(r.calls, roomID)
+	if err, ok := r.failures[roomID]; ok {
+		return nil, err
+	}
+	if s, ok := r.stats[roomID]; ok {
+		return s, nil
+	}
+	return nil, nil
+}
+
+// fakeRoomRepo scripts RoomRepo behavior for registry and usecase tests.
+type fakeRoomRepo struct {
+	rooms       map[int64]*Room
+	listErr     error
+	updateErr   error
+	backfillErr error
+	updates     []*Room
+	backfills   []backfillCall
+}
+
+type backfillCall struct {
+	roomID       int64
+	streamerName string
+	roomTitle    string
+	updated      bool
+}
+
+func (r *fakeRoomRepo) FindByRoomID(_ context.Context, roomID int64) (*Room, error) {
+	if room, ok := r.rooms[roomID]; ok {
+		return room, nil
+	}
+	return nil, ErrRoomNotFound
+}
+
+func (r *fakeRoomRepo) ListRooms(_ context.Context, _ ListQuery) ([]*Room, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	out := make([]*Room, 0, len(r.rooms))
+	for _, id := range slices.Sorted(maps.Keys(r.rooms)) {
+		out = append(out, r.rooms[id])
+	}
+	return out, nil
+}
+
+func (r *fakeRoomRepo) CreateRoom(_ context.Context, room *Room) (*Room, error) {
+	if r.rooms == nil {
+		r.rooms = make(map[int64]*Room)
+	}
+	if _, ok := r.rooms[room.RoomID]; ok {
+		return nil, ErrRoomAlreadyExists
+	}
+	r.rooms[room.RoomID] = room
+	return room, nil
+}
+
+func (r *fakeRoomRepo) UpdateRoom(_ context.Context, room *Room) (*Room, error) {
+	r.updates = append(r.updates, room)
+	if r.updateErr != nil {
+		return nil, r.updateErr
+	}
+	if _, ok := r.rooms[room.RoomID]; !ok {
+		return nil, ErrRoomNotFound
+	}
+	r.rooms[room.RoomID] = room
+	return room, nil
+}
+
+func (r *fakeRoomRepo) BackfillRoomIdentity(_ context.Context, roomID int64, streamerName string, roomTitle string) (bool, error) {
+	if r.backfillErr != nil {
+		r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: false})
+		return false, r.backfillErr
+	}
+	updated := false
+	if room, ok := r.rooms[roomID]; ok {
+		if room.StreamerName == "" && streamerName != "" {
+			room.StreamerName = streamerName
+			updated = true
+		}
+		if room.RoomTitle == "" && roomTitle != "" {
+			room.RoomTitle = roomTitle
+			updated = true
+		}
+	}
+	r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: updated})
+	return updated, nil
+}
+
+func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
+	if _, ok := r.rooms[roomID]; !ok {
+		return ErrRoomNotFound
+	}
+	delete(r.rooms, roomID)
+	return nil
+}
+
+func TestNewRoomRegistryLoadsRooms(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{
+		2: {RoomID: 2, StreamerName: "b"},
+		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+	}}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	rooms := reg.Rooms()
+	if len(rooms) != 2 {
+		t.Fatalf("rooms = %d, want 2", len(rooms))
+	}
+	if rooms[0].RoomID != 1 || rooms[0].StreamerName != "a" || !rooms[0].Enabled {
+		t.Fatalf("room[0] = %+v", rooms[0])
+	}
+	if rooms[1].RoomID != 2 || rooms[1].StreamerName != "b" || rooms[1].Enabled {
+		t.Fatalf("room[1] = %+v", rooms[1])
+	}
+}
+
+func TestNewRoomRegistryNilRepo(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry(nil) error = %v", err)
+	}
+	if rooms := reg.Rooms(); len(rooms) != 0 {
+		t.Fatalf("rooms = %d, want 0", len(rooms))
+	}
+}
+
+func TestNewRoomRegistryLoadError(t *testing.T) {
+	repo := &fakeRoomRepo{listErr: stderrors.New("db down")}
+	if _, err := NewRoomRegistry(repo); err == nil {
+		t.Fatal("NewRoomRegistry() error = nil, want load error")
+	}
+}
+
+func TestApplyRoomInfoBackfillsIdentityThroughRepo(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Enabled: true}}}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
+
+	if got := reg.Room(1).StreamerName; got != "streamer" {
+		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
+	}
+	if got := reg.Room(1).RoomTitle; got != "title-a" {
+		t.Fatalf("backfilled room_title = %q, want title-a", got)
+	}
+	if len(repo.backfills) != 1 || !repo.backfills[0].updated || repo.backfills[0].roomID != 1 || repo.backfills[0].streamerName != "streamer" || repo.backfills[0].roomTitle != "title-a" {
+		t.Fatalf("repo backfills = %+v, want one successful backfill", repo.backfills)
+	}
+
+	// A second apply with metadata already set must not write again.
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other", Title: "title-b"})
+	if len(repo.backfills) != 1 {
+		t.Fatalf("repo backfills = %d, want exactly 1", len(repo.backfills))
+	}
+}
+
+func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, backfillErr: stderrors.New("db locked")}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+
+	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
+
+	// The in-memory backfill still lands when persistence fails.
+	if got := reg.Room(1).StreamerName; got != "streamer" {
+		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
+	}
+	if got := reg.Room(1).RoomTitle; got != "title-a" {
+		t.Fatalf("backfilled room_title = %q, want title-a", got)
+	}
+}
+
+func TestListRoomsMergesStateAndStats(t *testing.T) {
+	stats := &fakeStatsRepo{
+		stats: map[int64]*SessionStats{
+			1: {CurrentFile: "/rec/1_part2.flv", BytesWritten: 4096},
+			// room 2 has stats available but is not recording: they must
+			// not be merged.
+			2: {CurrentFile: "/rec/2_part1.flv", BytesWritten: 1},
+		},
+		failures: map[int64]error{3: stderrors.New("stats unavailable")},
+	}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{
+		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		2: {RoomID: 2, StreamerName: "b"},
+		3: {RoomID: 3, StreamerName: "c", Enabled: true},
+	}}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	reg.ApplyRoomInfo(context.Background(), 1, liveInfo(1, true))
+	reg.setState(1, func(st *roomState) {
+		st.record = RecordRecording
+		st.sessionStartedAt = time.Unix(100, 0)
+	})
+	reg.NoteError(2, stderrors.New("boom"))
+	reg.StartRecording(3)
+
+	uc := NewRoomUsecase(repo, reg, stats)
+	out, err := uc.ListRoomRuntimes(context.Background(), ListQuery{Offset: 0, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("len(out) = %d, want 3", len(out))
+	}
+	if out[0].Room.RoomID != 1 || out[1].Room.RoomID != 2 || out[2].Room.RoomID != 3 {
+		t.Fatalf("room order not preserved: %+v", out)
+	}
+	if out[0].Live != LiveOnAir || out[0].Record != RecordRecording {
+		t.Fatalf("room 1 state = %v/%v", out[0].Live, out[0].Record)
+	}
+	if out[0].CurrentFile != "/rec/1_part2.flv" || out[0].BytesWritten != 4096 {
+		t.Fatalf("room 1 stats = %q/%d", out[0].CurrentFile, out[0].BytesWritten)
+	}
+	if !out[0].SessionStartedAt.Equal(time.Unix(100, 0)) {
+		t.Fatalf("session start = %v", out[0].SessionStartedAt)
+	}
+	if out[1].LastError != "boom" || out[1].Room.Enabled {
+		t.Fatalf("room 2 = %+v", out[1])
+	}
+	if out[1].CurrentFile != "" || out[1].BytesWritten != 0 {
+		t.Fatalf("room 2 unexpectedly got stats: %q/%d", out[1].CurrentFile, out[1].BytesWritten)
+	}
+	// recording room whose stats call fails: skipped without an error.
+	if out[2].Record != RecordRecording {
+		t.Fatalf("room 3 state = %v", out[2].Record)
+	}
+	if out[2].CurrentFile != "" || out[2].BytesWritten != 0 {
+		t.Fatalf("room 3 stats = %q/%d, want zero values after stats error", out[2].CurrentFile, out[2].BytesWritten)
+	}
+	// stats are only requested for RecordRecording rooms.
+	if len(stats.calls) != 2 || stats.calls[0] != 1 || stats.calls[1] != 3 {
+		t.Fatalf("stats calls = %v, want [1 3]", stats.calls)
+	}
+}
+
+func TestRoomUsecaseValidation(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	repo := &fakeRoomRepo{}
+	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	ctx := context.Background()
+
+	if _, err := uc.CreateRoom(ctx, nil); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("CreateRoom(nil) error = %v, want invalid argument", err)
+	}
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 0}); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("CreateRoom(zero id) error = %v, want invalid argument", err)
+	}
+	if _, err := uc.GetRoom(ctx, 0); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("GetRoom(zero id) error = %v, want invalid argument", err)
+	}
+	if _, err := uc.UpdateRoom(ctx, nil); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("UpdateRoom(nil) error = %v, want invalid argument", err)
+	}
+	if err := uc.DeleteRoom(ctx, -1); !stderrors.Is(err, ErrRoomInvalidArgument) {
+		t.Fatalf("DeleteRoom(negative id) error = %v, want invalid argument", err)
+	}
+	// Empty streamer metadata is allowed: the platform API backfills it later.
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 7}); err != nil {
+		t.Fatalf("CreateRoom(empty metadata) error = %v, want success", err)
+	}
+}
+
+func TestRoomUsecaseRepoErrors(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, StreamerName: "a"}}}
+	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	ctx := context.Background()
+
+	if _, err := uc.GetRoom(ctx, 2); !stderrors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("GetRoom(missing) error = %v, want not found", err)
+	}
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 1}); !stderrors.Is(err, ErrRoomAlreadyExists) {
+		t.Fatalf("CreateRoom(duplicate) error = %v, want already exists", err)
+	}
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, StreamerName: "x"}); !stderrors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("UpdateRoom(missing) error = %v, want not found", err)
+	}
+	if err := uc.DeleteRoom(ctx, 2); !stderrors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("DeleteRoom(missing) error = %v, want not found", err)
+	}
+}

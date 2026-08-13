@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package room.v1;
+
+option go_package = "suika/api/room/v1;v1";
+option java_multiple_files = true;
+option java_package = "room.v1";
+option objc_class_prefix = "APIRoomV1";
+
+enum ErrorReason {
+  ERROR_REASON_UNSPECIFIED = 0;
+  ERROR_REASON_INTERNAL = 1;
+  ERROR_REASON_NOT_FOUND = 2;
+  ERROR_REASON_INVALID_ARGUMENT = 3;
+  ERROR_REASON_ALREADY_EXISTS = 4;
+}

@@ -4,6 +4,7 @@
 *.exe~
 *.dll
 *.dylib
+cmd/suika
 
 # Test binary, built with `go test -c`
 *.test
@@ -31,6 +32,9 @@ Thumbs.db
 *.key
 *.log
 bin/
+configs/credentials.yaml
+recordings/
+/data/
 
 # Develop tools
 .vscode/

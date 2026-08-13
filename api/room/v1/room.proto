@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package room.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "suika/api/room/v1;v1";
+option java_multiple_files = true;
+option java_package = "room.v1";
+option objc_class_prefix = "APIRoomV1";
+
+service RoomService {
+  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse) {
+    option (google.api.http) = {
+      post: "/v1/rooms/create"
+      body: "*"
+    };
+  }
+
+  rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse) {
+    option (google.api.http) = {
+      post: "/v1/rooms/list"
+      body: "*"
+    };
+  }
+
+  rpc GetRoom(GetRoomRequest) returns (GetRoomResponse) {
+    option (google.api.http) = {
+      post: "/v1/rooms/get"
+      body: "*"
+    };
+  }
+
+  rpc UpdateRoom(UpdateRoomRequest) returns (UpdateRoomResponse) {
+    option (google.api.http) = {
+      post: "/v1/rooms/update"
+      body: "*"
+    };
+  }
+
+  rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse) {
+    option (google.api.http) = {
+      post: "/v1/rooms/delete"
+      body: "*"
+    };
+  }
+}
+
+// LiveStatus 表示房间的直播状态。
+enum LiveStatus {
+  // 未指定直播状态。
+  LIVE_STATUS_UNSPECIFIED = 0;
+  // 房间未在直播。
+  LIVE_STATUS_PREPARING = 1;
+  // 房间正在直播。
+  LIVE_STATUS_LIVE = 2;
+}
+
+// RecordStatus 表示房间录制任务的状态。
+enum RecordStatus {
+  // 未指定录制状态。
+  RECORD_STATUS_UNSPECIFIED = 0;
+  // 当前没有录制任务。
+  RECORD_STATUS_IDLE = 1;
+  // 正在录制直播流。
+  RECORD_STATUS_RECORDING = 2;
+  // 录制结束，正在合并文件。
+  RECORD_STATUS_REMUXING = 3;
+  // 录制任务发生错误。
+  RECORD_STATUS_ERROR = 4;
+}
+
+message Room {
+  int64 room_id = 1;
+  bool enabled = 3;
+  LiveStatus live_status = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  RecordStatus record_status = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string current_file = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+  int64 bytes_written = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp session_started_at = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string last_error = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string streamer_name = 12;
+  string room_title = 13;
+}
+
+message CreateRoomRequest {
+  Room room = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message CreateRoomResponse {
+  Room room = 1;
+}
+
+message GetRoomRequest {
+  int64 room_id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message GetRoomResponse {
+  Room room = 1;
+}
+
+message ListRoomsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  optional int64 room_id = 3;
+  optional bool enabled = 5;
+  optional string streamer_name = 6;
+  optional string room_title = 7;
+}
+
+message ListRoomsResponse {
+  repeated Room rooms = 1;
+  string next_page_token = 2;
+}
+
+message UpdateRoomRequest {
+  Room room = 1 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 2 [(google.api.field_behavior) = REQUIRED];
+}
+message UpdateRoomResponse {
+  Room room = 1;
+}
+
+message DeleteRoomRequest {
+  int64 room_id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DeleteRoomResponse {
+  google.protobuf.Empty empty = 1;
+}

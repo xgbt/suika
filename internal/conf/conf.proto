@@ -1,13 +1,74 @@
 syntax = "proto3";
 package kratos.api;
 
-option go_package = "suika/internal/conf;conf";
-
 import "google/protobuf/duration.proto";
+
+option go_package = "suika/internal/conf;conf";
 
 message Bootstrap {
   Server server = 1;
   Data data = 2;
+  Recorder recorder = 3;
+}
+
+// Recorder configures the Bilibili live recorder: where recordings land
+// and how recording/danmaku/reconnect behave. Rooms to watch live in the
+// sqlite database (rooms table), not in config files.
+// Sensitive credentials (cookie) belong in configs/credentials.yaml,
+// which is merged into Bootstrap by the config file source and gitignored.
+message Recorder {
+  // DanmakuOptions tune danmaku event recording.
+  message DanmakuOptions {
+    // Also record INTERACT_WORD (room-entry) events. Off by default:
+    // volume is roughly 10x danmaku with near-zero clipping value.
+    bool record_interact_word = 1;
+  }
+  // ReconnectOptions tune stream reconnection and health probing.
+  message ReconnectOptions {
+    // Reconnect when the stream drops while the room is still live.
+    // Optional so an explicit false is distinguishable from unset
+    // (unset defaults to true).
+    optional bool auto_reconnect = 1;
+    // Maximum reconnect attempts per session for ordinary interruptions.
+    // Zero falls back to the default of 3; disable reconnecting via
+    // auto_reconnect=false instead.
+    int32 max_reconnect = 2;
+    // Delay before each reconnect attempt. Zero falls back to 10s.
+    google.protobuf.Duration reconnect_delay = 3;
+    // Attempts reserved for CDN-transient errors (404 / connection reset).
+    // Zero falls back to the default of 5.
+    int32 cdn_transient_budget = 4;
+    // Interval between recording health checks (no new tag => unhealthy).
+    // Zero falls back to 60s.
+    google.protobuf.Duration health_check_interval = 5;
+    // Consecutive unhealthy rounds that abort the current connection.
+    // Zero falls back to the default of 3.
+    int32 health_check_fail_rounds = 6;
+  }
+  // Full cookie header including SESSDATA, required for source quality.
+  // Keep in configs/credentials.yaml (gitignored), never in config.yaml.
+  string cookie = 2;
+  // Directory recordings are written under. Default ./recordings.
+  string record_root = 3;
+  // Fallback room-state poll interval (danmaku WS is the primary
+  // live-detection channel). Default 600s.
+  google.protobuf.Duration fallback_poll_interval = 4;
+  // Requested stream quality. 10000 = source; the highest available
+  // quality is accepted when the request cannot be satisfied.
+  int32 quality_qn = 5;
+  // Segment length in minutes. Optional so an explicit 0 (no splitting)
+  // is distinguishable from unset (unset defaults to 120).
+  optional int32 segment_minutes = 6;
+  // Maximum rooms recorded concurrently; 0 means unlimited.
+  int32 max_concurrent = 7;
+  // Remux finished segments from FLV to MP4 via ffmpeg. Optional so an
+  // explicit false (e.g. ffmpeg-less machines) is distinguishable from
+  // unset (unset defaults to true).
+  optional bool remux_enabled = 8;
+  // Danmaku recording options.
+  DanmakuOptions danmaku = 9;
+  // Reconnect and health-check options.
+  ReconnectOptions reconnect = 10;
 }
 
 message Server {
