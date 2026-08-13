@@ -298,13 +298,13 @@ func TestJitterDurationWithinBand(t *testing.T) {
 
 // fakeDanmakuConn is a scripted DanmakuConn for watchRoom tests.
 type fakeDanmakuConn struct {
-	events  chan *DanmakuEvent
-	control chan *RoomInfo
+	events           chan *DanmakuEvent
+	roomStateUpdates chan *RoomInfo
 }
 
-func (c *fakeDanmakuConn) Events() <-chan *DanmakuEvent { return c.events }
-func (c *fakeDanmakuConn) Control() <-chan *RoomInfo    { return c.control }
-func (c *fakeDanmakuConn) Close() error                 { return nil }
+func (c *fakeDanmakuConn) Events() <-chan *DanmakuEvent       { return c.events }
+func (c *fakeDanmakuConn) RoomStateUpdates() <-chan *RoomInfo { return c.roomStateUpdates }
+func (c *fakeDanmakuConn) Close() error                       { return nil }
 
 // watchClient is a LiveClient driven entirely through its danmaku conn;
 // status probes report offline so only control events steer the test.
@@ -345,8 +345,8 @@ func (r *pumpBlockRepo) RecoverPending(context.Context) error { return nil }
 func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	repo := &pumpBlockRepo{}
 	conn := &fakeDanmakuConn{
-		events:  make(chan *DanmakuEvent),
-		control: make(chan *RoomInfo),
+		events:           make(chan *DanmakuEvent),
+		roomStateUpdates: make(chan *RoomInfo),
 	}
 	uc := newTestUsecase(t, repo, &watchClient{conn: conn}, nil)
 
@@ -381,12 +381,12 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 		return false
 	}
 
-	conn.control <- liveInfo(42, true)
+	conn.roomStateUpdates <- liveInfo(42, true)
 	if !waitRecord(RecordRecording) {
 		t.Fatal("session did not start recording after live control event")
 	}
 
-	conn.control <- liveInfo(42, false)
+	conn.roomStateUpdates <- liveInfo(42, false)
 	if !waitRecord(RecordIdle) {
 		t.Fatal("offline control event did not cancel the active session")
 	}

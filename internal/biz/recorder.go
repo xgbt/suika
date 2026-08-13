@@ -126,13 +126,13 @@ type SessionStats struct {
 }
 
 // DanmakuConn is a resident danmaku websocket for one room, used both for
-// live detection (Control) and danmaku recording (Events). Implementations
+// live detection (RoomStateUpdates) and danmaku recording (Events). Implementations
 // reconnect internally; after every reconnect they re-probe the room state
-// and re-emit it on Control so missed LIVE/PREPARING events are covered.
+// and re-emit it on RoomStateUpdates so missed LIVE/PREPARING events are covered.
 // Events uses a bounded buffer and drops events when nobody is reading.
 type DanmakuConn interface {
 	Events() <-chan *DanmakuEvent
-	Control() <-chan *RoomInfo
+	RoomStateUpdates() <-chan *RoomInfo
 	Close() error
 }
 
@@ -316,7 +316,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 			// no active session: discard
 		case <-done:
 			active = nil
-		case info := <-conn.Control():
+		case info := <-conn.RoomStateUpdates():
 			uc.registry.ApplyRoomInfo(ctx, roomID, info)
 			if info.Live && active == nil {
 				active = uc.launchSession(ctx, roomID, info, conn.Events())

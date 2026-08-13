@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	danmakuEventBuffer   = 4096
-	danmakuControlBuffer = 16
+	danmakuEventBuffer           = 4096
+	danmakuRoomStateUpdateBuffer = 16
 
 	danmakuHeartbeatInterval = 30 * time.Second
 	// danmakuReadTimeout kills half-open connections: no inbound frame for
@@ -43,22 +43,22 @@ const (
 )
 
 // danmakuConn is the resident danmaku websocket for one room. It serves
-// both live detection (Control) and danmaku recording (Events); reconnects
+// both live detection (RoomStateUpdates) and danmaku recording (Events); reconnects
 // run internally, and after every reconnect the room state is re-probed
 // and re-emitted so events missed while disconnected are covered.
 type danmakuConn struct {
-	lc             *liveClient
-	roomID         int64
-	events         chan *biz.DanmakuEvent
-	control        chan *biz.RoomInfo
-	closed         chan struct{}
-	closeOnce      sync.Once
-	recordInteract bool
+	lc               *liveClient
+	roomID           int64
+	events           chan *biz.DanmakuEvent
+	roomStateUpdates chan *biz.RoomInfo
+	closed           chan struct{}
+	closeOnce        sync.Once
+	recordInteract   bool
 }
 
 func (c *danmakuConn) Events() <-chan *biz.DanmakuEvent { return c.events }
 
-func (c *danmakuConn) Control() <-chan *biz.RoomInfo { return c.control }
+func (c *danmakuConn) RoomStateUpdates() <-chan *biz.RoomInfo { return c.roomStateUpdates }
 
 func (c *danmakuConn) Close() error {
 	c.closeOnce.Do(func() { close(c.closed) })
@@ -216,7 +216,7 @@ func (c *danmakuConn) readLoop(conn *websocket.Conn) error {
 }
 
 // pushRoomState re-probes the room via getInfoByRoom and emits the state
-// on the control channel.
+// on the room-state update channel.
 func (c *danmakuConn) pushRoomState(ctx context.Context) {
 	info, err := c.lc.RoomStatus(ctx, c.roomID)
 	if err != nil {
@@ -224,14 +224,14 @@ func (c *danmakuConn) pushRoomState(ctx context.Context) {
 		return
 	}
 	select {
-	case c.control <- info:
+	case c.roomStateUpdates <- info:
 	case <-c.closed:
 	default:
-		// control buffer full: the next event will convey the state.
+		// room-state update buffer full: the next event will convey the state.
 	}
 }
 
-// dispatch routes one decoded danmaku message to the control or events
+// dispatch routes one decoded danmaku message to room-state updates or events
 // channel.
 func (c *danmakuConn) dispatch(ctx context.Context, raw json.RawMessage, receivedAt time.Time) {
 	var head struct {

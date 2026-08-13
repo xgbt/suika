@@ -349,12 +349,12 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 
 func (lc *liveClient) DanmakuConn(ctx context.Context, roomID int64) (biz.DanmakuConn, error) {
 	conn := &danmakuConn{
-		lc:             lc,
-		roomID:         roomID,
-		events:         make(chan *biz.DanmakuEvent, danmakuEventBuffer),
-		control:        make(chan *biz.RoomInfo, danmakuControlBuffer),
-		closed:         make(chan struct{}),
-		recordInteract: lc.d.recordInteractWord,
+		lc:               lc,
+		roomID:           roomID,
+		events:           make(chan *biz.DanmakuEvent, danmakuEventBuffer),
+		roomStateUpdates: make(chan *biz.RoomInfo, danmakuRoomStateUpdateBuffer),
+		closed:           make(chan struct{}),
+		recordInteract:   lc.d.recordInteractWord,
 	}
 	go conn.run(ctx)
 	return conn, nil
