@@ -129,6 +129,16 @@ func (r *roomRepo) UpdateRoom(ctx context.Context, room *biz.Room) (*biz.Room, e
 	return r.FindByRoomID(ctx, room.RoomID)
 }
 
+func (r *roomRepo) BackfillRoomName(ctx context.Context, roomID int64, name string) (bool, error) {
+	result := r.data.db.WithContext(ctx).Model(&roomPO{}).
+		Where("room_id = ? AND name = ''", roomID).
+		Update("name", name)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
 func (r *roomRepo) DeleteRoom(ctx context.Context, roomID int64) error {
 	result := r.data.db.WithContext(ctx).Where("room_id = ?", roomID).Delete(&roomPO{})
 	if result.Error != nil {

@@ -392,6 +392,36 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	}
 }
 
+func TestRoomServiceDoesNotBackfillOverUpdatedName(t *testing.T) {
+	ctx := context.Background()
+	d := newTestData(t)
+	seed := newTestRoomEnv(t, d)
+	if _, err := seed.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: &v1.Room{RoomId: 7007, Enabled: true}}); err != nil {
+		t.Fatalf("CreateRoom(seed) error = %v", err)
+	}
+	env := newTestRoomEnv(t, d)
+
+	if _, err := env.svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
+		Room:       &v1.Room{RoomId: 7007, Name: "user-name"},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"name"}},
+	}); err != nil {
+		t.Fatalf("UpdateRoom(name) error = %v", err)
+	}
+
+	env.reg.ApplyRoomInfo(ctx, 7007, &biz.RoomInfo{RoomID: 7007, Live: true, StreamerName: "streamer-name"})
+
+	got, err := env.svc.GetRoom(ctx, &v1.GetRoomRequest{RoomId: 7007})
+	if err != nil {
+		t.Fatalf("GetRoom() error = %v", err)
+	}
+	if got.GetRoom().GetName() != "user-name" {
+		t.Fatalf("GetRoom() name = %q, want user-name", got.GetRoom().GetName())
+	}
+	if got.GetRoom().GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_LIVE {
+		t.Fatalf("GetRoom() live_status = %v, want LIVE", got.GetRoom().GetLiveStatus())
+	}
+}
+
 func TestConvertRoomReply(t *testing.T) {
 	startedAt := time.Date(2026, 8, 11, 12, 30, 0, 0, time.UTC)
 	createdAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)

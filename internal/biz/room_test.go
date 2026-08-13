@@ -29,10 +29,18 @@ func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionS
 
 // fakeRoomRepo scripts RoomRepo behavior for registry and usecase tests.
 type fakeRoomRepo struct {
-	rooms     map[int64]*Room
-	listErr   error
-	updateErr error
-	updates   []*Room
+	rooms       map[int64]*Room
+	listErr     error
+	updateErr   error
+	backfillErr error
+	updates     []*Room
+	backfills   []backfillCall
+}
+
+type backfillCall struct {
+	roomID  int64
+	name    string
+	updated bool
 }
 
 func (r *fakeRoomRepo) FindByRoomID(_ context.Context, roomID int64) (*Room, error) {
@@ -74,6 +82,20 @@ func (r *fakeRoomRepo) UpdateRoom(_ context.Context, room *Room) (*Room, error) 
 	}
 	r.rooms[room.RoomID] = room
 	return room, nil
+}
+
+func (r *fakeRoomRepo) BackfillRoomName(_ context.Context, roomID int64, name string) (bool, error) {
+	if r.backfillErr != nil {
+		r.backfills = append(r.backfills, backfillCall{roomID: roomID, name: name, updated: false})
+		return false, r.backfillErr
+	}
+	updated := false
+	if room, ok := r.rooms[roomID]; ok && room.Name == "" {
+		room.Name = name
+		updated = true
+	}
+	r.backfills = append(r.backfills, backfillCall{roomID: roomID, name: name, updated: updated})
+	return updated, nil
 }
 
 func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
@@ -134,19 +156,19 @@ func TestApplyRoomInfoBackfillsNameThroughRepo(t *testing.T) {
 	if got := reg.Room(1).Name; got != "streamer" {
 		t.Fatalf("backfilled name = %q, want streamer", got)
 	}
-	if len(repo.updates) != 1 || repo.updates[0].RoomID != 1 || repo.updates[0].Name != "streamer" {
-		t.Fatalf("repo updates = %+v, want one backfilled room", repo.updates)
+	if len(repo.backfills) != 1 || !repo.backfills[0].updated || repo.backfills[0].roomID != 1 || repo.backfills[0].name != "streamer" {
+		t.Fatalf("repo backfills = %+v, want one successful backfill", repo.backfills)
 	}
 
 	// A second apply with the name already set must not write again.
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other"})
-	if len(repo.updates) != 1 {
-		t.Fatalf("repo updates = %d, want exactly 1", len(repo.updates))
+	if len(repo.backfills) != 1 {
+		t.Fatalf("repo backfills = %d, want exactly 1", len(repo.backfills))
 	}
 }
 
 func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
-	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, updateErr: stderrors.New("db locked")}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, backfillErr: stderrors.New("db locked")}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)

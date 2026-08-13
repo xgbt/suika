@@ -199,7 +199,20 @@ export default function RoomList() {
       title: '启用',
       dataIndex: 'enabled',
       width: 70,
-      render: (v: boolean) => <Switch size="small" checked={v} disabled />,
+      render: (v: boolean, record: Room) => (
+        <Switch
+          size="small"
+          checked={v}
+          onChange={async (checked) => {
+            try {
+              await roomsApi.update({ room_id: record.room_id, enabled: checked }, ['enabled']);
+              loadPage(pageTokenStack[currentPage] ?? '');
+            } catch (e: unknown) {
+              message.error((e as Error).message ?? '更新失败');
+            }
+          }}
+        />
+      ),
     },
     {
       title: '直播状态',

@@ -59,6 +59,7 @@ type RoomRepo interface {
 	ListRooms(context.Context, ListQuery) ([]*Room, error)
 	CreateRoom(context.Context, *Room) (*Room, error)
 	UpdateRoom(context.Context, *Room) (*Room, error)
+	BackfillRoomName(context.Context, int64, string) (bool, error)
 	DeleteRoom(context.Context, int64) error
 }
 

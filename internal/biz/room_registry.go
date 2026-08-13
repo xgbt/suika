@@ -61,8 +61,7 @@ func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 	return reg, nil
 }
 
-// Rooms returns a snapshot of every registered room, in load order (no
-// streamer-name backfill).
+// Rooms returns a snapshot of every registered room, in load order.
 func (reg *RoomRegistry) Rooms() []Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -118,17 +117,41 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	} else {
 		st.live = LivePreparing
 	}
-	var backfilled *Room
+	var backfilledName string
 	if st.room.Name == "" && info.StreamerName != "" {
-		st.room.Name = info.StreamerName
-		room := st.room
-		backfilled = &room
+		backfilledName = info.StreamerName
 	}
 	reg.mu.Unlock()
 
-	if backfilled != nil && reg.repo != nil {
-		if _, err := reg.repo.UpdateRoom(ctx, backfilled); err != nil {
+	if backfilledName != "" && reg.repo != nil {
+		updated, err := reg.repo.BackfillRoomName(ctx, roomID, backfilledName)
+		if err != nil {
 			log.Warn("room registry: persist backfilled room name failed", "room", roomID, "err", err)
+			reg.mu.Lock()
+			if st, ok := reg.states[roomID]; ok && st.room.Name == "" {
+				st.room.Name = backfilledName
+				for i := range reg.rooms {
+					if reg.rooms[i].RoomID == roomID {
+						reg.rooms[i].Name = backfilledName
+						break
+					}
+				}
+			}
+			reg.mu.Unlock()
+			return
+		}
+		if updated {
+			reg.mu.Lock()
+			if st, ok := reg.states[roomID]; ok && st.room.Name == "" {
+				st.room.Name = backfilledName
+				for i := range reg.rooms {
+					if reg.rooms[i].RoomID == roomID {
+						reg.rooms[i].Name = backfilledName
+						break
+					}
+				}
+			}
+			reg.mu.Unlock()
 		}
 	}
 }
