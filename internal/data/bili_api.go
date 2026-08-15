@@ -16,28 +16,26 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// biliUserAgent is the User-Agent used for every Bilibili request.
+// biliUserAgent 是所有 B 站请求使用的 User-Agent。
 const biliUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 const (
 	liveAPIBase = "https://api.live.bilibili.com"
-	// defaultDanmakuServer is the last-resort danmaku endpoint when both
-	// getDanmuInfo and the legacy getConf are risk-controlled.
+	// defaultDanmakuServer 是 getDanmuInfo 和旧版 getConf 都被风控时
+	// 的兜底弹幕端点。
 	defaultDanmakuServer = "wss://broadcastlv.chat.bilibili.com:2245/sub"
 )
 
-// Internal risk-control sentinels; public callers only see biz.ErrRiskControl.
+// 内部风控哨兵错误；外部调用方只会看到 biz.ErrRiskControl。
 var (
 	errRiskControl352  = stderrors.New("bilibili -352 risk control")
 	errHTTPRiskControl = stderrors.New("bilibili http-layer risk control")
 )
 
-// riskCooldownLadder is the escalating per-room cooldown applied after
-// repeated risk-control rejections.
+// riskCooldownLadder 是风控连续被拒后按房间递增的冷却时长。
 var riskCooldownLadder = []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute}
 
-// qnNames maps quality numbers to display names (fallback when the API
-// does not return g_qn_desc).
+// qnNames 将清晰度编号映射为展示名称（API 未返回 g_qn_desc 时兜底）。
 var qnNames = map[int32]string{
 	20000: "4K",
 	10000: "原画",
@@ -47,8 +45,8 @@ var qnNames = map[int32]string{
 	80:    "流畅",
 }
 
-// injectAntiRisk returns the configured cookie with fresh buvid3/buvid4
-// fingerprints injected. Failures degrade to the plain cookie.
+// injectAntiRisk 返回注入了新鲜 buvid3/buvid4 指纹的配置 cookie；
+// 失败时退化为原 cookie。
 func (d *Data) injectAntiRisk(ctx context.Context) string {
 	b3, b4, err := d.buvids.getBuvids(ctx, d.cookie)
 	if err != nil {
@@ -61,8 +59,7 @@ func (d *Data) injectAntiRisk(ctx context.Context) string {
 	return injectBuvids(d.cookie, b3, b4)
 }
 
-// refreshRisk refreshes WBI keys and drops cached buvids before a
-// risk-control retry.
+// refreshRisk 在风控重试前刷新 WBI 密钥并丢弃缓存的 buvid。
 func (d *Data) refreshRisk() {
 	if err := d.signer.refreshKeys(); err != nil {
 		log.Warn("wbi key refresh failed, retrying with existing keys", "err", err)
@@ -70,7 +67,7 @@ func (d *Data) refreshRisk() {
 	d.buvids.invalidate(d.cookie)
 }
 
-// signURL WBI-signs endpoint; on failure it degrades to the unsigned URL.
+// signURL 对 endpoint 做 WBI 签名；失败时退化为未签名 URL。
 func (d *Data) signURL(endpoint string) string {
 	signed, err := d.signer.signURL(endpoint)
 	if err != nil {
@@ -80,8 +77,8 @@ func (d *Data) signURL(endpoint string) string {
 	return signed
 }
 
-// fetchJSON performs a GET with anti-risk-control headers and decodes the
-// JSON body into out. HTTP 412/403/429 map to errHTTPRiskControl.
+// fetchJSON 携带抗风控头发 GET 请求，并把 JSON 响应体解码到 out。
+// HTTP 412/403/429 映射为 errHTTPRiskControl。
 func (d *Data) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -114,8 +111,8 @@ type riskCooldown struct {
 	until    time.Time
 }
 
-// liveClient implements biz.LiveClient: all Bilibili API and danmaku
-// websocket traffic, including risk-control retries and per-room cooldowns.
+// liveClient 实现 biz.LiveClient：所有 B 站 API 与弹幕 websocket 流量，
+// 包括风控重试和按房间的冷却。
 type liveClient struct {
 	d *Data
 
@@ -123,12 +120,11 @@ type liveClient struct {
 	cooldowns map[int64]*riskCooldown
 }
 
-// NewLiveClient creates the Bilibili platform seam.
 func NewLiveClient(d *Data) biz.LiveClient {
 	return &liveClient{d: d, cooldowns: make(map[int64]*riskCooldown)}
 }
 
-// enterRiskGate blocks API calls for a room that is cooling down.
+// enterRiskGate 拦截处于冷却期房间的 API 调用。
 func (lc *liveClient) enterRiskGate(roomID int64) error {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
@@ -163,7 +159,7 @@ func isRiskControlError(err error) bool {
 	return stderrors.Is(err, errRiskControl352) || stderrors.Is(err, errHTTPRiskControl)
 }
 
-// RoomStatus returns the room's current broadcast state via getInfoByRoom.
+// RoomStatus 经 getInfoByRoom 返回房间当前的开播状态。
 func (lc *liveClient) RoomStatus(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	if err := lc.enterRiskGate(roomID); err != nil {
 		return nil, err
@@ -229,9 +225,8 @@ func (lc *liveClient) roomStatus(ctx context.Context, roomID int64) (*biz.RoomIn
 	}, nil
 }
 
-// OpenStream selects the best FLV stream URL and opens it for reading.
-// Any open/read failure is wrapped as biz.ErrStreamTransient when it
-// looks CDN-side, so the decision tree can re-select a stream URL.
+// OpenStream 选择最优 FLV 流地址并打开读取。打开/读取失败若看似 CDN
+// 侧，则包装为 biz.ErrStreamTransient，供决策树重新选择流地址。
 func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.StreamHandle, error) {
 	if err := lc.enterRiskGate(roomID); err != nil {
 		return nil, err
@@ -304,7 +299,7 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 						continue
 					}
 					if !isFLVStream(codec.BaseURL) {
-						continue // recording needs FLV
+						continue // 录制只收 FLV
 					}
 					priority := 90
 					if codec.CodecName == "avc" {
@@ -328,8 +323,8 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 		}
 	}
 
-	// Accept the granted quality even when it is below the requested qn
-	// (expired cookies lose source quality); record it in meta.
+	// 即使授予的清晰度低于请求的 qn 也接受（cookie 过期会失去原画），
+	// 并记入 meta。
 	granted := playURL.CurrentQn
 	if granted == 0 {
 		granted = lc.d.qualityQN

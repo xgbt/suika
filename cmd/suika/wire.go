@@ -1,7 +1,7 @@
 //go:build wireinject
 // +build wireinject
 
-// The build tag makes sure the stub is not built in the final build.
+// 构建标签确保该桩文件不会进入最终构建。
 
 package main
 
@@ -18,7 +18,7 @@ import (
 	"github.com/google/wire"
 )
 
-// wireApp init kratos application.
+// wireApp 初始化 Kratos 应用。
 func wireApp(*conf.Server, *conf.Data, *conf.Recorder, *slog.Logger) (*kratos.App, func(), error) {
 	panic(wire.Build(server.ProviderSet, data.ProviderSet, biz.ProviderSet, service.ProviderSet, newApp))
 }

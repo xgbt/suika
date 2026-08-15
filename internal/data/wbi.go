@@ -17,11 +17,11 @@ import (
 	"time"
 )
 
-// errWBIKeyUnavailable means the WBI signing keys could not be fetched.
+// errWBIKeyUnavailable 表示 WBI 签名密钥获取失败。
 var errWBIKeyUnavailable = stderrors.New("wbi key unavailable")
 
-// mixinKeyEncTab is the 64-element permutation table used by WBI signing.
-// Ported from hikami-go/internal/biliutil/wbi.go.
+// mixinKeyEncTab 是 WBI 签名使用的 64 元素置换表。
+// 移植自 hikami-go/internal/biliutil/wbi.go。
 var mixinKeyEncTab = [64]int{
 	46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
 	27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
@@ -29,8 +29,8 @@ var mixinKeyEncTab = [64]int{
 	22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 }
 
-// wbiSigner signs request URLs with w_rid/wts as required by Bilibili's
-// -352 risk control. Keys are fetched from the nav API and cached 1 hour.
+// wbiSigner 按 B 站 -352 风控要求为请求 URL 附加 w_rid/wts 签名。
+// 密钥从 nav API 获取并缓存 1 小时。
 type wbiSigner struct {
 	httpClient *http.Client
 	cookie     string
@@ -43,7 +43,7 @@ func newWBISigner(httpc *http.Client, cookie string) *wbiSigner {
 	return &wbiSigner{httpClient: httpc, cookie: cookie}
 }
 
-// signURL appends wts and w_rid query parameters to rawURL.
+// signURL 为 rawURL 追加 wts 和 w_rid 查询参数。
 func (s *wbiSigner) signURL(rawURL string) (string, error) {
 	if err := s.ensureKeys(); err != nil {
 		return "", err
@@ -83,7 +83,7 @@ func (s *wbiSigner) signURL(rawURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-// refreshKeys forces a key refresh from the nav API.
+// refreshKeys 强制从 nav API 刷新密钥。
 func (s *wbiSigner) refreshKeys() error {
 	return s.fetchKeys()
 }
@@ -152,7 +152,7 @@ func (s *wbiSigner) fetchKeys() error {
 	return nil
 }
 
-// extractKeyFromURL extracts the file name without the .png suffix.
+// extractKeyFromURL 提取去掉 .png 后缀的文件名。
 func extractKeyFromURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -161,7 +161,7 @@ func extractKeyFromURL(rawURL string) string {
 	return strings.TrimSuffix(path.Base(u.Path), ".png")
 }
 
-// getMixinKey derives the 32-char mixin key from imgKey+subKey.
+// getMixinKey 由 imgKey+subKey 推导 32 字符的 mixin key。
 func getMixinKey(imgKey, subKey string) string {
 	combined := imgKey + subKey
 	var result strings.Builder
@@ -177,7 +177,7 @@ func getMixinKey(imgKey, subKey string) string {
 	return mixed
 }
 
-// sanitizeWBIValue strips the special characters !'()* from a value.
+// sanitizeWBIValue 剔除值中的特殊字符 !'()*。
 func sanitizeWBIValue(v string) string {
 	var sb strings.Builder
 	for _, ch := range v {

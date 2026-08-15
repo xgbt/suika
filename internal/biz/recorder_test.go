@@ -13,10 +13,10 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-// fakeRepo scripts RecorderRepo behavior for decision-tree tests.
+// fakeRepo 为决策树测试模拟 RecorderRepo 行为。
 type fakeRepo struct {
 	prepareErr  error
-	recordQueue []recordOutcome // popped per call; last entry is sticky
+	recordQueue []recordOutcome // 每次调用弹出一个；最后一项固定复用
 	recordCalls int
 	finished    []*Session
 	finishErr   error
@@ -52,11 +52,11 @@ func (r *fakeRepo) FinishSession(_ context.Context, session *Session) error {
 
 func (r *fakeRepo) RecoverPending(context.Context) error { return nil }
 
-// fakeLiveClient scripts LiveClient behavior.
+// fakeLiveClient 模拟 LiveClient 行为。
 type fakeLiveClient struct {
-	statusQueue []statusOutcome // popped per call; last entry is sticky
+	statusQueue []statusOutcome // 每次调用弹出一个；最后一项固定复用
 	statusCalls int
-	openErrs    []error // popped per OpenStream call
+	openErrs    []error // 每次 OpenStream 调用弹出一个
 	openCalls   int
 }
 
@@ -161,7 +161,7 @@ func TestRecordLoopBudgetExhaustedKeepsContent(t *testing.T) {
 
 	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
 
-	// initial attempt + 1 reconnect, then give up keeping content.
+	// 首次尝试 + 1 次重连，随后放弃并保留已录内容。
 	if repo.recordCalls != 2 {
 		t.Fatalf("recordCalls = %d, want 2", repo.recordCalls)
 	}
@@ -186,13 +186,13 @@ func TestRecordLoopCDNTransientUsesSeparateBudget(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &SessionResult{}, err: transient}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
-		u.rec.MaxReconnect = 0 // ordinary budget empty: only the CDN budget applies
+		u.rec.MaxReconnect = 0 // 常规重连预算置空：只有 CDN 预算生效
 		u.rec.CDNTransientBudget = 2
 	})
 
 	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
 
-	// initial attempt + 2 CDN-budget retries.
+	// 首次尝试 + 2 次 CDN 预算内重试。
 	if repo.recordCalls != 3 {
 		t.Fatalf("recordCalls = %d, want 3", repo.recordCalls)
 	}
@@ -296,7 +296,7 @@ func TestJitterDurationWithinBand(t *testing.T) {
 	}
 }
 
-// fakeDanmakuConn is a scripted DanmakuConn for watchRoom tests.
+// fakeDanmakuConn 是 watchRoom 测试用的脚本化 DanmakuConn。
 type fakeDanmakuConn struct {
 	events           chan *DanmakuEvent
 	roomStateUpdates chan *RoomInfo
@@ -306,8 +306,8 @@ func (c *fakeDanmakuConn) Events() <-chan *DanmakuEvent       { return c.events 
 func (c *fakeDanmakuConn) RoomStateUpdates() <-chan *RoomInfo { return c.roomStateUpdates }
 func (c *fakeDanmakuConn) Close() error                       { return nil }
 
-// watchClient is a LiveClient driven entirely through its danmaku conn;
-// status probes report offline so only control events steer the test.
+// watchClient 是完全经由弹幕连接驱动的 LiveClient；状态探测恒报未开播，
+// 测试只由控制事件推动。
 type watchClient struct{ conn DanmakuConn }
 
 func (c *watchClient) RoomStatus(_ context.Context, roomID int64) (*RoomInfo, error) {
@@ -322,8 +322,8 @@ func (c *watchClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
 	return c.conn, nil
 }
 
-// pumpBlockRepo blocks RecordSession until its context is cancelled, like
-// a pump attached to a live stream that never drops on its own.
+// pumpBlockRepo 使 RecordSession 阻塞到 context 取消，模拟一路永不
+// 断开的直播流。
 type pumpBlockRepo struct {
 	finished []*Session
 }
@@ -360,8 +360,7 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 		}
 	}()
 
-	// waitRecord polls the registry until room 42 reaches the wanted
-	// record state, or the deadline passes.
+	// waitRecord 轮询注册表，直到房间 42 到达期望的录制状态或超时。
 	waitRecord := func(want RecordState) bool {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {

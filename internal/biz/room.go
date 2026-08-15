@@ -32,7 +32,7 @@ const (
 	RecordError
 )
 
-// Room DO
+// Room 房间领域对象（DO）。
 type Room struct {
 	RoomID       int64
 	StreamerName string
@@ -42,8 +42,8 @@ type Room struct {
 	UpdateTime   time.Time
 }
 
-// RoomRuntime is the status-API view of one room: persisted fields, live
-// state, record state, and in-flight write progress.
+// RoomRuntime 是单个房间对外暴露的状态视图：持久化字段、直播状态、
+// 录制状态，以及正在进行中的写入进度。
 type RoomRuntime struct {
 	Room             Room
 	Live             LiveState
@@ -54,7 +54,6 @@ type RoomRuntime struct {
 	LastError        string
 }
 
-// RoomRepo is a room repo.
 type RoomRepo interface {
 	FindByRoomID(context.Context, int64) (*Room, error)
 	ListRooms(context.Context, ListQuery) ([]*Room, error)
@@ -73,28 +72,24 @@ type ListQuery struct {
 	Limit        int
 }
 
-// SessionStatsRepo is the narrow stats seam consumed by the room API: it
-// reports the in-flight write progress of a room's active session.
+// SessionStatsRepo 是房间 API 消费的窄统计接口：上报房间当前活跃会话
+// 的写入进度。
 type SessionStatsRepo interface {
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
 }
 
-// RoomUsecase serves the room API: CRUD goes through the repo, and reads
-// merge the persisted fields with the runtime state of the shared
-// registry.
+// RoomUsecase 服务房间 API：增删改经由仓储持久化；读操作将持久化字段
+// 与共享注册表中的运行时状态合并后返回。
 type RoomUsecase struct {
 	repo  RoomRepo
 	reg   *RoomRegistry
 	stats SessionStatsRepo
 }
 
-// NewRoomUsecase new a Room usecase.
 func NewRoomUsecase(repo RoomRepo, reg *RoomRegistry, stats SessionStatsRepo) *RoomUsecase {
 	return &RoomUsecase{repo: repo, reg: reg, stats: stats}
 }
 
-// GetRoom returns one room with the runtime state merged from the
-// registry.
 func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime, error) {
 	if roomID <= 0 {
 		return nil, ErrRoomInvalidArgument
@@ -106,7 +101,6 @@ func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime,
 	return uc.withRuntime(ctx, room), nil
 }
 
-// ListRoomRuntimes lists rooms with the runtime state merged from the registry.
 func (uc *RoomUsecase) ListRoomRuntimes(ctx context.Context, query ListQuery) ([]*RoomRuntime, error) {
 	rooms, err := uc.repo.ListRooms(ctx, query)
 	if err != nil {
@@ -120,8 +114,6 @@ func (uc *RoomUsecase) ListRoomRuntimes(ctx context.Context, query ListQuery) ([
 	return roomRuntimes, nil
 }
 
-// CreateRoom registers a new room. The returned view carries default
-// runtime values; the recorder picks the room up after a restart.
 func (uc *RoomUsecase) CreateRoom(ctx context.Context, room *Room) (*RoomRuntime, error) {
 	if room == nil || room.RoomID <= 0 {
 		return nil, ErrRoomInvalidArgument
@@ -133,8 +125,6 @@ func (uc *RoomUsecase) CreateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	return &RoomRuntime{Room: *created}, nil
 }
 
-// UpdateRoom updates an existing room. The returned view carries default
-// runtime values.
 func (uc *RoomUsecase) UpdateRoom(ctx context.Context, room *Room) (*RoomRuntime, error) {
 	if room == nil || room.RoomID <= 0 {
 		return nil, ErrRoomInvalidArgument
@@ -146,7 +136,6 @@ func (uc *RoomUsecase) UpdateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	return &RoomRuntime{Room: *updated}, nil
 }
 
-// DeleteRoom removes a room.
 func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	if roomID <= 0 {
 		return ErrRoomInvalidArgument
@@ -154,9 +143,9 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	return uc.repo.DeleteRoom(ctx, roomID)
 }
 
-// withRuntime merges the persisted room with the registry runtime state
-// and the in-flight session stats. Persisted fields always come from the
-// repo; stats errors are silently skipped (progress is best-effort).
+// withRuntime 将持久化房间与注册表运行时状态、会话写入进度合并。
+// 持久化字段始终来自仓储；进度查询失败时静默跳过（进度仅作尽力而为
+// 的展示）。
 func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime {
 	rt := uc.reg.runtime(room.RoomID)
 	rt.Room = *room

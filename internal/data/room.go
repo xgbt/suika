@@ -168,8 +168,8 @@ func (r *roomRepo) DeleteRoom(ctx context.Context, roomID int64) error {
 	return nil
 }
 
-// isRoomConstraintError reports whether err is a sqlite constraint
-// violation, i.e. the room_id primary key already exists.
+// isRoomConstraintError 判断 err 是否为 sqlite 约束冲突，
+// 即 room_id 主键已存在。
 func isRoomConstraintError(err error) bool {
 	var sqliteErr sqlite3.Error
 	return stderrors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint

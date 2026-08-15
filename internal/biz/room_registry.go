@@ -10,7 +10,7 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// roomState is the mutable runtime state of one registered room.
+// roomState 是单个已注册房间的可变运行时状态。
 type roomState struct {
 	room             Room
 	live             LiveState
@@ -19,28 +19,23 @@ type roomState struct {
 	lastError        string
 }
 
-// RoomRegistry holds the room list loaded at startup and its runtime
-// state. The recorder daemon writes live/record state; the room API reads
-// snapshots. CRUD changes made through the room API are persisted in the
-// repo and picked up by the registry on the next restart.
+// RoomRegistry 持有启动时加载的房间列表及其运行时状态。录制守护进程
+// 写入直播/录制状态，房间 API 读取快照。房间 API 的增删改立即持久化
+// 到仓储，注册表在下次重启时才重新加载。
 type RoomRegistry struct {
 	repo RoomRepo
-	// mu protects both the registry containers and the mutable fields inside
-	// each roomState. It must be held while reading or changing rooms, states,
-	// or a room's live/record/session/error fields; protecting only the map
-	// would still allow concurrent goroutines to race on the state object.
-	// Snapshot methods hold mu while copying state, and mutating methods hold
-	// it for the complete read-modify-write operation. Repository I/O must stay
-	// outside the critical section so a slow database call cannot block all
-	// recorder updates and room reads.
+	// mu 同时保护注册表容器和每个 roomState 内部的可变字段：读改
+	// rooms、states 或房间的 live/record/session/error 字段都必须持锁，
+	// 只保护 map 仍会在状态对象上产生数据竞争。快照方法持锁拷贝状态，
+	// 修改方法持锁完成整个读-改-写。仓储 IO 必须放在临界区之外，避免
+	// 慢速数据库调用阻塞所有录制更新和房间读取。
 	mu     sync.Mutex
 	rooms  []Room
 	states map[int64]*roomState
 }
 
-// NewRoomRegistry loads the persisted room list from the repo into a
-// registry. A nil repo is tolerated and yields an empty registry; a load
-// failure fails startup.
+// NewRoomRegistry 从仓储加载持久化房间列表构建注册表。允许 repo 为
+// nil（得到空注册表）；加载失败则启动失败。
 func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 	reg := &RoomRegistry{
 		repo:   repo,
@@ -61,7 +56,7 @@ func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 	return reg, nil
 }
 
-// Rooms returns a snapshot of every registered room, in load order.
+// Rooms 按加载顺序返回所有已注册房间的快照。
 func (reg *RoomRegistry) Rooms() []Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -70,8 +65,8 @@ func (reg *RoomRegistry) Rooms() []Room {
 	return out
 }
 
-// Room returns the current configuration snapshot of one room, including
-// any streamer metadata backfill. Unknown room IDs fall back to a bare room.
+// Room 返回单个房间当前的配置快照（含已回填的主播元数据）。未知房间
+// 退化为只带房间号的空房间。
 func (reg *RoomRegistry) Room(roomID int64) Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -81,8 +76,8 @@ func (reg *RoomRegistry) Room(roomID int64) Room {
 	return Room{RoomID: roomID}
 }
 
-// runtime returns a copy of one room's runtime state. Rooms unknown to the
-// registry (created after startup) get default state values.
+// runtime 返回单个房间运行时状态的拷贝。注册表中不存在的房间（启动后
+// 新建的）返回默认状态值。
 func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -99,9 +94,8 @@ func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 	}
 }
 
-// ApplyRoomInfo records the platform-reported live state of a room and
-// backfills streamer metadata when unset. Backfilled values are written
-// back through the room repo so restarts keep them.
+// ApplyRoomInfo 记录平台上报的房间直播状态，并在主播名/标题为空时回填。
+// 回填值会经房间仓储写回持久化，重启后仍然保留。
 func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *RoomInfo) {
 	if info == nil {
 		return
@@ -180,7 +174,7 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	}
 }
 
-// StartRecording marks a room as actively recording a fresh session.
+// StartRecording 将房间标记为正在录制新会话。
 func (reg *RoomRegistry) StartRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
 		st.record = RecordRecording
@@ -189,12 +183,12 @@ func (reg *RoomRegistry) StartRecording(roomID int64) {
 	})
 }
 
-// SetRemuxing marks a room's session as finishing (remux in progress).
+// SetRemuxing 将房间会话标记为收尾中（正在转封装）。
 func (reg *RoomRegistry) SetRemuxing(roomID int64) {
 	reg.setState(roomID, func(st *roomState) { st.record = RecordRemuxing })
 }
 
-// FailRecording marks a room's session as failed with the given error.
+// FailRecording 将房间会话标记为失败并记录错误。
 func (reg *RoomRegistry) FailRecording(roomID int64, err error) {
 	reg.setState(roomID, func(st *roomState) {
 		st.record = RecordError
@@ -202,7 +196,7 @@ func (reg *RoomRegistry) FailRecording(roomID int64, err error) {
 	})
 }
 
-// FinishRecording marks a room idle after its session finalized.
+// FinishRecording 在会话收尾完成后将房间恢复空闲。
 func (reg *RoomRegistry) FinishRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
 		st.record = RecordIdle
@@ -210,8 +204,7 @@ func (reg *RoomRegistry) FinishRecording(roomID int64) {
 	})
 }
 
-// NoteError records a monitor/session error against a room without
-// changing its record state.
+// NoteError 记录监控/会话错误，不改变录制状态。
 func (reg *RoomRegistry) NoteError(roomID int64, err error) {
 	reg.setState(roomID, func(st *roomState) { st.lastError = err.Error() })
 }

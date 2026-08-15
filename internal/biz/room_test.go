@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// fakeStatsRepo scripts SessionStatsRepo behavior for the room API tests.
+// fakeStatsRepo 为房间 API 测试模拟 SessionStatsRepo 行为。
 type fakeStatsRepo struct {
 	stats    map[int64]*SessionStats
 	failures map[int64]error
@@ -27,7 +27,7 @@ func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionS
 	return nil, nil
 }
 
-// fakeRoomRepo scripts RoomRepo behavior for registry and usecase tests.
+// fakeRoomRepo 为注册表和 usecase 测试模拟 RoomRepo 行为。
 type fakeRoomRepo struct {
 	rooms       map[int64]*Room
 	listErr     error
@@ -170,7 +170,7 @@ func TestApplyRoomInfoBackfillsIdentityThroughRepo(t *testing.T) {
 		t.Fatalf("repo backfills = %+v, want one successful backfill", repo.backfills)
 	}
 
-	// A second apply with metadata already set must not write again.
+	// 元数据已存在时再次上报，不应重复写入。
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other", Title: "title-b"})
 	if len(repo.backfills) != 1 {
 		t.Fatalf("repo backfills = %d, want exactly 1", len(repo.backfills))
@@ -186,7 +186,7 @@ func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
 
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
 
-	// The in-memory backfill still lands when persistence fails.
+	// 持久化失败时，内存中的回填仍要生效。
 	if got := reg.Room(1).StreamerName; got != "streamer" {
 		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
 	}
@@ -199,8 +199,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	stats := &fakeStatsRepo{
 		stats: map[int64]*SessionStats{
 			1: {CurrentFile: "/rec/1_part2.flv", BytesWritten: 4096},
-			// room 2 has stats available but is not recording: they must
-			// not be merged.
+			// 房间 2 有统计数据但未在录制：不得合并进度。
 			2: {CurrentFile: "/rec/2_part1.flv", BytesWritten: 1},
 		},
 		failures: map[int64]error{3: stderrors.New("stats unavailable")},
@@ -248,14 +247,14 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	if out[1].CurrentFile != "" || out[1].BytesWritten != 0 {
 		t.Fatalf("room 2 unexpectedly got stats: %q/%d", out[1].CurrentFile, out[1].BytesWritten)
 	}
-	// recording room whose stats call fails: skipped without an error.
+	// 录制中但统计查询失败的房间：静默跳过，不报错。
 	if out[2].Record != RecordRecording {
 		t.Fatalf("room 3 state = %v", out[2].Record)
 	}
 	if out[2].CurrentFile != "" || out[2].BytesWritten != 0 {
 		t.Fatalf("room 3 stats = %q/%d, want zero values after stats error", out[2].CurrentFile, out[2].BytesWritten)
 	}
-	// stats are only requested for RecordRecording rooms.
+	// 只有录制中的房间才会查询统计。
 	if len(stats.calls) != 2 || stats.calls[0] != 1 || stats.calls[1] != 3 {
 		t.Fatalf("stats calls = %v, want [1 3]", stats.calls)
 	}
@@ -285,7 +284,7 @@ func TestRoomUsecaseValidation(t *testing.T) {
 	if err := uc.DeleteRoom(ctx, -1); !stderrors.Is(err, ErrRoomInvalidArgument) {
 		t.Fatalf("DeleteRoom(negative id) error = %v, want invalid argument", err)
 	}
-	// Empty streamer metadata is allowed: the platform API backfills it later.
+	// 允许空的主播元数据：之后由平台 API 回填。
 	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 7}); err != nil {
 		t.Fatalf("CreateRoom(empty metadata) error = %v, want success", err)
 	}

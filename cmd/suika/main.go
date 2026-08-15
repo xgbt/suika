@@ -21,11 +21,11 @@ import (
 
 // go build -ldflags "-X main.Version=x.y.z"
 var (
-	// Name is the name of the compiled software.
+	// Name 是编译产物的名称。
 	Name string
-	// Version is the version of the compiled software.
+	// Version 是编译产物的版本。
 	Version string
-	// flagconf is the config flag.
+	// flagconf 是配置文件路径的命令行参数。
 	flagconf string
 
 	id, _ = os.Hostname()
@@ -86,7 +86,7 @@ func main() {
 	}
 	defer cleanup()
 
-	// start and wait for stop signal
+	// 启动应用并等待停止信号
 	if err := app.Run(); err != nil {
 		panic(err)
 	}

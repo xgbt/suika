@@ -24,21 +24,20 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// Recorder repo defaults (proto zero values are indistinguishable from
-// unset, so defaults are applied here; same trick as defaultPageSize).
+// 录制仓储默认值（proto 零值与未设置无法区分，默认值在此应用；
+// 与 defaultPageSize 同一手法）。
 const (
 	defaultRecordRoot     = "./recordings"
 	defaultSegmentMinutes = 120
 	defaultHealthInterval = 60 * time.Second
 	defaultHealthRounds   = 3
-	// splitOverrun caps how long a segment may exceed its duration target
-	// while waiting for a keyframe to split on.
+	// splitOverrun 限定分段在等待关键帧切点时最多超出目标时长多久。
 	splitOverrun = 15 * time.Second
 	maxTitleLen  = 64
 	maxNameLen   = 32
 )
 
-// meta.json status values.
+// meta.json 的 status 取值。
 const (
 	metaStatusRecording = "recording"
 	metaStatusRemuxing  = "remuxing"
@@ -46,15 +45,15 @@ const (
 	metaStatusPartial   = "partial"
 )
 
-// segment remux_status values.
+// 分段的 remux_status 取值。
 const (
 	remuxStatusPending = "pending"
 	remuxStatusOK      = "ok"
 	remuxStatusFailed  = "failed"
 )
 
-// sessionMeta is the on-disk session record (PO). The filesystem is the
-// source of truth: crash recovery works by scanning meta.json files.
+// sessionMeta 是会话的落盘记录（PO）。文件系统是事实来源：崩溃恢复
+// 通过扫描 meta.json 完成。
 type sessionMeta struct {
 	RoomID        int64         `json:"room_id"`
 	RoomName      string        `json:"room_name"`
@@ -93,7 +92,7 @@ type metaError struct {
 	Msg   string `json:"msg"`
 }
 
-// danmuLine is one JSONL danmaku record (PO).
+// danmuLine 是一条弹幕 JSONL 记录（PO）。
 type danmuLine struct {
 	Ts       int64           `json:"ts"`
 	Type     string          `json:"type"`
@@ -116,21 +115,20 @@ type pumpStats struct {
 	bytes atomic.Int64
 }
 
-// recorderRepo implements biz.RecorderRepo: the recordings directory
-// layout, the FLV pump, meta.json bookkeeping, and remux.
+// recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、
+// meta.json 簿记与转封装。
 type recorderRepo struct {
 	d *Data
 
 	recordRoot       string
-	segmentDuration  time.Duration // 0 disables splitting
+	segmentDuration  time.Duration // 为 0 时不切分
 	healthInterval   time.Duration
 	healthFailRounds int
 
-	mu    sync.Mutex // guards meta files and the stats map
+	mu    sync.Mutex // 保护 meta 文件与 stats 映射
 	stats map[int64]*pumpStats
 }
 
-// NewRecorderRepo creates the recorder storage seam.
 func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 	r := &recorderRepo{
 		d:                d,
@@ -160,18 +158,15 @@ func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 	return r
 }
 
-// NewSessionStatsRepo forwards the narrow stats seam consumed by the room
-// API to the exact same recorderRepo instance that backs RecorderRepo: the
-// in-flight pump stats state must not be copied or duplicated, otherwise
-// the room API would read stale write progress. The assertion holds
-// because NewRecorderRepo always returns *recorderRepo, which implements
-// both seams.
+// NewSessionStatsRepo 把房间 API 消费的窄统计接口转发到支撑
+// RecorderRepo 的同一个 recorderRepo 实例：写入进度状态不能被复制或
+// 重复持有，否则房间 API 会读到陈旧的进度。该断言恒成立，因为
+// NewRecorderRepo 总是返回同时实现两个接口的 *recorderRepo。
 func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
 	return repo.(biz.SessionStatsRepo)
 }
 
-// PrepareSession creates (or re-locates after a restart) the session
-// directory and meta.json.
+// PrepareSession 创建（或在重启后重新定位）会话目录和 meta.json。
 func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session) error {
 	dir, base, err := r.sessionPaths(session)
 	if err != nil {
@@ -185,12 +180,11 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// A session (re)start zeros the in-flight progress, mirroring how
-	// biz's StartRecording resets sessionStartedAt/lastError: without
-	// this, RecordSession's baseBytes resume logic would accumulate a
-	// room's new broadcast onto its previous session's byte total for
-	// as long as the process lives. Restart-resume is unaffected —
-	// stats are in-memory and already zero in a fresh process.
+	// 会话（重新）启动时把写入进度清零，与 biz 的 StartRecording 重置
+	// sessionStartedAt/lastError 相对应：否则 RecordSession 的 baseBytes
+	// 续算逻辑会在进程存活期间，把同一房间新一轮开播的字节数累加到
+	// 上一场会话的总数上。重启续录不受影响——统计在内存中，新进程里
+	// 本来就是零。
 	ps, ok := r.stats[session.RoomID]
 	if !ok {
 		ps = &pumpStats{}
@@ -200,7 +194,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 	ps.file.Store("")
 
 	if meta, err := loadMeta(metaPath); err == nil {
-		// restart resume: same session directory, keep recorded segments.
+		// 重启续录：同一会话目录，保留已录分段。
 		meta.Status = metaStatusRecording
 		if session.Title != "" {
 			meta.Title = session.Title
@@ -224,8 +218,8 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 	return saveMeta(metaPath, meta)
 }
 
-// RecordSession pumps the stream to disk (splitting segments as
-// configured) and writes danmaku events to the matching JSONL files.
+// RecordSession 将直播流写入磁盘（按配置切分分段），并把弹幕事件写入
+// 对应的 JSONL 文件。
 func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, stream *biz.StreamHandle, events <-chan *biz.DanmakuEvent) (*biz.SessionResult, error) {
 	if stream == nil || stream.Body == nil {
 		return nil, biz.ErrRoomInternal
@@ -250,7 +244,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, 
 	baseBytes := stats.bytes.Load()
 	stats.file.Store("")
 
-	// record the granted stream quality in meta.
+	// 把授予的清晰度记入 meta。
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Quality = qualityMeta{Qn: stream.Quality.Qn, Desc: stream.Quality.Desc}
 		if session.Title != "" {
@@ -334,11 +328,9 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, 
 					return &result, err
 				}
 			}
-			// Cache header tags only after the open/split decision: the tag
-			// that triggered the new segment must not be re-injected from the
-			// cache, or it would be written twice (once by openSegment, once
-			// by the pump below). Headers seen before the split are still
-			// re-injected in full.
+			// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个
+			// 标签不能从缓存重注入，否则会被写两次（openSegment 写一次、
+			// 下面的拉流写入又一次）。切分前已见过的头标签仍会完整重注入。
 			switch {
 			case tag.IsMetadata():
 				cache.metadata = tag
@@ -378,9 +370,8 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, 
 	}
 }
 
-// shouldSplit decides whether the next tag should open a new segment: the
-// duration target is reached and the tag is a keyframe, or the overrun
-// budget is exhausted (force split).
+// shouldSplit 判断下一个 tag 是否应开启新分段：达到目标时长且该 tag
+// 是关键帧，或者超时预算耗尽（强制切分）。
 func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
 	if r.segmentDuration <= 0 || !seg.hasStart {
 		return false
@@ -392,7 +383,7 @@ func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
 	return tag.IsVideoKeyframe() || elapsed >= r.segmentDuration+splitOverrun
 }
 
-// FinishSession finalizes meta.json and remuxes all recorded segments.
+// FinishSession 收尾 meta.json 并对所有已录分段执行转封装。
 func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Session) error {
 	dir, base, err := r.sessionPaths(session)
 	if err != nil {
@@ -405,7 +396,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Session) 
 	if err != nil {
 		r.mu.Unlock()
 		if os.IsNotExist(err) {
-			return nil // nothing was recorded
+			return nil // 没有录到任何内容
 		}
 		return err
 	}
@@ -423,9 +414,9 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Session) 
 	return r.finalizeSegments(ctx, metaPath, meta)
 }
 
-// finalizeSegments remuxes every pending segment one by one, persisting
-// meta.json after each so progress survives crashes. Remux failures keep
-// the FLV and are recorded in meta; they never delete data.
+// finalizeSegments 逐个转封装待处理的分段，每完成一个就持久化
+// meta.json，进度可抗崩溃。转封装失败时保留 FLV 并记录在 meta 中；
+// 绝不删除数据。
 func (r *recorderRepo) finalizeSegments(ctx context.Context, metaPath string, meta *sessionMeta) error {
 	dir := filepath.Dir(metaPath)
 	allOK := true
@@ -465,7 +456,7 @@ func (r *recorderRepo) finalizeSegments(ctx context.Context, metaPath string, me
 			allOK = false
 			log.Error("remux failed, keeping flv", "file", flvPath, "err", err)
 		} else if fi, serr := os.Stat(mp4Path); serr != nil || fi.Size() == 0 {
-			// never delete a source whose replacement is not verified
+			// 替代品未经验证，绝不删除源文件
 			seg.RemuxStatus = remuxStatusFailed
 			seg.RemuxError = "remux output missing or empty"
 			seg.FLVKept = true
@@ -486,8 +477,8 @@ func (r *recorderRepo) finalizeSegments(ctx context.Context, metaPath string, me
 	return r.persistMeta(metaPath, meta)
 }
 
-// RecoverPending finishes remux work left over from a previous run by
-// scanning every meta.json under the record root.
+// RecoverPending 扫描录制根目录下的所有 meta.json，完成上次运行遗留
+// 的转封装工作。
 func (r *recorderRepo) RecoverPending(ctx context.Context) error {
 	pattern := filepath.Join(r.recordRoot, "*", "*", "*.meta.json")
 	paths, err := filepath.Glob(pattern)
@@ -537,7 +528,6 @@ func hasRetryableSegments(meta *sessionMeta) bool {
 	return false
 }
 
-// SessionStats reports in-flight write progress for a room's session.
 func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.SessionStats, error) {
 	r.mu.Lock()
 	s, ok := r.stats[roomID]
@@ -549,7 +539,7 @@ func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.Sessi
 	return &biz.SessionStats{CurrentFile: file, BytesWritten: s.bytes.Load()}, nil
 }
 
-// --- helpers ---
+// --- 辅助函数 ---
 
 func (r *recorderRepo) statsFor(roomID int64) *pumpStats {
 	r.mu.Lock()
@@ -562,8 +552,8 @@ func (r *recorderRepo) statsFor(roomID int64) *pumpStats {
 	return s
 }
 
-// sessionPaths computes the session directory and the file-name base
-// (date/time/title prefix shared by all parts and the meta file).
+// sessionPaths 计算会话目录和文件名基座（所有分段与 meta 文件共享的
+// 日期/时间/标题前缀）。
 func (r *recorderRepo) sessionPaths(session *biz.Session) (dir string, base string, err error) {
 	if session == nil || session.RoomID <= 0 {
 		return "", "", biz.ErrRoomInternal
@@ -578,9 +568,8 @@ func (r *recorderRepo) sessionPaths(session *biz.Session) (dir string, base stri
 	return dir, base, nil
 }
 
-// sanitizeSegment replaces unsafe characters (\/:*?"<>|, control chars)
-// and whitespace runs with single underscores, truncates to max runes, and
-// falls back to "untitled".
+// sanitizeSegment 把不安全字符（\/:*?"<>|、控制字符）和连续空白替换为
+// 单个下划线，截断到 max 个字符，空结果退化为 "untitled"。
 func sanitizeSegment(s string, max int) string {
 	var sb strings.Builder
 	prevUnderscore := false
@@ -616,8 +605,8 @@ func sanitizeSegment(s string, max int) string {
 
 var partSuffixPattern = regexp.MustCompile(`_part(\d+)\.(flv|mp4)$`)
 
-// nextPartNumber derives the next part number by scanning the session
-// directory (covers both reconnects and crash restarts).
+// nextPartNumber 扫描会话目录推导下一个分段编号（同时覆盖重连和
+// 崩溃重启两种情况）。
 func nextPartNumber(dir, base string) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -666,7 +655,7 @@ func saveMeta(path string, meta *sessionMeta) error {
 	return os.Rename(tmp, path)
 }
 
-// updateMeta applies fn to the meta file under the repo lock.
+// updateMeta 在仓储锁内对 meta 文件应用 fn。
 func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -719,16 +708,16 @@ func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	})
 }
 
-// --- segment files ---
+// --- 分段文件 ---
 
-// headerCache holds the tags re-injected at the start of every segment.
+// headerCache 保存每个分段开头重注入的标签。
 type headerCache struct {
 	metadata *flv.Tag
 	videoSeq *flv.Tag
 	audioSeq *flv.Tag
 }
 
-// segmentFile is one part: an FLV file plus its danmaku JSONL.
+// segmentFile 是一个分段：一个 FLV 文件加配套的弹幕 JSONL。
 type segmentFile struct {
 	part      int
 	videoPath string
@@ -737,14 +726,14 @@ type segmentFile struct {
 	df        *os.File
 	bw        *bufio.Writer
 	hasStart  bool
-	startTs   int64 // stream timestamp of the first tag, ms
+	startTs   int64 // 首个 tag 的流时间戳，毫秒
 	lastTs    int64
 	bytes     int64
 	wallStart time.Time
 }
 
-// openSegment starts a new part: FLV header plus the cached onMetaData /
-// sequence-header tags, so the part is independently playable.
+// openSegment 开启新分段：写 FLV 头及缓存的 onMetaData / 序列头标签，
+// 使该分段可独立播放。
 func openSegment(dir, base string, part int, header *flv.FileHeader, cache *headerCache) (*segmentFile, error) {
 	videoPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.flv", base, part))
 	danmuPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.danmu.jsonl", base, part))

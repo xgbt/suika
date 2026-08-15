@@ -9,7 +9,7 @@ import (
 	"github.com/go-kratos/kratos/v3/transport/grpc"
 )
 
-// NewGRPCServer new a gRPC server.
+// NewGRPCServer 创建 gRPC 服务器。
 func NewGRPCServer(c *conf.Server, room *service.RoomService) *grpc.Server {
 	var opts = []grpc.ServerOption{
 		grpc.Middleware(

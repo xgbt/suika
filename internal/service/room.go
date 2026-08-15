@@ -16,8 +16,8 @@ const (
 	defaultPageSize = 20
 )
 
-// updatableRoomFields are the only field paths accepted by UpdateRoom;
-// room_id is immutable and the runtime fields are server-populated.
+// updatableRoomFields 是 UpdateRoom 接受的全部字段路径；room_id 不可变，
+// 运行时字段由服务端填充。
 var updatableRoomFields = map[string]bool{
 	"streamer_name": true,
 	"room_title":    true,
@@ -141,7 +141,7 @@ func convertRoom(in *v1.Room) *biz.Room {
 	}
 }
 
-// convertRoomReply converts the merged runtime view back to a DTO.
+// convertRoomReply 把合并后的运行时视图转换回 DTO。
 func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 	if rt == nil {
 		return nil

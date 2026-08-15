@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// NewHTTPServer new an HTTP server.
+// NewHTTPServer 创建 HTTP 服务器。
 func NewHTTPServer(c *conf.Server, room *service.RoomService) *http.Server {
 	var opts = []http.ServerOption{
 		http.Middleware(

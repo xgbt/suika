@@ -28,8 +28,8 @@ const (
 	danmakuRoomStateUpdateBuffer = 16
 
 	danmakuHeartbeatInterval = 30 * time.Second
-	// danmakuReadTimeout kills half-open connections: no inbound frame for
-	// this long (three missed heartbeat rounds) forces a reconnect.
+	// danmakuReadTimeout 用于掐掉半开连接：这么久（错过三轮心跳）
+	// 没收到任何入站帧就强制重连。
 	danmakuReadTimeout = 90 * time.Second
 
 	danmakuReconnectBase = 2 * time.Second
@@ -42,10 +42,9 @@ const (
 	operationAuthReply = 8
 )
 
-// danmakuConn is the resident danmaku websocket for one room. It serves
-// both live detection (RoomStateUpdates) and danmaku recording (Events); reconnects
-// run internally, and after every reconnect the room state is re-probed
-// and re-emitted so events missed while disconnected are covered.
+// danmakuConn 是一个房间的常驻弹幕 websocket，同时服务于开播检测
+// （RoomStateUpdates）和弹幕录制（Events）；内部自行重连，每次重连后
+// 重新探测并推送房间状态，以补上断连期间错过的事件。
 type danmakuConn struct {
 	lc               *liveClient
 	roomID           int64
@@ -74,7 +73,7 @@ func (c *danmakuConn) isClosed() bool {
 	}
 }
 
-// run keeps reconnecting until the conn is closed or ctx ends.
+// run 持续重连，直到连接被关闭或 ctx 结束。
 func (c *danmakuConn) run(ctx context.Context) {
 	backoff := danmakuReconnectBase
 	for {
@@ -102,7 +101,7 @@ func (c *danmakuConn) run(ctx context.Context) {
 	}
 }
 
-// connectAndServe runs one websocket connection attempt end to end.
+// connectAndServe 完整地跑一次 websocket 连接尝试。
 func (c *danmakuConn) connectAndServe(ctx context.Context) error {
 	info, err := c.lc.danmuInfo(ctx, c.roomID)
 	if err != nil {
@@ -118,8 +117,7 @@ func (c *danmakuConn) connectAndServe(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// Re-probe room state after (re)connecting to cover events missed
-	// while disconnected.
+	// （重）连接后重新探测房间状态，以补上断连期间错过的事件。
 	c.pushRoomState(ctx)
 
 	errCh := make(chan error, 1)
@@ -148,7 +146,7 @@ func (c *danmakuConn) connectAndServe(ctx context.Context) error {
 func (c *danmakuConn) dial(ctx context.Context, addresses []string, token, buvid string) (*websocket.Conn, error) {
 	var lastErr error
 	for _, address := range addresses {
-		// protover 3 (brotli) first, then 2 (zlib).
+		// 优先 protover 3（brotli），其次 2（zlib）。
 		for _, protover := range []int{3, 2} {
 			conn, err := c.dialAndAuth(ctx, address, token, protover, buvid)
 			if err == nil {
@@ -215,8 +213,7 @@ func (c *danmakuConn) readLoop(conn *websocket.Conn) error {
 	}
 }
 
-// pushRoomState re-probes the room via getInfoByRoom and emits the state
-// on the room-state update channel.
+// pushRoomState 重新探测房间，并把状态推送到房间状态更新通道。
 func (c *danmakuConn) pushRoomState(ctx context.Context) {
 	info, err := c.lc.RoomStatus(ctx, c.roomID)
 	if err != nil {
@@ -227,12 +224,11 @@ func (c *danmakuConn) pushRoomState(ctx context.Context) {
 	case c.roomStateUpdates <- info:
 	case <-c.closed:
 	default:
-		// room-state update buffer full: the next event will convey the state.
+		// 房间状态缓冲已满：下一个事件会传达最新状态。
 	}
 }
 
-// dispatch routes one decoded danmaku message to room-state updates or events
-// channel.
+// dispatch 将一条解码后的弹幕消息路由到房间状态更新或事件通道。
 func (c *danmakuConn) dispatch(ctx context.Context, raw json.RawMessage, receivedAt time.Time) {
 	var head struct {
 		Cmd string `json:"cmd"`
@@ -242,7 +238,7 @@ func (c *danmakuConn) dispatch(ctx context.Context, raw json.RawMessage, receive
 	}
 	cmd := head.Cmd
 	if i := strings.IndexByte(cmd, ':'); i >= 0 {
-		cmd = cmd[:i] // Bilibili appends variants like DANMU_MSG:4:0:3:...
+		cmd = cmd[:i] // B 站会在 Cmd 后附加变体，如 DANMU_MSG:4:0:3:...
 	}
 	switch cmd {
 	case "LIVE", "PREPARING", "ROUND", "ROOM_CHANGE":
@@ -264,8 +260,7 @@ func (c *danmakuConn) dispatch(ctx context.Context, raw json.RawMessage, receive
 	}
 }
 
-// emit delivers an event without blocking; a full buffer drops the event
-// (only possible while no session is consuming).
+// emit 非阻塞地投递事件；缓冲已满时丢弃（仅可能发生在无会话消费时）。
 func (c *danmakuConn) emit(ev *biz.DanmakuEvent) {
 	if ev == nil {
 		return
@@ -277,7 +272,7 @@ func (c *danmakuConn) emit(ev *biz.DanmakuEvent) {
 	}
 }
 
-// --- event parsing ---
+// --- 事件解析 ---
 
 func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
@@ -416,7 +411,7 @@ func toInt64(v any) int64 {
 	}
 }
 
-// --- danmaku websocket binary protocol (ported from hikami-go) ---
+// --- 弹幕 websocket 二进制协议（移植自 hikami-go）---
 
 func buildAuthBody(roomID int64, token string, protover int, buvid string) []byte {
 	body := map[string]any{
@@ -551,7 +546,7 @@ func shuffledStrings(items []string) []string {
 	return shuffled
 }
 
-// --- getDanmuInfo (token + hosts), with -352 retry and legacy fallback ---
+// --- getDanmuInfo（token + 主机列表），带 -352 重试与旧接口兜底 ---
 
 type danmuInfo struct {
 	token     string
@@ -607,7 +602,7 @@ func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, 
 		}
 	}
 	if code == -352 {
-		// Legacy getConf API does not require WBI signing.
+		// 旧版 getConf 接口不需要 WBI 签名。
 		log.Warn("getDanmuInfo still -352, trying legacy getConf", "room", roomID)
 		if confInfo, confErr := lc.danmuConf(ctx, roomID); confErr == nil && confInfo.token != "" {
 			lc.noteSuccess(roomID)
@@ -661,8 +656,8 @@ func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, 
 	return info, nil
 }
 
-// danmuBuvid returns buvid3 for the danmaku auth payload, preferring the
-// configured cookie and falling back to the fingerprint store.
+// danmuBuvid 返回弹幕认证载荷使用的 buvid3：优先取配置 cookie 中的，
+// 其次回退到指纹存储。
 func (lc *liveClient) danmuBuvid(ctx context.Context) string {
 	if buvid := cookieValue(lc.d.cookie, "buvid3"); buvid != "" {
 		return buvid

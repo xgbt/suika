@@ -16,24 +16,22 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// Typed errors surfaced through the API error reason enum.
 var (
-	// ErrRoomInternal is returned when the recorder fails internally.
 	ErrRoomInternal = errors.InternalServer(v1.ErrorReason_ERROR_REASON_INTERNAL.String(), "recorder internal error")
 )
 
-// Sentinel errors used to classify stream interruptions. Declared here so
-// the decision tree (biz) decides; data wraps them where they originate.
+// 用于区分断流原因的哨兵错误：由决策树（biz）判定语义，data 层在
+// 错误源头处包装。
 var (
-	// ErrStreamTransient marks CDN-transient failures (HTTP 404, connection
-	// reset) that are worth retrying with a freshly selected stream URL.
+	// ErrStreamTransient 标记 CDN 侧的瞬时故障（HTTP 404、连接被重置
+	// 等），值得重新选择流地址后重试。
 	ErrStreamTransient = stderrors.New("recorder: transient stream error")
-	// ErrRiskControl marks Bilibili risk-control rejections (-352/412/...).
+	// ErrRiskControl 标记 B 站风控拒绝（-352/412 等）。
 	ErrRiskControl = stderrors.New("recorder: risk control triggered")
 )
 
-// Recorder defaults. Proto scalars cannot distinguish unset from zero, so
-// zero values are replaced here (same trick as service.defaultPageSize).
+// 录制器默认值。proto 标量无法区分"未设置"和零值，零值在此替换为
+// 默认值（与 service.defaultPageSize 同一手法）。
 const (
 	defaultFallbackPollInterval = 600 * time.Second
 	defaultMaxReconnect         = 3
@@ -41,17 +39,17 @@ const (
 	defaultCDNTransientBudget   = 5
 	defaultCDNBackoffBase       = 2 * time.Second
 	cdnBackoffMax               = 60 * time.Second
-	// monitorRedialDelay is the pause before re-dialing the danmaku conn.
+	// monitorRedialDelay 是弹幕连接重拨前的停顿。
 	monitorRedialDelay = 10 * time.Second
-	// finishGracePeriod bounds FinishSession work detached from the
-	// cancelled run context during shutdown.
+	// finishGracePeriod 限定关停期间 FinishSession 脱离已取消的运行
+	// context 后仍可用的工作时长。
 	finishGracePeriod = 30 * time.Second
-	// pollJitterFraction is the relative jitter applied to the fallback
-	// poll interval (interval +/- fraction/2).
+	// pollJitterFraction 是回退轮询间隔的相对抖动幅度
+	//（间隔 +/- fraction/2）。
 	pollJitterFraction = 5 // => +/- 10%
 )
 
-// Danmaku event types recorded to JSONL.
+// 写入 JSONL 的弹幕事件类型。
 const (
 	EventDanmaku     = "danmaku"
 	EventGift        = "gift"
@@ -61,7 +59,7 @@ const (
 	EventInteract    = "interact_word"
 )
 
-// RoomInfo is live-room metadata reported by the platform.
+// RoomInfo 是平台上报的直播间元数据。
 type RoomInfo struct {
 	RoomID        int64
 	Live          bool
@@ -70,41 +68,40 @@ type RoomInfo struct {
 	LiveStartTime time.Time
 }
 
-// StreamQuality describes the stream quality selected for a session.
 type StreamQuality struct {
 	Qn   int32
 	Desc string
 }
 
-// StreamHandle is an open live stream produced by LiveClient.OpenStream.
-// It is opaque to biz: produced by the platform seam, consumed by the
-// storage seam, never inspected in between (the *sql.Rows pattern).
+// StreamHandle 是 LiveClient.OpenStream 打开的一路直播流。它对 biz 是
+// 不透明的：由平台接缝产生、被存储接缝消费，中间从不被检视
+// （同 *sql.Rows 的用法）。
 type StreamHandle struct {
 	URL     string
 	Quality StreamQuality
 	Body    io.ReadCloser
 }
 
-// DanmakuEvent is one filtered danmaku-room event. Field relevance depends
-// on Type; the storage seam decides the on-disk JSON shape.
+// DanmakuEvent 是一条过滤后的弹幕房间事件。各字段的相关性取决于
+// Type；落盘的 JSON 形状由存储接缝决定。
 type DanmakuEvent struct {
 	Ts       time.Time
 	Type     string
 	UID      int64
 	Uname    string
-	Text     string // danmaku text / superchat text / entry-effect text
-	Color    int32  // danmaku
-	Mode     int32  // danmaku
-	GiftName string // gift
-	Num      int32  // gift/guard count
-	Price    int64  // gift price (gold-cash units) / superchat price
-	CoinType string // gift: gold/silver
-	Duration int32  // superchat retention seconds
-	Level    int32  // guard level
-	Raw      []byte // original JSON payload
+	Text     string // 弹幕文本 / SC 文本 / 进场特效文本
+	Color    int32  // 弹幕
+	Mode     int32  // 弹幕
+	GiftName string // 礼物
+	Num      int32  // 礼物/舰长数量
+	Price    int64  // 礼物价格（金瓜子）/ SC 价格
+	CoinType string // 礼物：gold/silver
+	Duration int32  // SC 保留秒数
+	Level    int32  // 舰长等级
+	Raw      []byte // 原始 JSON 载荷
 }
 
-// Session is one recording session (one broadcast of one room).
+// Session 是一次录制会话（同一房间的一次开播）。
 type Session struct {
 	RoomID        int64
 	RoomName      string
@@ -113,53 +110,49 @@ type Session struct {
 	Quality       StreamQuality
 }
 
-// SessionResult reports how a RecordSession pump run ended.
+// SessionResult 汇报一次 RecordSession 拉流写入的结束状态。
 type SessionResult struct {
 	BytesWritten int64
 	Parts        int
 }
 
-// SessionStats is the in-flight write progress of a room's active session.
 type SessionStats struct {
 	CurrentFile  string
 	BytesWritten int64
 }
 
-// DanmakuConn is a resident danmaku websocket for one room, used both for
-// live detection (RoomStateUpdates) and danmaku recording (Events). Implementations
-// reconnect internally; after every reconnect they re-probe the room state
-// and re-emit it on RoomStateUpdates so missed LIVE/PREPARING events are covered.
-// Events uses a bounded buffer and drops events when nobody is reading.
+// DanmakuConn 是一个房间的常驻弹幕 websocket，同时服务于开播检测
+// （RoomStateUpdates）和弹幕录制（Events）。实现内部自行重连；每次
+// 重连成功后重新探测并重新推送房间状态，以补上断连期间错过的
+// LIVE/PREPARING 事件。Events 使用有界缓冲，无人消费时丢弃事件。
 type DanmakuConn interface {
 	Events() <-chan *DanmakuEvent
 	RoomStateUpdates() <-chan *RoomInfo
 	Close() error
 }
 
-// LiveClient is the external-platform seam: all Bilibili traffic.
+// LiveClient 是外部平台接缝：所有 B 站流量都从这里走。
 type LiveClient interface {
 	RoomStatus(ctx context.Context, roomID int64) (*RoomInfo, error)
 	OpenStream(ctx context.Context, roomID int64) (*StreamHandle, error)
 	DanmakuConn(ctx context.Context, roomID int64) (DanmakuConn, error)
 }
 
-// RecorderRepo is the storage seam: recording layout, files, and remux.
+// RecorderRepo 是存储接缝：录制目录布局、文件读写与转封装。
 type RecorderRepo interface {
-	// PrepareSession creates (or re-locates after a restart) the session
-	// directory and meta.json for the session's room + live start time.
+	// PrepareSession 按"房间 + 开播时间"创建（或在重启后重新定位）
+	// 会话目录和 meta.json。
 	PrepareSession(ctx context.Context, session *Session) error
-	// RecordSession pumps the stream to disk (splitting segments as
-	// configured) and writes events to the matching JSONL files until the
-	// stream ends or ctx is cancelled.
+	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入
+	// 对应的 JSONL 文件，直到流结束或 ctx 被取消。
 	RecordSession(ctx context.Context, session *Session, stream *StreamHandle, events <-chan *DanmakuEvent) (*SessionResult, error)
-	// FinishSession finalizes meta.json and remuxes recorded segments.
+	// FinishSession 收尾 meta.json 并对已录分段执行转封装。
 	FinishSession(ctx context.Context, session *Session) error
-	// RecoverPending finishes remux work left over from a previous run.
+	// RecoverPending 完成上次运行遗留的转封装工作。
 	RecoverPending(ctx context.Context) error
 }
 
-// ReconnectPolicy is the flattened reconnect configuration used by the
-// stream-drop decision tree.
+// ReconnectPolicy 是断流决策树使用的重连配置（展开后的扁平形式）。
 type ReconnectPolicy struct {
 	AutoReconnect      bool
 	MaxReconnect       int
@@ -167,10 +160,9 @@ type ReconnectPolicy struct {
 	CDNTransientBudget int
 }
 
-// RecorderUsecase orchestrates room monitoring, session lifecycles, and the
-// stream-drop decision tree. It makes decisions only; LiveClient performs
-// all platform IO and RecorderRepo performs all storage IO. Room
-// configuration and live/record state live in the shared RoomRegistry.
+// RecorderUsecase 编排房间监控、会话生命周期和断流决策树。它只做
+// 决策：所有平台 IO 由 LiveClient 执行，所有存储 IO 由 RecorderRepo
+// 执行。房间配置与直播/录制状态存放在共享的 RoomRegistry 中。
 type RecorderUsecase struct {
 	registry   *RoomRegistry
 	repo       RecorderRepo
@@ -180,9 +172,9 @@ type RecorderUsecase struct {
 	maxConcurrent int
 	rec           ReconnectPolicy
 
-	// cdnBackoffBase is the first CDN-transient retry delay; tests shrink it.
+	// cdnBackoffBase 是 CDN 瞬时故障首次重试的延迟；测试中会调小。
 	cdnBackoffBase time.Duration
-	// redialDelay pauses monitor redials; tests shrink it.
+	// redialDelay 是监控重拨的停顿；测试中会调小。
 	redialDelay time.Duration
 
 	slots chan struct{}
@@ -193,7 +185,6 @@ type sessionHandle struct {
 	done   chan struct{}
 }
 
-// NewRecorderUsecase new a Recorder usecase.
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
 	uc := &RecorderUsecase{
 		registry:     reg,
@@ -264,8 +255,7 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 	return nil
 }
 
-// monitorRoom keeps a danmaku connection alive for the room and redials it
-// until ctx is cancelled.
+// monitorRoom 维持房间的弹幕连接，断开即重拨，直到 ctx 被取消。
 func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomID int64) {
 	for ctx.Err() == nil {
 		if err := uc.watchRoom(ctx, roomID); err != nil && ctx.Err() == nil {
@@ -278,20 +268,19 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomID int64) {
 	}
 }
 
-// watchRoom holds one danmaku connection, translating control events into
-// session starts/finishes and running the fallback poller. Events are
-// drained (discarded) while no session is active; the active session's
-// RecordSession consumes them directly.
+// watchRoom 持有一条弹幕连接：把控制事件翻译成会话的开始/结束，并运行
+// 回退轮询。无活跃会话时事件被直接丢弃；活跃会话的 RecordSession
+// 直接消费事件。
 func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 
-	// 1. danmaku connection
+	// 1. 弹幕连接
 	conn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
 		return fmt.Errorf("open danmaku conn: %w", err)
 	}
 	defer conn.Close()
 
-	// 2. jittered fallback poller
+	// 2. 带抖动的回退轮询
 	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
 	defer poll.Stop()
 
@@ -313,7 +302,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 			}
 			return nil
 		case <-events:
-			// no active session: discard
+			// 无活跃会话：丢弃
 		case <-done:
 			active = nil
 		case info := <-conn.RoomStateUpdates():
@@ -341,8 +330,8 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 	}
 }
 
-// launchSession starts the session goroutine that owns the full record
-// loop, FinishSession, and slot release.
+// launchSession 启动会话协程，它独占完整的录制循环、FinishSession
+// 和槽位释放。
 func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) *sessionHandle {
 	sctx, cancel := context.WithCancel(ctx)
 	h := &sessionHandle{cancel: cancel, done: make(chan struct{})}
@@ -353,8 +342,7 @@ func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info
 	return h
 }
 
-// runSession owns one session end to end: slot, prepare, record loop,
-// finish/remux.
+// runSession 端到端负责一次会话：槽位、准备、录制循环、收尾/转封装。
 func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) {
 	if err := uc.acquireSlot(ctx, roomID); err != nil {
 		return
@@ -378,9 +366,8 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 
 	uc.recordLoop(ctx, roomID, session, events)
 
-	// Finish detached from the (possibly cancelled) run context so the
-	// remux marking still lands during shutdown; leftovers are picked up
-	// by RecoverPending on the next start.
+	// 收尾脱离（可能已取消的）运行 context，保证关停期间转封装标记
+	// 仍能落盘；遗留部分由下次启动时的 RecoverPending 接管。
 	uc.registry.SetRemuxing(roomID)
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishGracePeriod)
 	defer cancel()
@@ -392,9 +379,8 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	uc.registry.FinishRecording(roomID)
 }
 
-// recordLoop is the stream-drop decision tree: pump until the connection
-// ends, re-probe live status, and either reconnect (new part) or finish
-// the session keeping whatever was recorded.
+// recordLoop 是断流决策树：持续拉流直到连接结束，然后重新探测直播
+// 状态，要么重连（新分段），要么结束会话并保留已录内容。
 func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session *Session, events <-chan *DanmakuEvent) {
 	reconnects := 0
 	cdnBudget := uc.rec.CDNTransientBudget
@@ -484,7 +470,7 @@ func (uc *RecorderUsecase) cdnBackoff(attempt int) time.Duration {
 	return min(uc.cdnBackoffBase<<attempt, cdnBackoffMax)
 }
 
-// sleepCtx sleeps for d or until ctx is done.
+// sleepCtx 睡眠 d；ctx 提前取消则返回其错误。
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()
@@ -499,7 +485,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// jitterDuration returns d jittered by +/- 1/(2*div) of d.
+// jitterDuration 返回叠加了 +/- 1/(2*div) 抖动的 d。
 func jitterDuration(d time.Duration, div int) time.Duration {
 	if d <= 0 || div <= 0 {
 		return d
