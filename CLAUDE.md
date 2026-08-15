@@ -34,13 +34,8 @@ All direct `go build` / `go test` / `go vet` invocations pass `-mod=mod`;
 vendor mode is never used. The sqlite driver (`mattn/go-sqlite3`) requires
 cgo. Setting `remux_enabled: true` with no `ffmpeg` in PATH fails startup
 by design (startup probe); the checked-in `config.yaml` ships with it
-`false`.
-
-Note: README.md and the Dockerfile are stale: README still describes the
-original Kratos template and its since-removed Todo sample (the app is
-`cmd/suika`, README says `cmd/server`), `make build` produces
-`bin/suika` (Dockerfile CMD runs `./server`), and there is no
-`third_party/` directory. Trust the Makefile and this file.
+`false`. There is no `third_party/` directory — buf resolves googleapis
+from the BSR.
 
 Never hand-edit generated files: `*.pb.go`, `*_grpc.pb.go`, `*_http.pb.go`,
 `wire_gen.go`, `openapi.yaml`. Regenerated files belong in the same commit
@@ -54,7 +49,7 @@ ProviderSets — `server`, `service`, `biz`, `data` — plus `newApp`
 (main.go). Runtime config (`configs/config.yaml`, merged with any other
 yaml in the directory) is loaded and scanned into the generated
 `internal/conf` proto types. Three `transport.Server`s are started —
-HTTP, gRPC, and the recorder daemon (`server.RecorderJob`); the HTTP
+HTTP, gRPC, and the recorder daemon (`server.Daemon`); the HTTP
 server applies `recovery` and a `validate` middleware that enforces
 `google.api.field_behavior` required fields on proto messages.
 
@@ -99,8 +94,10 @@ design rather than add the import.
   corresponding response wrapper. `DeleteRoom` returns
   `DeleteRoomResponse{empty: google.protobuf.Empty}`.
 - Embed `Unimplemented<Resource>ServiceServer`.
-- Parse AIP list requests via `filtering` / `ordering` / `pagination`
-  (go.einride.tech/aip); apply `fieldmask.Update` for partial updates.
+- Parse AIP list requests via `pagination` and apply `fieldmask.Update`
+  for partial updates (both go.einride.tech/aip). List filtering uses
+  the request's typed optional fields (translated to `biz.ListQuery`),
+  not AIP filter strings; there is no order_by.
 - Validate request inputs at the service boundary before delegating to
   the usecase. Return `biz` errors. No business rules, no storage
   access, no PO.
@@ -113,9 +110,9 @@ design rather than add the import.
 - Owns typed errors built with `errors.NotFound` / `errors.BadRequest`
   plus the API error reason enum (`ErrRoomNotFound`,
   `v1.ErrorReason_ERROR_REASON_NOT_FOUND`).
-- Owns `ListOption` helpers — `ListFilter`, `ListOrderBy`, `ListOffset`,
-  `ListLimit` — so callers compose queries without leaking storage
-  primitives.
+- Owns `ListQuery` — optional equality filters (`RoomID` /
+  `StreamerName` / `RoomTitle` / `Enabled`) plus `Offset` / `Limit` —
+  so callers compose queries without leaking storage primitives.
 
 **data (DO ↔ PO)**
 
@@ -124,14 +121,15 @@ design rather than add the import.
   `func New<Resource>Repo(d *Data) biz.<Resource>Repo`.
 - _PO and conversion_: define a PO when the storage shape diverges from
   the DO. PO types stay inside `data`. Use free functions
-  `new<Resource>` (DO → PO, write) and `toBiz` (PO → DO, read).
-  Driver-specific builder types never leave `data`.
+  `to<Resource>PO` (DO → PO, write) and `to<Resource>DO` (PO → DO,
+  read). Driver-specific builder types never leave `data`.
 - _Shared clients_: `*Data` (internal/data/data.go) holds long-lived
   storage clients. Repos receive `*Data` and never construct their own
   clients. `Data` owns the SQLite/GORM handle and the shared platform and
   recorder clients; `roomRepo` persists rooms in the `rooms` table.
-- _Querying_: translate `ListOptions.Filter` and `ListOptions.OrderBy`
-  into the storage driver's query language inside the repo.
+- _Querying_: translate `ListQuery`'s optional equality fields into the
+  storage driver's query language inside the repo; list ordering is
+  fixed there (`room_id ASC`).
 - _Errors_: map driver errors to `biz` typed errors so callers above
   never branch on the driver.
 
@@ -143,7 +141,7 @@ design rather than add the import.
 ### Recorder daemon
 
 Room CRUD is one half of the service; the recorder daemon is the other.
-It runs as a third `transport.Server` (`server/recorder_job.go`) sharing
+It runs as a third `transport.Server` (`server/daemon.go`) sharing
 the app lifecycle with HTTP/gRPC: `Start` launches
 `biz.RecorderUsecase.Run` in a goroutine on a context derived from
 `context.Background()` (Start's own ctx may be cancelled after it
@@ -177,14 +175,15 @@ and gRPC transports:
 | RPC | HTTP route | Purpose |
 |---|---|---|
 | `CreateRoom` | `POST /v1/rooms/create` | Create a room using the caller-provided `room_id`. |
-| `ListRooms` | `POST /v1/rooms/list` | Query rooms with filtering, ordering, and pagination. |
+| `ListRooms` | `POST /v1/rooms/list` | Query rooms with optional equality filters and pagination. |
 | `GetRoom` | `POST /v1/rooms/get` | Get one room and its current runtime state. |
 | `UpdateRoom` | `POST /v1/rooms/update` | Partially update a room. |
 | `DeleteRoom` | `POST /v1/rooms/delete` | Delete a room by `room_id`. |
 
 ### Room message
 
-Writable fields are `room_id`, `name`, and `enabled`. The following fields
+Writable fields are `room_id`, `streamer_name`, `room_title`, and
+`enabled`. The following fields
 are `OUTPUT_ONLY` and must be populated by the service:
 
 - `live_status`: `LIVE_STATUS_UNSPECIFIED`, `LIVE_STATUS_PREPARING`, or
@@ -198,15 +197,17 @@ are `OUTPUT_ONLY` and must be populated by the service:
 `room_id` is the caller-provided unique platform room ID and is immutable.
 `CreateRoomRequest.room` and `UpdateRoomRequest.room` are required;
 `UpdateRoomRequest.update_mask` is also required. Updates currently allow
-only the `name` and `enabled` paths. Invalid IDs or unsupported update paths
+only the `streamer_name`, `room_title`, and `enabled` paths. Invalid IDs or
+unsupported update paths
 return `ERROR_REASON_INVALID_ARGUMENT`; duplicate IDs return
 `ERROR_REASON_ALREADY_EXISTS`; missing rooms return
 `ERROR_REASON_NOT_FOUND`.
 
-`ListRoomsRequest` uses AIP pagination, filtering, and ordering. The default
-page size is 20. Filterable and orderable persisted fields are `room_id`,
-`name`, `enabled`, `create_time`, and `update_time`; runtime fields are not
-accepted by storage filters or ordering. The response uses `rooms` and
+`ListRoomsRequest` uses AIP pagination plus four optional exact-match query
+fields: `room_id`, `streamer_name`, `room_title`, and `enabled` (unset
+fields don't filter; set fields combine with AND). There is no filter
+string and no ordering parameter — the repo orders by `room_id ASC`. The
+default page size is 20. The response uses `rooms` and
 `next_page_token`.
 
 ### Room runtime and recording
@@ -217,7 +218,20 @@ registry snapshot with persisted fields. For an actively recording room,
 `SessionStatsRepo` best-effort supplies `current_file` and `bytes_written`.
 CRUD changes are persisted immediately but newly created or updated rooms
 are picked up by the recorder after the next restart. A platform live-state
-refresh can backfill an empty room name and persists that change.
+refresh can backfill empty `streamer_name` / `room_title` through
+`RoomRepo.BackfillRoomIdentity` — a conditional update that only fills
+empty columns, never overwriting user-set values — and persists that
+change.
+
+### Web frontend
+
+`web/` is a React + TypeScript + Vite + Ant Design SPA and the only
+graphical consumer of the HTTP API (`RoomList`: table with runtime
+status, create/edit, enable/disable confirmation, delete confirmation,
+5s auto-refresh). It is decoupled from the Go build — `npm install` /
+`npm run dev`, with vite proxying `/v1` to `http://localhost:8000`.
+Frontend types mirror `room.proto` by hand (`web/src/api/rooms.ts`),
+so proto changes must be synced there.
 
 ## Add-a-resource checklist
 
@@ -240,7 +254,7 @@ Tests live beside the code they cover (`*_test.go`). Test layers in
 isolation: service tests fake the usecase, biz tests fake the repo, data
 tests exercise repo implementations at the storage boundary. Room service
 tests in `internal/service/room_test.go` exercise CRUD, pagination,
-filtering, ordering, runtime merging, and validation against real sqlite
+optional query filtering, runtime merging, and validation against real sqlite
 (`t.TempDir()` db file, wired like `wireApp`; pass `RemuxEnabled: false`
 to skip the ffmpeg probe). Data-layer tests use the real filesystem and
 a scripted fake ffmpeg binary, so no real ffmpeg is needed.
@@ -251,7 +265,7 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
   `List<Resources>`.
 - Types: repo `<Resource>Repo`, usecase `<Resource>Usecase`, service
   `<Resource>Service`. PO types live inside `internal/data/`; convert
-  with `new<Resource>(do)` / `toBiz(po)` free functions.
+  with `to<Resource>PO(do)` / `to<Resource>DO(po)` free functions.
 - Error reasons: declared in `api/<domain>/<version>/error_reason.proto`,
   surfaced as `Err<Resource><Cause>` in `biz`.
 
@@ -271,6 +285,8 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
 `docs/design/bili-recorder.md` (Chinese) is the deep-dive on the
 recorder service: goroutine structure, room states, stream-drop decision
 tree, on-disk layout (`meta.json`, danmaku JSONL), risk control, config
-defaults, and failure handling. It defers repo-level conventions
+defaults, and failure handling. `docs/design/ddd-domain-model.md` is its
+companion DDD view: subdomains, domain class diagram, and the
+repository/ACL seam relationships. Both defer repo-level conventions
 (layering, naming, build commands) to this file — when changing template
-rules, keep the two consistent.
+rules, keep the three consistent.
