@@ -70,6 +70,7 @@ func (reg *RoomRegistry) Rooms() []Room {
 func (reg *RoomRegistry) Room(roomID int64) Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
+
 	if st, ok := reg.states[roomID]; ok {
 		return st.room
 	}

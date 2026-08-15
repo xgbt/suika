@@ -75,6 +75,7 @@ type ListQuery struct {
 // SessionStatsRepo 是房间 API 消费的窄统计接口：上报房间当前活跃会话
 // 的写入进度。
 type SessionStatsRepo interface {
+	// SessionStats 返回房间当前活跃会话的写入进度。若房间未在录制中或已结束，则返回 nil。
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
 }
 
@@ -143,18 +144,17 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	return uc.repo.DeleteRoom(ctx, roomID)
 }
 
-// withRuntime 合并 Room 持久化字段、RoomRegistry 运行时状态与会话
-// 写入进度。持久化字段始终来自仓储；进度查询失败时静默跳过（进度
-// 仅作尽力而为的展示）。
+// withRuntime 合并 Room 持久化字段、RoomRegistry 运行时状态与会话写入进度。
+// 持久化字段始终来自 DB；进度查询失败时静默跳过（仅作尽力而为的展示）。
 func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime {
-	rt := uc.reg.runtime(room.RoomID)
-	rt.Room = *room
-	if rt.Record == RecordRecording {
+	runtime := uc.reg.runtime(room.RoomID)
+	runtime.Room = *room
+	if runtime.Record == RecordRecording {
 		stats, err := uc.stats.SessionStats(ctx, room.RoomID)
 		if err == nil && stats != nil {
-			rt.CurrentFile = stats.CurrentFile
-			rt.BytesWritten = stats.BytesWritten
+			runtime.CurrentFile = stats.CurrentFile
+			runtime.BytesWritten = stats.BytesWritten
 		}
 	}
-	return rt
+	return runtime
 }

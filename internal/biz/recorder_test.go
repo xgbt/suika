@@ -65,7 +65,7 @@ type statusOutcome struct {
 	err  error
 }
 
-func (c *fakeLiveClient) RoomStatus(_ context.Context, roomID int64) (*RoomInfo, error) {
+func (c *fakeLiveClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, error) {
 	c.statusCalls++
 	if len(c.statusQueue) == 0 {
 		return &RoomInfo{RoomID: roomID}, nil
@@ -310,7 +310,7 @@ func (c *fakeDanmakuConn) Close() error                       { return nil }
 // 测试只由控制事件推动。
 type watchClient struct{ conn DanmakuConn }
 
-func (c *watchClient) RoomStatus(_ context.Context, roomID int64) (*RoomInfo, error) {
+func (c *watchClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, error) {
 	return &RoomInfo{RoomID: roomID}, nil
 }
 

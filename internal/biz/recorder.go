@@ -20,25 +20,21 @@ var (
 	ErrRoomInternal = errors.InternalServer(v1.ErrorReason_ERROR_REASON_INTERNAL.String(), "recorder internal error")
 )
 
-// 用于区分断流原因的哨兵错误：由决策树（biz）判定语义，data 层在
-// 错误源头处包装。
 var (
-	// ErrStreamTransient 标记 CDN 侧的瞬时故障（HTTP 404、连接被重置
-	// 等），值得重新选择流地址后重试。
+	// ErrStreamTransient 标记 CDN 侧的瞬时故障（HTTP 404、连接被重置等），值得重新选择流地址后重试。
 	ErrStreamTransient = stderrors.New("recorder: transient stream error")
 	// ErrRiskControl 标记 B 站风控拒绝（-352/412 等）。
 	ErrRiskControl = stderrors.New("recorder: risk control triggered")
 )
 
-// 录制器默认值。proto 标量无法区分"未设置"和零值，零值在此替换为
-// 默认值（与 service.defaultPageSize 同一手法）。
 const (
 	defaultFallbackPollInterval = 600 * time.Second
 	defaultMaxReconnect         = 3
 	defaultReconnectDelay       = 10 * time.Second
-	defaultCDNTransientBudget   = 5
-	defaultCDNBackoffBase       = 2 * time.Second
-	cdnBackoffMax               = 60 * time.Second
+	// defaultCDNTransientBudget 是 CDN 瞬时故障的重试预算，超过预算则不再重连。
+	defaultCDNTransientBudget = 5
+	defaultCDNBackoffBase     = 2 * time.Second
+	cdnBackoffMax             = 60 * time.Second
 	// monitorRedialDelay 是弹幕连接重拨前的停顿。
 	monitorRedialDelay = 10 * time.Second
 	// finishGracePeriod 限定关停期间 FinishSession 脱离已取消的运行
@@ -110,15 +106,16 @@ type Session struct {
 	Quality       StreamQuality
 }
 
-// SessionResult 汇报一次 RecordSession 拉流写入的结束状态。
+// SessionResult 一次录制会话的最终结果
 type SessionResult struct {
-	BytesWritten int64
-	Parts        int
+	BytesWritten int64 // 总字节数
+	Parts        int   // 分段数
 }
 
+// SessionStats 一次录制会话的当前统计信息
 type SessionStats struct {
-	CurrentFile  string
-	BytesWritten int64
+	CurrentFile  string // 当前正在写入的分段文件名（可能为空）
+	BytesWritten int64  // 当前分段已写入的字节数
 }
 
 // DanmakuConn 是一个房间的常驻弹幕 websocket，同时服务于开播检测
@@ -131,20 +128,18 @@ type DanmakuConn interface {
 	Close() error
 }
 
-// LiveClient 是外部平台接缝：所有 B 站流量都从这里走。
+// LiveClient 是平台直播流和弹幕的客户端接口，网络 IO
 type LiveClient interface {
-	RoomStatus(ctx context.Context, roomID int64) (*RoomInfo, error)
+	GetRoomInfo(ctx context.Context, roomID int64) (*RoomInfo, error)
 	OpenStream(ctx context.Context, roomID int64) (*StreamHandle, error)
 	DanmakuConn(ctx context.Context, roomID int64) (DanmakuConn, error)
 }
 
-// RecorderRepo 是存储接缝：录制目录布局、文件读写与转封装。
+// RecorderRepo 是录制器的存储接口。负责磁盘 IO
 type RecorderRepo interface {
-	// PrepareSession 按"房间 + 开播时间"创建（或在重启后重新定位）
-	// 会话目录和 meta.json。
+	// PrepareSession 按"房间 + 开播时间" 创建（或在重启后重新定位） 会话目录和 meta.json。
 	PrepareSession(ctx context.Context, session *Session) error
-	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入
-	// 对应的 JSONL 文件，直到流结束或 ctx 被取消。
+	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入对应的 JSONL 文件，直到流结束或 ctx 被取消。
 	RecordSession(ctx context.Context, session *Session, stream *StreamHandle, events <-chan *DanmakuEvent) (*SessionResult, error)
 	// FinishSession 收尾 meta.json 并对已录分段执行转封装。
 	FinishSession(ctx context.Context, session *Session) error
@@ -177,6 +172,7 @@ type RecorderUsecase struct {
 	// redialDelay 是监控重拨的停顿；测试中会调小。
 	redialDelay time.Duration
 
+	// slots 是录制槽位的有界缓冲通道，容量为 maxConcurrent。若为 nil，则不限制并发。
 	slots chan struct{}
 }
 
@@ -280,12 +276,13 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 	}
 	defer conn.Close()
 
-	// 2. 带抖动的回退轮询
+	// 2. 带抖动的轮询
 	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
 	defer poll.Stop()
 
 	var active *sessionHandle
 	for {
+		// 3. 事件分发
 		var events <-chan *DanmakuEvent
 		var done chan struct{}
 		if active == nil {
@@ -305,23 +302,23 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 			// 无活跃会话：丢弃
 		case <-done:
 			active = nil
-		case info := <-conn.RoomStateUpdates():
-			uc.registry.ApplyRoomInfo(ctx, roomID, info)
-			if info.Live && active == nil {
-				active = uc.launchSession(ctx, roomID, info, conn.Events())
-			} else if !info.Live && active != nil {
+		case roomInfo := <-conn.RoomStateUpdates():
+			uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+			if roomInfo.Live && active == nil {
+				active = uc.launchSession(ctx, roomID, roomInfo, conn.Events())
+			} else if !roomInfo.Live && active != nil {
 				active.cancel()
 			}
 		case <-poll.C:
-			info, err := uc.liveClient.RoomStatus(ctx, roomID)
+			roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
 			if err != nil {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
 				uc.registry.NoteError(roomID, err)
 			} else {
-				uc.registry.ApplyRoomInfo(ctx, roomID, info)
-				if info.Live && active == nil {
-					active = uc.launchSession(ctx, roomID, info, conn.Events())
-				} else if !info.Live && active != nil {
+				uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+				if roomInfo.Live && active == nil {
+					active = uc.launchSession(ctx, roomID, roomInfo, conn.Events())
+				} else if !roomInfo.Live && active != nil {
 					active.cancel()
 				}
 			}
@@ -330,20 +327,21 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 	}
 }
 
-// launchSession 启动会话协程，它独占完整的录制循环、FinishSession
-// 和槽位释放。
+// launchSession 启动录制会话协程，独占完整的录制循环、FinishSession和槽位释放。
 func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) *sessionHandle {
 	sctx, cancel := context.WithCancel(ctx)
-	h := &sessionHandle{cancel: cancel, done: make(chan struct{})}
+	handle := &sessionHandle{cancel: cancel, done: make(chan struct{})}
 	go func() {
-		defer close(h.done)
+		defer close(handle.done)
 		uc.runSession(sctx, roomID, info, events)
 	}()
-	return h
+	return handle
 }
 
 // runSession 端到端负责一次会话：槽位、准备、录制循环、收尾/转封装。
 func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) {
+
+	// acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消。
 	if err := uc.acquireSlot(ctx, roomID); err != nil {
 		return
 	}
@@ -379,19 +377,21 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	uc.registry.FinishRecording(roomID)
 }
 
-// recordLoop 是断流决策树：持续拉流直到连接结束，然后重新探测直播
-// 状态，要么重连（新分段），要么结束会话并保留已录内容。
+// recordLoop 断流决策树：持续拉流直到连接结束，然后重新探测直播状态，要么重连（新分段），要么结束会话并保留已录内容。
 func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session *Session, events <-chan *DanmakuEvent) {
 	reconnects := 0
 	cdnBudget := uc.rec.CDNTransientBudget
 	cdnAttempt := 0
 	for {
+		// 1. 拉流
 		stream, err := uc.liveClient.OpenStream(ctx, roomID)
 		if err != nil {
 			log.Error("open stream failed", "room", roomID, "err", err)
 			uc.registry.NoteError(roomID, err)
 			return
 		}
+
+		// 2. 录制
 		session.Quality = stream.Quality
 		result, recErr := uc.repo.RecordSession(ctx, session, stream, events)
 		if result != nil {
@@ -401,17 +401,19 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			return
 		}
 
-		info, err := uc.liveClient.RoomStatus(ctx, roomID)
+		// 3. 探测直播状态
+		roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
 		if err != nil {
 			log.Error("probe live status failed, ending session", "room", roomID, "err", err)
 			uc.registry.NoteError(roomID, err)
 			return
 		}
-		uc.registry.ApplyRoomInfo(ctx, roomID, info)
-		if !info.Live {
+		uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+		if !roomInfo.Live {
 			return
 		}
 
+		// 4. 断流决策树：CDN 瞬时故障重连、风控拒绝不重连、其他错误按配置重连。
 		if stderrors.Is(recErr, ErrStreamTransient) {
 			if cdnBudget <= 0 {
 				log.Warn("cdn transient budget exhausted, finishing session with recorded content", "room", roomID)
@@ -442,16 +444,23 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 	}
 }
 
+// acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消。
 func (uc *RecorderUsecase) acquireSlot(ctx context.Context, roomID int64) error {
+
+	// 未配置 maxConcurrent，则不限制并发
 	if uc.slots == nil {
 		return nil
 	}
+
+	// 尝试非阻塞获取槽位，若已满则阻塞等待,或直到 ctx 被取消
 	select {
 	case uc.slots <- struct{}{}:
 		return nil
 	default:
 		log.Warn("recording slots full, queueing", "room", roomID, "max", uc.maxConcurrent)
 	}
+
+	// 阻塞等待槽位或 ctx 被取消
 	select {
 	case uc.slots <- struct{}{}:
 		return nil
@@ -470,7 +479,6 @@ func (uc *RecorderUsecase) cdnBackoff(attempt int) time.Duration {
 	return min(uc.cdnBackoffBase<<attempt, cdnBackoffMax)
 }
 
-// sleepCtx 睡眠 d；ctx 提前取消则返回其错误。
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()

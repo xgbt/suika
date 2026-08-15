@@ -159,12 +159,12 @@ func isRiskControlError(err error) bool {
 	return stderrors.Is(err, errRiskControl352) || stderrors.Is(err, errHTTPRiskControl)
 }
 
-// RoomStatus 经 getInfoByRoom 返回房间当前的开播状态。
-func (lc *liveClient) RoomStatus(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
+// GetRoomInfo 经 getInfoByRoom 返回房间当前的开播状态。
+func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	if err := lc.enterRiskGate(roomID); err != nil {
 		return nil, err
 	}
-	info, err := lc.roomStatus(ctx, roomID)
+	info, err := lc.roomInfo(ctx, roomID)
 	if err != nil {
 		if isRiskControlError(err) {
 			lc.noteRiskFailure(roomID)
@@ -176,7 +176,7 @@ func (lc *liveClient) RoomStatus(ctx context.Context, roomID int64) (*biz.RoomIn
 	return info, nil
 }
 
-func (lc *liveClient) roomStatus(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
+func (lc *liveClient) roomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	var resp roomInfoResponse
 	query := func() error {
 		cookie := lc.d.injectAntiRisk(ctx)

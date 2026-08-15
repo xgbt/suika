@@ -215,7 +215,7 @@ func (c *danmakuConn) readLoop(conn *websocket.Conn) error {
 
 // pushRoomState 重新探测房间，并把状态推送到房间状态更新通道。
 func (c *danmakuConn) pushRoomState(ctx context.Context) {
-	info, err := c.lc.RoomStatus(ctx, c.roomID)
+	info, err := c.lc.GetRoomInfo(ctx, c.roomID)
 	if err != nil {
 		log.Warn("danmaku room state probe failed", "room", c.roomID, "err", err)
 		return
