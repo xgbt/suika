@@ -27,7 +27,7 @@ func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionS
 	return nil, nil
 }
 
-// fakeRoomRepo 为注册表和 usecase 测试模拟 RoomRepo 行为。
+// fakeRoomRepo 为 RoomRegistry 和 usecase 测试模拟 RoomRepo 行为。
 type fakeRoomRepo struct {
 	rooms       map[int64]*Room
 	listErr     error

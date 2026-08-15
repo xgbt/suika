@@ -74,7 +74,7 @@ type StreamQuality struct {
 }
 
 // StreamHandle 是 LiveClient.OpenStream 打开的一路直播流。它对 biz 是
-// 不透明的：由平台接缝产生、被存储接缝消费，中间从不被检视
+// 不透明的：由 LiveClient 产生、被 RecorderRepo 消费，中间从不被检视
 // （同 *sql.Rows 的用法）。
 type StreamHandle struct {
 	URL     string
@@ -83,7 +83,7 @@ type StreamHandle struct {
 }
 
 // DanmakuEvent 是一条过滤后的弹幕房间事件。各字段的相关性取决于
-// Type；落盘的 JSON 形状由存储接缝决定。
+// Type；落盘的 JSON 形状由 RecorderRepo 决定。
 type DanmakuEvent struct {
 	Ts       time.Time
 	Type     string

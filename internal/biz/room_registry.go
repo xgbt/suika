@@ -21,10 +21,10 @@ type roomState struct {
 
 // RoomRegistry 持有启动时加载的房间列表及其运行时状态。录制守护进程
 // 写入直播/录制状态，房间 API 读取快照。房间 API 的增删改立即持久化
-// 到仓储，注册表在下次重启时才重新加载。
+// 到仓储，RoomRegistry 在下次重启时才重新加载。
 type RoomRegistry struct {
 	repo RoomRepo
-	// mu 同时保护注册表容器和每个 roomState 内部的可变字段：读改
+	// mu 同时保护 RoomRegistry 容器和每个 roomState 内部的可变字段：读改
 	// rooms、states 或房间的 live/record/session/error 字段都必须持锁，
 	// 只保护 map 仍会在状态对象上产生数据竞争。快照方法持锁拷贝状态，
 	// 修改方法持锁完成整个读-改-写。仓储 IO 必须放在临界区之外，避免
@@ -34,8 +34,8 @@ type RoomRegistry struct {
 	states map[int64]*roomState
 }
 
-// NewRoomRegistry 从仓储加载持久化房间列表构建注册表。允许 repo 为
-// nil（得到空注册表）；加载失败则启动失败。
+// NewRoomRegistry 从仓储加载 Room 列表构建 RoomRegistry。允许 repo 为
+// nil（得到空 RoomRegistry）；加载失败则启动失败。
 func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 	reg := &RoomRegistry{
 		repo:   repo,
@@ -76,8 +76,8 @@ func (reg *RoomRegistry) Room(roomID int64) Room {
 	return Room{RoomID: roomID}
 }
 
-// runtime 返回单个房间运行时状态的拷贝。注册表中不存在的房间（启动后
-// 新建的）返回默认状态值。
+// runtime 返回单个房间运行时状态的拷贝。RoomRegistry 中不存在的房间
+// （启动后新建的）返回默认状态值。
 func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -95,7 +95,7 @@ func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 }
 
 // ApplyRoomInfo 记录平台上报的房间直播状态，并在主播名/标题为空时回填。
-// 回填值会经房间仓储写回持久化，重启后仍然保留。
+// 回填值会经 RoomRepo 写回持久化，重启后仍然保留。
 func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *RoomInfo) {
 	if info == nil {
 		return

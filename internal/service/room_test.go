@@ -53,8 +53,8 @@ func newTestData(t *testing.T) *data.Data {
 }
 
 // roomEnv 是在同一个 *data.Data 上按 wireApp 的方式搭起的完整服务链。
-// 在同一个 data 上再建一个 env 即模拟一次重启：注册表只在构造时重新
-// 加载持久化房间。
+// 在同一个 data 上再建一个 env 即模拟一次重启：RoomRegistry 只在构造时
+// 重新加载持久化的 Room。
 type roomEnv struct {
 	svc   *RoomService
 	reg   *biz.RoomRegistry
@@ -304,7 +304,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 		}
 	}
 
-	// 重启：在同一数据库上新建注册表，重新加载房间。
+	// 重启：在同一数据库上新建 RoomRegistry，重新加载房间。
 	env = newTestRoomEnv(t, d)
 	env.stats.stats = map[int64]*biz.SessionStats{
 		3003: {CurrentFile: "recordings/recording-room/part-0001.flv", BytesWritten: 123456789},
@@ -313,7 +313,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 		4004: stderrors.New("storage unavailable"),
 	}
 
-	// 通过共享注册表模拟守护进程的状态写入。
+	// 通过共享的 RoomRegistry 模拟守护进程的状态写入。
 	env.reg.ApplyRoomInfo(ctx, 3003, &biz.RoomInfo{RoomID: 3003, Live: true})
 	env.reg.StartRecording(3003)
 	env.reg.StartRecording(4004)
@@ -376,7 +376,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	}
 
 	// 启动后创建的房间直接从数据库返回，运行时字段取默认值：
-	// CRUD 不会热加载录制注册表。
+	// CRUD 不会热加载 RoomRegistry。
 	if _, err := env.svc.CreateRoom(ctx, &v1.CreateRoomRequest{
 		Room: &v1.Room{RoomId: 6006, StreamerName: "late-room", Enabled: true},
 	}); err != nil {

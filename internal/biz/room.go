@@ -78,8 +78,8 @@ type SessionStatsRepo interface {
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
 }
 
-// RoomUsecase 服务房间 API：增删改经由仓储持久化；读操作将持久化字段
-// 与共享注册表中的运行时状态合并后返回。
+// RoomUsecase 服务房间 API：增删改经由仓储持久化；
+// 将持久化字段 Room 与 RoomRegistry 中的运行时状态合并后返回。
 type RoomUsecase struct {
 	repo  RoomRepo
 	reg   *RoomRegistry
@@ -143,9 +143,9 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	return uc.repo.DeleteRoom(ctx, roomID)
 }
 
-// withRuntime 将持久化房间与注册表运行时状态、会话写入进度合并。
-// 持久化字段始终来自仓储；进度查询失败时静默跳过（进度仅作尽力而为
-// 的展示）。
+// withRuntime 合并 Room 持久化字段、RoomRegistry 运行时状态与会话
+// 写入进度。持久化字段始终来自仓储；进度查询失败时静默跳过（进度
+// 仅作尽力而为的展示）。
 func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime {
 	rt := uc.reg.runtime(room.RoomID)
 	rt.Room = *room

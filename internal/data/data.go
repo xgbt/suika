@@ -21,7 +21,7 @@ var ProviderSet = wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, New
 
 // Data 持有长生命周期的存储/平台客户端（模板惯例）。对录制器而言，
 // 它们是携带 cookie 的 HTTP 客户端、共享的风控助手（WBI 签名器、
-// buvid 存储），以及持久化房间列表的嵌入式数据库。
+// buvid 存储），以及持久化 Room 列表的嵌入式数据库。
 type Data struct {
 	// db 是共享的 gorm 句柄（sqlite）。
 	db *gorm.DB

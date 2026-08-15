@@ -141,7 +141,7 @@ func convertRoom(in *v1.Room) *biz.Room {
 	}
 }
 
-// convertRoomReply 把合并后的运行时视图转换回 DTO。
+// convertRoomReply 把 RoomRuntime 转换回 DTO。
 func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 	if rt == nil {
 		return nil

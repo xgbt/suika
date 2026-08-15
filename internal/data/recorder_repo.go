@@ -24,7 +24,7 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// 录制仓储默认值（proto 零值与未设置无法区分，默认值在此应用；
+// recorderRepo 默认值（proto 零值与未设置无法区分，默认值在此应用；
 // 与 defaultPageSize 同一手法）。
 const (
 	defaultRecordRoot     = "./recordings"
@@ -180,8 +180,8 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 会话（重新）启动时把写入进度清零，与 biz 的 StartRecording 重置
-	// sessionStartedAt/lastError 相对应：否则 RecordSession 的 baseBytes
+	// 会话（重新）启动时把写入进度清零，与 RoomRegistry.StartRecording
+	// 重置 sessionStartedAt/lastError 相对应：否则 RecordSession 的 baseBytes
 	// 续算逻辑会在进程存活期间，把同一房间新一轮开播的字节数累加到
 	// 上一场会话的总数上。重启续录不受影响——统计在内存中，新进程里
 	// 本来就是零。

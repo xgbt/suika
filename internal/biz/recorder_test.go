@@ -360,7 +360,7 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 		}
 	}()
 
-	// waitRecord 轮询注册表，直到房间 42 到达期望的录制状态或超时。
+	// waitRecord 轮询 RoomRegistry，直到房间 42 到达期望的录制状态或超时。
 	waitRecord := func(want RecordState) bool {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
