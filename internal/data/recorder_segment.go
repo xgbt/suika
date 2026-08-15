@@ -22,12 +22,12 @@ type headerCache struct {
 
 // segmentFile 代表一个录制分段文件，包含视频和弹幕文件，以及写入状态
 type segmentFile struct {
-	part      int
-	videoPath string
-	danmuPath string
-	vf        *os.File
-	df        *os.File
-	bw        *bufio.Writer
+	part      int           // 分段编号，从 1 开始
+	videoPath string        // 视频文件路径
+	danmuPath string        // 弹幕文件路径
+	vf        *os.File      // 视频文件句柄
+	df        *os.File      // 弹幕文件句柄
+	bw        *bufio.Writer // 视频文件缓冲写入器
 	hasStart  bool
 	startTs   int64
 	lastTs    int64
@@ -50,7 +50,8 @@ func openSegment(dir, base string, part int, header *flv.FileHeader, cache *head
 	}
 	seg := &segmentFile{
 		part: part, videoPath: videoPath, danmuPath: danmuPath,
-		vf: vf, df: df,
+		df:        df,
+		vf:        vf,
 		bw:        bufio.NewWriterSize(vf, 1<<20),
 		wallStart: time.Now(),
 	}
@@ -115,6 +116,7 @@ func (s *segmentFile) writeEvent(ev *biz.DanmakuEvent) error {
 	return err
 }
 
+// close 关闭分段文件，刷新缓冲区并关闭文件句柄。
 func (s *segmentFile) close() error {
 	err := s.bw.Flush()
 	return stderrors.Join(err, s.vf.Close(), s.df.Close())

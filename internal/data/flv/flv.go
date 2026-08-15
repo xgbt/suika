@@ -1,5 +1,3 @@
-// Package flv 实现录制直播流所需的最小 FLV 解析与写入：直接落盘，
-// 并在 tag 边界处切分。
 package flv
 
 import (
@@ -10,9 +8,9 @@ import (
 
 // FLV tag 类型。
 const (
-	TagAudio  byte = 8
-	TagVideo  byte = 9
-	TagScript byte = 18
+	TagAudio  byte = 0x08
+	TagVideo  byte = 0x09
+	TagScript byte = 0x12
 )
 
 const (
@@ -87,7 +85,7 @@ func ReadTag(r io.Reader) (*Tag, error) {
 	if _, err := io.ReadFull(r, data); err != nil {
 		return nil, fmt.Errorf("flv: read tag data: %w", err)
 	}
-	var prev [prevTagSizeLen]byte
+	prev := make([]byte, prevTagSizeLen)
 	if _, err := io.ReadFull(r, prev[:]); err != nil {
 		return nil, fmt.Errorf("flv: read previous tag size: %w", err)
 	}
