@@ -68,16 +68,6 @@ namespace RoomManagement {
     RecordStatusError
   }
 
-  class ListQuery {
-    <<query shape>>
-    +*int64 RoomID
-    +*string StreamerName
-    +*string RoomTitle
-    +*bool Enabled
-    +int Offset
-    +int Limit
-  }
-
   class RoomUsecase {
     -repo RoomRepo
     -reg *RoomRegistry
@@ -138,7 +128,7 @@ namespace RecordingExecution {
     -rec ReconnectPolicy
     -pollInterval time.Duration
     -maxConcurrent int
-    -slots chan struct{}
+    -slots chan token
     +Run(ctx) error
     -monitorRoom(ctx, roomID)
     -watchRoom(ctx, roomID) error
@@ -208,14 +198,6 @@ namespace RecordingExecution {
     +int64 BytesWritten
   }
 
-  class ReconnectPolicy {
-    <<policy>>
-    +bool AutoReconnect
-    +int MaxReconnect
-    +time.Duration ReconnectDelay
-    +int CDNTransientBudget
-  }
-
   class RecorderRepo {
     <<repository interface>>
     +PrepareSession(ctx, session) error
@@ -233,8 +215,8 @@ namespace RecordingExecution {
 
   class DanmakuConn {
     <<acl interface>>
-    +Events() <-chan *DanmakuEvent
-    +RoomStateUpdates() <-chan *RoomInfo
+    +Events() chan DanmakuEvent
+    +RoomStateUpdates() chan RoomInfo
     +Close() error
   }
 }
@@ -247,7 +229,6 @@ roomState *-- Room : in-memory snapshot
 RoomUsecase ..> RoomRepo : persist CRUD
 RoomUsecase ..> RoomRegistry : read runtime snapshot
 RoomUsecase ..> SessionStatsRepo : enrich write progress
-RoomUsecase ..> ListQuery : query shape
 RoomRegistry ..> RoomRepo : load rooms on init + persist identity
 RoomRegistry ..> RoomInfo : ApplyRoomInfo
 
@@ -256,7 +237,6 @@ RecorderUsecase ..> Room : build Session from registry
 RecorderUsecase ..> RecorderRepo : storage IO
 RecorderUsecase ..> LiveClient : platform IO
 RecorderUsecase ..> DanmakuConn : monitor per room
-RecorderUsecase ..> ReconnectPolicy : drop decision tree
 RecorderUsecase ..> Session : create / finish
 RecorderUsecase ..> RoomInfo : live detection
 RecorderRepo ..> Session : session layout
