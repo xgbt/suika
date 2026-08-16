@@ -17,8 +17,10 @@ CLAUDE.md。
 
 两个子域不直接依赖对方的内部对象，协作只经过两条缝：
 
-- `RoomRegistry` —— 共享的运行时状态容器。录制执行子域写入直播/录制
-  状态，房间管理子域读取快照。
+- `RoomRegistry` —— 共享的运行时状态容器，也是房间配置的唯一事实源：
+  启动时从仓储加载，此后房间 API 的增删改在落库成功后同步回写。录制
+  执行子域写入直播/录制状态并订阅变更通知实时调和监控集合，房间管理
+  子域读取快照。
 - `SessionStatsRepo` —— 面向房间查询的窄统计接口。房间读路径用它
   尽力而为地补充"当前文件/已写字节"，不依赖完整录制仓储。
 
@@ -84,8 +86,13 @@ namespace RoomManagement {
     -repo RoomRepo
     -mu sync.Mutex
     -states map[int64]*roomState
+    -subscribers []chan struct
     +Rooms() []Room
     +Room(roomID) Room
+    +Subscribe() (<-chan struct, func())
+    +Add(room)
+    +Update(room)
+    +Remove(roomID)
     -runtime(roomID) *RoomRuntime
     +ApplyRoomInfo(ctx, roomID, info)
     +StartRecording(roomID)
@@ -227,12 +234,12 @@ RoomRuntime ..> RecordStatus
 RoomRegistry o-- roomState : one per room
 roomState *-- Room : in-memory snapshot
 RoomUsecase ..> RoomRepo : persist CRUD
-RoomUsecase ..> RoomRegistry : read runtime snapshot
+RoomUsecase ..> RoomRegistry : read runtime snapshot + sync CRUD changes
 RoomUsecase ..> SessionStatsRepo : enrich write progress
 RoomRegistry ..> RoomRepo : load rooms on init + persist identity
 RoomRegistry ..> RoomInfo : ApplyRoomInfo
 
-RecorderUsecase ..> RoomRegistry : drive state transitions
+RecorderUsecase ..> RoomRegistry : drive state transitions + subscribe changes
 RecorderUsecase ..> Room : build Session from registry
 RecorderUsecase ..> RecorderRepo : storage IO
 RecorderUsecase ..> LiveClient : platform IO
@@ -271,9 +278,10 @@ note for DanmakuConn "实现内部自行重连；每次重连后重新探测房�
 
 ### 3.1 并发全景：goroutine 与通道
 
-进程跑起来后的 goroutine 集合：1 个 Run 主循环；每个**启动时
-enabled** 的房间一组常驻 goroutine（watchRoom + danmakuConn.run，
-后者内部每条连接还有一个 readLoop）；每次开播临时增加 runSession；
+进程跑起来后的 goroutine 集合：1 个 Run 监督循环；注册表中**每个房间
+（无论 enabled）**一组常驻 goroutine（watchRoom + danmakuConn.run，
+后者内部每条连接还有一个 readLoop），监控集合随房间增删实时调和；
+每次开播临时增加 runSession；
 每次拉流临时增加一个 FLV tag 读取器。biz 的 goroutine 全部是
 select 驱动的决策循环，不碰字节；字节级 IO 在 data 层的 goroutine
 里完成，两者用通道交接。
@@ -564,10 +572,11 @@ stateDiagram-v2
   offset/limit。service 层把 ListRoomsRequest 的 optional 字段翻译为
   ListQuery，data 层把它翻译为 SQL；存储原语不上浮。列表没有
   order_by，repo 固定 `room_id ASC`。
-- **CRUD 重启后才对录制生效**：registry 在启动时全量加载，Run 按
-  启动快照分发 monitorRoom。这是有意的取舍——运行中增删房间不重建
-  常驻 goroutine 集合，换来"录制侧房间集合在两次启动之间不变"的
-  简单不变量；运行时的身份变化（平台刷新）与状态变化（启停）仍即时可见。
+- **CRUD 对录制实时生效**：RoomUsecase 落库成功后同步回写 registry
+  （Add/Update/Remove），RecorderUsecase 的 Run 监督循环订阅 registry
+  的合并式变更通知，reconcile roomID → monitorRoom 协程的映射：新增
+  房间立即监控、删除立即停止（活跃会话优雅收尾），enabled 翻转只投递
+  重评估信号、不增删协程。监控跟随房间存在，enabled 只决定是否录制。
 
 ### 4.2 录制执行子域
 

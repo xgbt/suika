@@ -4,6 +4,8 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,22 +99,61 @@ func (c *fakeLiveClient) DanmakuConn(context.Context, int64) (DanmakuConn, error
 
 func newTestUsecase(t *testing.T, repo RecorderRepo, lc LiveClient, mutate func(*RecorderUsecase)) *RecorderUsecase {
 	t.Helper()
+	return newTestUsecaseWithRooms(t, map[int64]*Room{42: {RoomID: 42, StreamerName: "tester", Enabled: true}}, repo, lc, mutate)
+}
+
+func newTestUsecaseWithRooms(t *testing.T, rooms map[int64]*Room, repo RecorderRepo, lc LiveClient, mutate func(*RecorderUsecase)) *RecorderUsecase {
+	t.Helper()
 	c := &conf.Recorder{
 		Reconnect: &conf.Recorder_ReconnectOptions{
 			ReconnectDelay: durationpb.New(time.Millisecond),
 		},
 	}
-	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{42: {RoomID: 42, StreamerName: "tester", Enabled: true}}}
+	roomRepo := &fakeRoomRepo{rooms: rooms}
 	reg, err := NewRoomRegistry(roomRepo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 	uc := NewRecorderUsecase(c, reg, repo, lc)
 	uc.cdnBackoffBase = time.Millisecond
+	uc.redialDelay = time.Millisecond
 	if mutate != nil {
 		mutate(uc)
 	}
 	return uc
+}
+
+// waitFor 轮询 cond 直至成立或超时。
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// waitRecordStatus 轮询 RoomRegistry，直到房间到达期望的录制状态或超时。
+func waitRecordStatus(reg *RoomRegistry, roomID int64, want RecordStatus) bool {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var got RecordStatus
+		var ok bool
+		reg.mu.Lock()
+		st, found := reg.states[roomID]
+		if found {
+			got, ok = st.recordStatus, true
+		}
+		reg.mu.Unlock()
+		if ok && got == want {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }
 
 func liveInfo(roomID int64, live bool) *RoomInfo {
@@ -300,11 +341,33 @@ func TestJitterDurationWithinBand(t *testing.T) {
 type fakeDanmakuConn struct {
 	events           chan *DanmakuEvent
 	roomStateUpdates chan *RoomInfo
+	closed           chan struct{} // 非 nil 时，Close 会投递一个信号
 }
 
 func (c *fakeDanmakuConn) Events() <-chan *DanmakuEvent       { return c.events }
 func (c *fakeDanmakuConn) RoomStateUpdates() <-chan *RoomInfo { return c.roomStateUpdates }
-func (c *fakeDanmakuConn) Close() error                       { return nil }
+func (c *fakeDanmakuConn) Close() error {
+	if c.closed != nil {
+		select {
+		case c.closed <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+// isClosed 报告连接是否已被关闭（消费式，仅用于轮询至首次为真）。
+func (c *fakeDanmakuConn) isClosed() bool {
+	if c.closed == nil {
+		return false
+	}
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
 
 // watchClient 是完全经由弹幕连接驱动的 LiveClient；状态探测恒报未开播，
 // 测试只由控制事件推动。
@@ -355,38 +418,18 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		if err := uc.watchRoom(ctx, 42); err != nil {
+		if err := uc.watchRoom(ctx, make(chan struct{}, 1), 42); err != nil {
 			t.Errorf("watchRoom: %v", err)
 		}
 	}()
 
-	// waitRecord 轮询 RoomRegistry，直到房间 42 到达期望的录制状态或超时。
-	waitRecord := func(want RecordStatus) bool {
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			var got RecordStatus
-			var ok bool
-			uc.registry.mu.Lock()
-			st, found := uc.registry.states[42]
-			if found {
-				got, ok = st.recordStatus, true
-			}
-			uc.registry.mu.Unlock()
-			if ok && got == want {
-				return true
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		return false
-	}
-
 	conn.roomStateUpdates <- liveInfo(42, true)
-	if !waitRecord(RecordStatusRecording) {
+	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start recording after live control event")
 	}
 
 	conn.roomStateUpdates <- liveInfo(42, false)
-	if !waitRecord(RecordStatusIdle) {
+	if !waitRecordStatus(uc.registry, 42, RecordStatusIdle) {
 		t.Fatal("offline control event did not cancel the active session")
 	}
 	if len(repo.finished) != 1 {
@@ -395,4 +438,223 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 
 	cancel()
 	<-watchDone
+}
+
+// TestWatchRoomGatesSessionsOnEnabled 验证监控与录制的分离：禁用的房间
+// 照常接收房间状态事件（直播状态可见），但不开启会话；启用后若仍在播则
+// 立即开录，再禁用则立即停止。
+func TestWatchRoomGatesSessionsOnEnabled(t *testing.T) {
+	repo := &pumpBlockRepo{}
+	conn := &fakeDanmakuConn{
+		events:           make(chan *DanmakuEvent),
+		roomStateUpdates: make(chan *RoomInfo),
+	}
+	// 房间 42 初始为禁用态。
+	uc := newTestUsecaseWithRooms(t, map[int64]*Room{42: {RoomID: 42, StreamerName: "tester"}}, repo, &watchClient{conn: conn}, nil)
+	roomChanged := make(chan struct{}, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		if err := uc.watchRoom(ctx, roomChanged, 42); err != nil {
+			t.Errorf("watchRoom: %v", err)
+		}
+	}()
+
+	// 禁用房间收到开播事件：直播状态更新，但不得开启会话。
+	conn.roomStateUpdates <- liveInfo(42, true)
+	waitFor(t, "live status applied", func() bool {
+		return uc.registry.runtime(42).LiveStatus == LiveStatusOnAir
+	})
+	time.Sleep(50 * time.Millisecond)
+	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
+		t.Fatalf("disabled room started recording: record status = %v", got)
+	}
+
+	// 启用：仍在播，应立即开录。
+	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", Enabled: true})
+	roomChanged <- struct{}{}
+	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+		t.Fatal("session did not start after enabling a live room")
+	}
+
+	// 禁用：立即优雅停止。
+	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
+	roomChanged <- struct{}{}
+	if !waitRecordStatus(uc.registry, 42, RecordStatusIdle) {
+		t.Fatal("disabling did not stop the active session")
+	}
+	if len(repo.finished) != 1 {
+		t.Fatalf("finished sessions = %d, want 1", len(repo.finished))
+	}
+
+	// 禁用后的开播事件同样不得开启会话。
+	conn.roomStateUpdates <- liveInfo(42, true)
+	time.Sleep(50 * time.Millisecond)
+	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
+		t.Fatalf("disabled room started recording again: record status = %v", got)
+	}
+
+	cancel()
+	<-watchDone
+}
+
+// gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的转封装收尾，
+// 让测试可以稳定命中"会话正在停止中"的窗口。
+type gatedFinishRepo struct {
+	gate     chan struct{}
+	prepares atomic.Int64
+}
+
+func (r *gatedFinishRepo) PrepareSession(context.Context, *Session) error {
+	r.prepares.Add(1)
+	return nil
+}
+
+func (r *gatedFinishRepo) RecordSession(ctx context.Context, _ *Session, _ *StreamHandle, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (r *gatedFinishRepo) FinishSession(ctx context.Context, _ *Session) error {
+	select {
+	case <-r.gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *gatedFinishRepo) RecoverPending(context.Context) error { return nil }
+
+// TestWatchRoomEnableDuringStopResumesSession 验证竞态路径：禁用触发的
+// 停止尚在收尾（转封装中）时又被启用，收尾完成后若仍在播应立即恢复录制。
+func TestWatchRoomEnableDuringStopResumesSession(t *testing.T) {
+	repo := &gatedFinishRepo{gate: make(chan struct{})}
+	conn := &fakeDanmakuConn{
+		events:           make(chan *DanmakuEvent),
+		roomStateUpdates: make(chan *RoomInfo),
+	}
+	uc := newTestUsecase(t, repo, &watchClient{conn: conn}, nil)
+	roomChanged := make(chan struct{}, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		if err := uc.watchRoom(ctx, roomChanged, 42); err != nil {
+			t.Errorf("watchRoom: %v", err)
+		}
+	}()
+
+	conn.roomStateUpdates <- liveInfo(42, true)
+	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+		t.Fatal("session did not start recording")
+	}
+
+	// 禁用：会话进入收尾并阻塞在转封装 gate 上。
+	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
+	roomChanged <- struct{}{}
+	if !waitRecordStatus(uc.registry, 42, RecordStatusRemuxing) {
+		t.Fatal("disable did not drive the session into finishing")
+	}
+
+	// 收尾完成前重新启用。
+	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", Enabled: true})
+	roomChanged <- struct{}{}
+
+	// 放行收尾：仍在播，应立即恢复录制（第二个会话）。
+	close(repo.gate)
+	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+		t.Fatal("session did not resume after finishing completed while live")
+	}
+	if got := repo.prepares.Load(); got != 2 {
+		t.Fatalf("prepares = %d, want 2", got)
+	}
+
+	cancel()
+	<-watchDone
+}
+
+// connSignalingClient 记录每次弹幕连接的建立与关闭，供外部观察监控协程
+// 的启停。
+type connSignalingClient struct {
+	mu    sync.Mutex
+	conns []*fakeDanmakuConn
+}
+
+func (c *connSignalingClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, error) {
+	return &RoomInfo{RoomID: roomID}, nil
+}
+
+func (c *connSignalingClient) OpenStream(_ context.Context, roomID int64) (*StreamHandle, error) {
+	return &StreamHandle{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+}
+
+func (c *connSignalingClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
+	conn := &fakeDanmakuConn{
+		events:           make(chan *DanmakuEvent),
+		roomStateUpdates: make(chan *RoomInfo),
+		closed:           make(chan struct{}, 1),
+	}
+	c.mu.Lock()
+	c.conns = append(c.conns, conn)
+	c.mu.Unlock()
+	return conn, nil
+}
+
+func (c *connSignalingClient) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.conns)
+}
+
+func (c *connSignalingClient) last() *fakeDanmakuConn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conns[len(c.conns)-1]
+}
+
+// TestRunReconcilesRoomAddAndRemove 验证监督循环：注册表新增房间立即开始
+// 监控，删除房间立即停止监控，全程无需重启。
+func TestRunReconcilesRoomAddAndRemove(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	client := &connSignalingClient{}
+	uc := NewRecorderUsecase(&conf.Recorder{}, reg, &fakeRepo{}, client)
+	uc.redialDelay = time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- uc.Run(ctx) }()
+
+	// 新建房间：监控应立即建连。
+	reg.Add(Room{RoomID: 7, StreamerName: "n", Enabled: true})
+	waitFor(t, "monitor started for created room", func() bool { return client.count() == 1 })
+
+	// 删除房间：监控应立即停止（弹幕连接被关闭）。
+	reg.Remove(7)
+	waitFor(t, "monitor stopped for deleted room", func() bool { return client.last().isClosed() })
+
+	// 重新添加：应由新的监控协程接管（新连接）。
+	reg.Add(Room{RoomID: 7, StreamerName: "n", Enabled: true})
+	waitFor(t, "monitor restarted for re-added room", func() bool { return client.count() == 2 })
+
+	// 取消 Run：应在有限时间内排空并返回。
+	reg.Remove(7)
+	cancel()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run() = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
 }

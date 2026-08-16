@@ -161,14 +161,15 @@ declared in `biz` and implemented in `data`:
   segment files, `recorder_session.go` `meta.json` bookkeeping,
   `recorder_stats.go` write-progress stats).
 
-`RecorderUsecase` (biz/recorder.go) makes decisions only: room
-monitoring (the danmaku WS is the primary live-detection channel;
-`fallback_poll_interval` polling is the backup), session lifecycles, and
-the stream-drop/reconnect decision tree. Byte-level IO belongs to the
-seams. Recordings land under `record_root` (default `./recordings`,
-gitignored); each session's `meta.json` is the history source of truth,
-and `RecoverPending` finalizes sessions interrupted by a crash or
-restart at startup.
+`RecorderUsecase` (biz/recorder.go) makes decisions only: its `Run` is a
+supervisor loop reconciling the registry's change notifications against
+per-room monitor goroutines, room monitoring (the danmaku WS is the primary
+live-detection channel; `fallback_poll_interval` polling is the backup),
+session lifecycles, and the stream-drop/reconnect decision tree. Byte-level
+IO belongs to the seams. Recordings land under `record_root` (default
+`./recordings`, gitignored); each session's `meta.json` is the history
+source of truth, and `RecoverPending` finalizes sessions interrupted by a
+crash or restart at startup.
 
 ## Room API Contract
 
@@ -215,12 +216,17 @@ default page size is 20. The response uses `rooms` and
 
 ### Room runtime and recording
 
-`RoomRegistry` loads persisted rooms at startup and holds mutable live and
-recording state. The recorder updates the registry; room reads merge the
-registry snapshot with persisted fields. For an actively recording room,
-`SessionStatsRepo` best-effort supplies `current_file` and `bytes_written`.
-CRUD changes are persisted immediately but newly created or updated rooms
-are picked up by the recorder after the next restart. Platform room-info
+`RoomRegistry` loads persisted rooms at startup, is kept in sync by room
+CRUD after each successful persist (`Add` / `Update` / `Remove`), and holds
+mutable live and recording state. The recorder updates the registry; room
+reads merge the registry snapshot with persisted fields. For an actively
+recording room, `SessionStatsRepo` best-effort supplies `current_file` and
+`bytes_written`. CRUD changes take effect on the recorder in real time via
+its supervisor loop (no restart): created rooms are monitored immediately
+regardless of `enabled`, deleting a room stops its monitor immediately
+(gracefully stopping any active session, recorded files are kept), and
+`enabled` gates only recording — disabling stops an active recording,
+enabling starts recording when the room is live. Platform room-info
 refreshes (danmaku WS events or the fallback poll) flow through
 `RoomRegistry.ApplyRoomInfo`: they update the live status and overwrite
 the in-memory `streamer_name` / `room_title` with the platform's non-empty

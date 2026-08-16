@@ -37,7 +37,7 @@ type Room struct {
 	RoomID       int64
 	StreamerName string
 	RoomTitle    string
-	Enabled      bool
+	Enabled      bool // 是否录制
 	CreateTime   time.Time
 	UpdateTime   time.Time
 }
@@ -76,7 +76,8 @@ type SessionStatsRepo interface {
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
 }
 
-// RoomUsecase 服务房间 API：增删改经由仓储持久化；
+// RoomUsecase 服务房间 API：增删改经由仓储持久化，落库成功后同步回写
+// RoomRegistry，使录制守护进程实时感知房间变更；
 // 将持久化字段 Room 与 RoomRegistry 中的运行时状态合并后返回。
 type RoomUsecase struct {
 	repo  RoomRepo
@@ -120,6 +121,7 @@ func (uc *RoomUsecase) CreateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	if err != nil {
 		return nil, err
 	}
+	uc.reg.Add(*created)
 	return &RoomRuntime{Room: *created}, nil
 }
 
@@ -131,6 +133,7 @@ func (uc *RoomUsecase) UpdateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	if err != nil {
 		return nil, err
 	}
+	uc.reg.Update(*updated)
 	return &RoomRuntime{Room: *updated}, nil
 }
 
@@ -138,7 +141,11 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	if roomID <= 0 {
 		return ErrRoomInvalidArgument
 	}
-	return uc.repo.DeleteRoom(ctx, roomID)
+	if err := uc.repo.DeleteRoom(ctx, roomID); err != nil {
+		return err
+	}
+	uc.reg.Remove(roomID)
+	return nil
 }
 
 // withRuntime 将持久化字段 Room 与 RoomRegistry 中的运行时状态合并后返回 RoomRuntime。

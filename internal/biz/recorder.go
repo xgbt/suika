@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
-	"sync"
 	"time"
 
 	v1 "suika/api/room/v1"
@@ -232,37 +231,129 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 	return uc
 }
 
+// Run 运行录制守护进程的主循环：先收尾上次运行遗留的会话，然后作为监督
+// 循环持续调和 RoomRegistry 快照与每房间的监控协程。监控跟随房间存在：
+// 新建房间无论启用与否都立即开始监控，删除房间立即停止监控（活跃会话
+// 随之优雅停止）；enabled 翻转不影响监控，只作为重评估信号送达监控协
+// 程，由其决定开始或停止录制。
 func (uc *RecorderUsecase) Run(ctx context.Context) error {
-	rooms := uc.registry.Rooms()
-	if len(rooms) == 0 {
-		log.Warn("recorder has no configured rooms, idling")
-		<-ctx.Done()
-		return nil
-	}
-
 	if err := uc.repo.RecoverPending(ctx); err != nil {
 		log.Error("recorder: recover pending remux", "err", err)
 	}
 
-	var wg sync.WaitGroup
+	changes, unsubscribe := uc.registry.Subscribe()
+	defer unsubscribe()
+
+	monitors := make(map[int64]*monitorHandle)
+	var retired []*monitorHandle
+	defer func() {
+		for _, h := range monitors {
+			h.cancel()
+		}
+		for _, h := range monitors {
+			<-h.done
+		}
+		for _, h := range retired {
+			<-h.done
+		}
+	}()
+
+	uc.reconcile(ctx, monitors, &retired)
+	if len(monitors) == 0 {
+		log.Warn("recorder has no configured rooms, idling")
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-changes:
+			uc.reconcile(ctx, monitors, &retired)
+		}
+	}
+}
+
+// monitorHandle 是监督循环管理的一个房间监控协程句柄。roomChanged 是
+// 合并式重评估信号（如 enabled 翻转），由监督循环送达 watchRoom。
+type monitorHandle struct {
+	// enabled 记录最近一次 reconcile 时的启用状态，用于发现翻转。
+	enabled     bool
+	roomChanged chan struct{}
+	cancel      context.CancelFunc
+	done        chan struct{}
+}
+
+// signal 发送一个 roomChanged 信号，若通道已满则丢弃。
+func (h *monitorHandle) signal() {
+	select {
+	case h.roomChanged <- struct{}{}:
+	default:
+	}
+}
+
+// startMonitor 启动指定房间的监控协程。
+func (uc *RecorderUsecase) startMonitor(ctx context.Context, roomID int64) *monitorHandle {
+	mctx, cancel := context.WithCancel(ctx)
+	h := &monitorHandle{
+		roomChanged: make(chan struct{}, 1),
+		cancel:      cancel,
+		done:        make(chan struct{}),
+	}
+	go func() {
+		defer close(h.done)
+		uc.monitorRoom(mctx, h.roomChanged, roomID)
+	}()
+	return h
+}
+
+// reconcile 按注册表快照调和监控协程集合：为新增房间启动监控；停止并
+// 移除已删除房间的监控（移入 retired 自行优雅收尾，不阻塞调和）；
+// enabled 翻转的房间投递重评估信号。
+func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*monitorHandle, retired *[]*monitorHandle) {
+	// 回收已完成收尾的被移除监控。
+	alive := (*retired)[:0]
+	for _, h := range *retired {
+		select {
+		case <-h.done:
+		default:
+			alive = append(alive, h)
+		}
+	}
+	*retired = alive
+
+	rooms := uc.registry.Rooms()
+	want := make(map[int64]Room, len(rooms))
 	for _, room := range rooms {
-		if !room.Enabled {
+		want[room.RoomID] = room
+	}
+
+	for roomID, h := range monitors {
+		if _, ok := want[roomID]; !ok {
+			h.cancel()
+			*retired = append(*retired, h)
+			delete(monitors, roomID)
+		}
+	}
+
+	for roomID, room := range want {
+		h, running := monitors[roomID]
+		if !running {
+			h = uc.startMonitor(ctx, roomID)
+			h.enabled = room.Enabled
+			monitors[roomID] = h
 			continue
 		}
-		wg.Add(1)
-		go func(roomID int64) {
-			defer wg.Done()
-			uc.monitorRoom(ctx, roomID)
-		}(room.RoomID)
+		// 核心逻辑: 录制状态变动后，向monitors发送信号
+		if h.enabled != room.Enabled {
+			h.enabled = room.Enabled
+			h.signal()
+		}
 	}
-	wg.Wait()
-	return nil
 }
 
 // monitorRoom 维持房间的弹幕连接，断开即重拨，直到 ctx 被取消。
-func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomID int64) {
+func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) {
 	for ctx.Err() == nil {
-		if err := uc.watchRoom(ctx, roomID); err != nil && ctx.Err() == nil {
+		if err := uc.watchRoom(ctx, roomChanged, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.registry.NoteError(roomID, err)
 		}
@@ -273,9 +364,11 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomID int64) {
 }
 
 // watchRoom 持有一条弹幕连接：把控制事件翻译成会话的开始/结束，并运行
-// 回退轮询。无活跃会话时事件被直接丢弃；活跃会话的 RecordSession
+// 回退轮询。会话是否启动受房间 enabled 门控；roomChanged 信号触发对该
+// 门控的重评估——禁用立即停止录制，启用时若在播则立即开始录制，但监控
+// 本身不受影响。无活跃会话时事件被直接丢弃；活跃会话的 RecordSession
 // 直接消费事件。
-func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
+func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
 
 	// 1. 弹幕连接
 	conn, err := uc.liveClient.DanmakuConn(ctx, roomID)
@@ -288,6 +381,13 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
 	defer poll.Stop()
 
+	enabled := uc.registry.Room(roomID).Enabled
+
+	// latestRoomInfo 记录最近一次的房间信息，供启用信号到达时判断当前是否在播。
+	var latestRoomInfo *RoomInfo
+
+	// resumeOnFinish 在"启用到达时会话正在停止中"置位：会话收尾完成后若仍在播则恢复录制。
+	resumeOnFinish := false
 	var active *sessionHandle
 	for {
 		// 3. 事件分发
@@ -310,9 +410,14 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 			// 无活跃会话：丢弃
 		case <-done:
 			active = nil
+			if resumeOnFinish && latestRoomInfo != nil && latestRoomInfo.Live {
+				resumeOnFinish = false
+				active = uc.launchSession(ctx, roomID, latestRoomInfo, conn.Events())
+			}
 		case roomInfo := <-conn.RoomStateUpdates():
+			latestRoomInfo = roomInfo
 			uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-			if roomInfo.Live && active == nil {
+			if roomInfo.Live && enabled && active == nil {
 				active = uc.launchSession(ctx, roomID, roomInfo, conn.Events())
 			} else if !roomInfo.Live && active != nil {
 				active.cancel()
@@ -323,14 +428,41 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomID int64) error {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
 				uc.registry.NoteError(roomID, err)
 			} else {
+				latestRoomInfo = roomInfo
 				uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-				if roomInfo.Live && active == nil {
+				if roomInfo.Live && enabled && active == nil {
 					active = uc.launchSession(ctx, roomID, roomInfo, conn.Events())
 				} else if !roomInfo.Live && active != nil {
 					active.cancel()
 				}
 			}
 			poll.Reset(jitterDuration(uc.pollInterval, pollJitterFraction))
+		// 管理后台通过 API 修改房间监控状态
+		case <-roomChanged:
+
+			// 获取内存中【最新】的 Room 对象
+			room := uc.registry.Room(roomID)
+			// 与上次的 enabled 状态比较，若没有变化, 则继续等待
+			if room.Enabled == enabled {
+				continue
+			}
+
+			// 房间监控状态发生变化
+			enabled = room.Enabled
+			if enabled { // 启用录制
+				if active == nil {
+					if latestRoomInfo != nil && latestRoomInfo.Live {
+						active = uc.launchSession(ctx, roomID, latestRoomInfo, conn.Events())
+					}
+				} else { // active !=nil, 录制 session 还存在，正在收尾中,收尾完成后再决定是否恢复
+					resumeOnFinish = true
+				}
+			} else { // 停止录制
+				resumeOnFinish = false
+				if active != nil {
+					active.cancel()
+				}
+			}
 		}
 	}
 }

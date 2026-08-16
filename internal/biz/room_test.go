@@ -122,6 +122,103 @@ func TestNewRoomRegistryLoadError(t *testing.T) {
 	}
 }
 
+func TestRoomRegistryAddUpdateRemove(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	changes, unsubscribe := reg.Subscribe()
+	defer unsubscribe()
+
+	// Add：立即可见。
+	reg.Add(Room{RoomID: 1, StreamerName: "a", Enabled: true})
+	if len(reg.Rooms()) != 1 || !reg.Room(1).Enabled {
+		t.Fatalf("registry after Add = %+v", reg.Rooms())
+	}
+
+	// Update：刷新房间字段，保留运行时状态。
+	reg.StartRecording(1)
+	reg.Update(Room{RoomID: 1, StreamerName: "b", Enabled: false})
+	rt := reg.runtime(1)
+	if rt.Room.StreamerName != "b" || rt.Room.Enabled {
+		t.Fatalf("room after Update = %+v", rt.Room)
+	}
+	if rt.RecordStatus != RecordStatusRecording {
+		t.Fatalf("record status after Update = %v, want recording preserved", rt.RecordStatus)
+	}
+
+	// Remove：立即不可见；迟到的状态写入静默忽略。
+	reg.Remove(1)
+	if len(reg.Rooms()) != 0 {
+		t.Fatalf("registry after Remove = %+v", reg.Rooms())
+	}
+	reg.NoteError(1, stderrors.New("late write"))
+	if got := reg.runtime(1).LastError; got != "" {
+		t.Fatalf("last error after Remove = %q, want empty", got)
+	}
+
+	// 通知合并：三次变更只积压一个唤醒信号。
+	select {
+	case <-changes:
+	case <-time.After(time.Second):
+		t.Fatal("no change signal after mutations")
+	}
+	select {
+	case <-changes:
+		t.Fatal("unexpected extra change signal")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// 退订后不再收到信号。
+	unsubscribe()
+	reg.Add(Room{RoomID: 2})
+	select {
+	case <-changes:
+		t.Fatal("change signal delivered after unsubscribe")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestRoomUsecaseCRUDSyncsRegistry(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, StreamerName: "a"}}}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	ctx := context.Background()
+
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 2, StreamerName: "b", Enabled: true}); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if got := reg.Room(2); got.StreamerName != "b" || !got.Enabled {
+		t.Fatalf("registry after create = %+v", got)
+	}
+
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, StreamerName: "b2", Enabled: false}); err != nil {
+		t.Fatalf("UpdateRoom: %v", err)
+	}
+	if got := reg.Room(2); got.StreamerName != "b2" || got.Enabled {
+		t.Fatalf("registry after update = %+v", got)
+	}
+
+	if err := uc.DeleteRoom(ctx, 2); err != nil {
+		t.Fatalf("DeleteRoom: %v", err)
+	}
+	if len(reg.Rooms()) != 1 {
+		t.Fatalf("registry after delete has %d rooms, want 1", len(reg.Rooms()))
+	}
+
+	// 持久化失败时注册表保持不变。
+	repo.updateErr = stderrors.New("db locked")
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 1, StreamerName: "x"}); err == nil {
+		t.Fatal("UpdateRoom error = nil, want persist error")
+	}
+	if got := reg.Room(1); got.StreamerName != "a" {
+		t.Fatalf("registry changed despite persist failure: %+v", got)
+	}
+}
+
 func TestApplyRoomInfoUpdatesIdentityThroughRepo(t *testing.T) {
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Enabled: true}}}
 	reg, err := NewRoomRegistry(repo)

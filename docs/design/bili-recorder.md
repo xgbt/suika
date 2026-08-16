@@ -228,42 +228,50 @@ sqlite（§3.2）。`conf.Recorder` 注入 `NewData`、`NewRecorderRepo`、
 App.Run
  └─ Daemon.Start → goroutine: RecorderUsecase.Run(rctx)
      ├─ repo.RecoverPending            启动补跑：补完上次遗留的 remux
-     └─ for each enabled room（registry 启动快照）→ monitorRoom goroutine
-         └─ watchRoom（持有一条 danmakuConn）
-             ├─ danmakuConn.run goroutine（data 层，内部自动重连 WS）
-             │    ├─ readLoop goroutine（解包、分发）
-             │    └─ 30s 心跳 ticker
-             ├─ 兜底轮询 timer（默认 600s ±10% 抖动）
-             └─ 开播时 → launchSession goroutine（sessionHandle：cancel + done）
-                 ├─ acquireSlot（max_concurrent 并发槽）
-                 ├─ registry.StartRecording + repo.PrepareSession
-                 ├─ recordLoop：OpenStream → repo.RecordSession 泵送 → 断流决策树
-                 │    └─ RecordSession 内部：tag 读取 goroutine（chan 缓冲 512）
-                 └─ SetRemuxing → repo.FinishSession（30s grace，脱离运行 ctx）→ remux
+     └─ 监督循环（订阅 registry 变更通知，reconcile 快照 ↔ 监控集合）
+         └─ registry 中每个房间（无论 enabled）→ monitorRoom goroutine
+             └─ watchRoom（持有一条 danmakuConn）
+                 ├─ danmakuConn.run goroutine（data 层，内部自动重连 WS）
+                 │    ├─ readLoop goroutine（解包、分发）
+                 │    └─ 30s 心跳 ticker
+                 ├─ 兜底轮询 timer（默认 600s ±10% 抖动）
+                 └─ 开播且 enabled 时 → launchSession goroutine（sessionHandle：cancel + done）
+                     ├─ acquireSlot（max_concurrent 并发槽）
+                     ├─ registry.StartRecording + repo.PrepareSession
+                     ├─ recordLoop：OpenStream → repo.RecordSession 泵送 → 断流决策树
+                     │    └─ RecordSession 内部：tag 读取 goroutine（chan 缓冲 512）
+                     └─ SetRemuxing → repo.FinishSession（30s grace，脱离运行 ctx）→ remux
 ```
 
-- `Run`：rooms 为空时记 warn 并阻塞到 ctx 取消（零房间空转）；否则先
-  `RecoverPending`（失败只记日志），再为每个 `Enabled` 房间起
-  `monitorRoom`，`sync.WaitGroup` 等全部退出。
+- `Run`：先 `RecoverPending`（失败只记日志），然后订阅 RoomRegistry 的
+  变更通知，作为监督循环维护 roomID → monitor 协程的映射（reconcile）：
+  新增房间无论启用与否立即启动监控，删除的房间立即取消监控（移入
+  retired 自行优雅收尾），enabled 翻转不增删协程、只投递重评估信号。
+  rooms 为空时记 warn 空转，但对后续变更保持响应。
 - `monitorRoom`：`watchRoom` 返回错误且 ctx 未取消时记错误、
   `registry.NoteError`，等 `redialDelay = 10s` 后重建弹幕连接
   （防御性循环；当前 `liveClient.DanmakuConn` 构造不会失败，重连都在
   conn 内部完成）。
-- `watchRoom` 的 select 五路：ctx 取消（cancel 活动场次并等 done）/
+- `watchRoom` 的 select 六路：ctx 取消（cancel 活动场次并等 done）/
   弹幕事件排空（无活动场次时丢弃；有活动场次时该分支是 nil channel，
   事件由 RecordSession 直接消费）/ 场次结束（`active.done` → 清 active）/
-  `RoomStateUpdates` 房态事件 / 轮询定时器。
+  `RoomStateUpdates` 房态事件 / 轮询定时器 / roomChanged 重评估信号。
 - 房态事件与轮询共用同一套动作：`registry.ApplyRoomInfo` 记录房态；
-  "在播且无活动场次" → `launchSession`；"未在播但有活动场次" →
+  "在播、enabled 且无活动场次" → `launchSession`；"未在播但有活动场次" →
   `active.cancel()`。轮询失败只 warn + NoteError，不重置定时器之外
   的任何状态。
+- roomChanged 重评估信号（监督循环在 enabled 翻转时投递）：重读注册表
+  最新状态——禁用立即 `active.cancel()`；启用时若无活动场次且在播则
+  立即 `launchSession`，若会话正在停止中则置 `resumeOnFinish`，收尾
+  完成后仍在播即恢复录制。仅名称/标题变更不触发重评估。
 
 ### 3.2 房间状态
 
 房间集合来源是 sqlite：`NewRoomRegistry(repo)` 在启动时从 RoomRepo
 全量加载一次（`ListQuery{Offset: 0, Limit: math.MaxInt32}`），存入
-roomID → roomState 的 map，运行期间不再重载。因此经 CRUD API 对房间
-集合的增删改要**重启后**才对录制进程生效（设计取舍，见 §8.1）。
+roomID → roomState 的 map；此后房间 API 的增删改在落库成功后同步回写
+注册表（`Add` / `Update` / `Remove`），并经合并式变更通知唤醒订阅者。
+录制守护进程订阅该通知，实时调和监控集合，**无需重启**（语义见 §8.1）。
 nil repo 容忍为空 registry（记 warn）；加载失败即启动失败。
 
 biz 在 `RoomRegistry` 里为每个加载的房间维护 `roomState`（单一 mutex
@@ -284,14 +292,15 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
 `ApplyRoomInfo`：
 
 1. 更新 live 状态（在播 → `LiveStatusOnAir`，否则 `LiveStatusPreparing`）；
-   房间不在 registry（启动后新建的）则整体忽略。
+   房间不在 registry（如刚被删除）则整体忽略。
 2. 用平台非空值覆盖内存里的 `streamer_name` / `room_title`，随后在锁外
    调 `repo.UpdateRoom` 写回 sqlite。**覆盖语义**：平台数据优先于库里
    已有值（包括用户经 UpdateRoom 设置的值）。覆盖后的值重启不丢。
 3. 写回失败只记 warn，内存快照仍然更新（降级不丢状态）。
 
-启动后才创建的房间不在 registry 里：daemon 不为它跑监控，API 读取时
-持久字段来自 repo、运行时字段返回默认值（§8）。
+启动后创建的房间在落库成功后即由 `RoomUsecase` 登记进 registry，录制
+守护进程随即开始监控（enabled 只决定是否录制，见 §8.1），API 读取的
+运行时字段从默认值开始随监控更新。
 
 ### 3.3 场次生命周期
 
@@ -703,7 +712,8 @@ recorder:
 
 - 配置里没有任何房间：房间清单在 sqlite（`data.database.source`）的
   rooms 表里，经 CRUD API 管理；全新安装首次启动时 rooms 表为空，
-  recorder 记 warn 零房间空转，CreateRoom 加房后重启生效（§8）；
+  recorder 记 warn 空转但对后续加房保持响应，CreateRoom 加房后立即
+  开始监控（§8.1）；
 - `remux_enabled: false`（开发机未装 ffmpeg；装了再改 true）；
 - `max_concurrent: 2`、`health_check_interval: 30s` 为本地调过的值；
 - `fallback_poll_interval: 600s` 与默认相同，显式写出只为注释说明；
@@ -801,17 +811,24 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 前端类型与 room.proto 手工对齐（`web/src/api/rooms.ts`），改 proto
 时需同步。
 
-### 8.1 已接受的设计取舍（CRUD 与录制进程的时序）
+### 8.1 CRUD 与录制进程的时序（实时生效）
 
-1. CRUD 变更立即落 sqlite，但**重启后才对录制进程生效**——registry
-   只在启动时全量加载一次，运行期不热载。
-2. 由此：已删除的房间重启前**继续录制**；新建/启用的房间重启后才
-   开始录制；停用（enabled=false）同样要重启才停止监控。
-3. 平台刷新的主播名/房间标题会经 `ApplyRoomInfo` → `UpdateRoom` 覆盖
-   写回 sqlite，重启不丢（写回失败只记 warn，内存仍更新，不影响录制）。
+1. CRUD 变更立即落 sqlite，落库成功后同步回写 registry（`Add` /
+   `Update` / `Remove`）；录制守护进程的监督循环订阅变更通知实时调和，
+   **无需重启**。
+2. **监控跟随房间存在**：新建房间无论 enabled 与否立即开始监控（弹幕
+   WS + 兜底轮询），删除房间立即停止监控——若删除时正在录制，先优雅
+   停止会话（关 FLV、刷弹幕、finalize meta、remux 跑完），再删房间
+   记录，已录制的文件保留在磁盘上。
+3. **enabled 只决定是否录制**：禁用正在录制的房间立即优雅停止会话
+   （正在转封装的收尾不中断，跑完为止），监控保留；启用时若在播则
+   立即开录。启用翻转与会话收尾竞态时，收尾完成后仍在播即恢复录制。
+4. 平台刷新的主播名/房间标题会经 `ApplyRoomInfo` → `UpdateRoom` 覆盖
+   写回 sqlite，重启不丢（写回失败只记 warn，内存仍更新，不影响录制）；
+   用户手动改的名/标题立即生效，但会被下一次平台刷新覆盖。
 
-启动后创建的房间 Get/List 照常可查（持久字段来自 sqlite，运行时字段
-为默认值），只是录制进程不认识它，直到下次重启。
+启动后创建的房间 Get/List 照常可查，且立即被监控；反复启停房间只影响
+录制会话，不断开弹幕连接（监控协程不随 enabled 翻转重启）。
 
 ---
 
@@ -831,9 +848,10 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 | cookie 过期 | 拉流降档（qn 自动降档 + meta 记录 + warn 日志）；运维动作：换 cookie |
 | WS 假死（半开连接） | 90s 读超时强制重连；兜底轮询（600s±10%）保底发现开播 |
 | 多主播同时开播 | 并行录制；`max_concurrent` 达上限时新开播排队等待（记日志） |
-| recorder 配置缺失/rooms 表为空 | NewData/NewRecorderRepo/NewRecorderUsecase 均容忍 nil recorder conf；rooms 表空 → Run 记 warn 零房间空转，进程其余部分不受影响；经 CRUD 加房后重启生效（§8.1） |
+| recorder 配置缺失/rooms 表为空 | NewData/NewRecorderRepo/NewRecorderUsecase 均容忍 nil recorder conf；rooms 表空 → Run 记 warn 空转但对后续变更保持响应；经 CRUD 加房后立即开始监控（§8.1） |
 | data.database 缺失或 driver 非 sqlite | NewData 启动失败：只接受 `driver: "sqlite"` 且 source 通过路径校验（§7.1）；sqlite 打不开同样启动失败 |
-| CRUD 改了房间但未重启 | 录制进程沿用启动时快照：删的房间继续录、新房间不监控（§8.1，已接受的取舍） |
+| 录制中禁用房间 | 优雅停止会话：关 FLV、刷弹幕、finalize meta、remux 若开启则跑完（30s grace），监控保留；再启用时若在播立即恢复录制（§8.1） |
+| 录制中删除房间 | 先优雅停止会话，再停止监控、删除房间记录；已录制文件保留，迟到的注册表状态写入自动忽略 |
 | 无活动场次时弹幕到达 | Events 缓冲（4096）满即丢弃，不阻塞 WS 读循环 |
 | watchRoom 收到重复"在播" | 幂等：已有活动场次则忽略 |
 | 场次中途改标题/轮次 | 目录与文件名沿用开播快照，不重命名；ROUND/ROOM_CHANGE 仅刷新房态 |
@@ -849,8 +867,8 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
-| biz | `recorder_test.go`（12） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenStream/复查失败终止、ctx 取消即停、nil/覆盖配置、抖动区间；watchRoom 收到"未开播"房态更新取消活动场次；`cdnBackoffBase`/`redialDelay` 字段供测试压缩时延 |
-| biz | `room_test.go`（8） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
+| biz | `recorder_test.go`（15） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenStream/复查失败终止、ctx 取消即停、nil/覆盖配置、抖动区间；watchRoom 收到"未开播"房态更新取消活动场次；**enabled 门控（禁用只监控不录制、启用立即开录）、停止中再启用收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`redialDelay` 字段供测试压缩时延 |
+| biz | `room_test.go`（10） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；**registry Add/Update/Remove 实时同步与合并式变更通知（含退订）**、**RoomUsecase CRUD 落库后同步 registry（持久化失败不回写）**；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
 | service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（RemuxEnabled=false 免 ffmpeg 探测），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/改名/停用/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、空/越权 update_mask、不存在 404、坏 page_token）、**平台刷新覆盖已更新的 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
 | data | `recorder_test.go`（25） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾（无 meta noop / remux 关保 FLV / 成功替换 / 失败保留 / 空 ffmpegPath）、缺源恢复、RecoverPending |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
@@ -897,7 +915,7 @@ go run ./cmd/suika -conf ./configs         # HTTP :8000 / gRPC :9000，
 curl -X POST localhost:8000/v1/rooms/list -d '{}'              # 冒烟检查
 curl -X POST localhost:8000/v1/rooms/create \
      -d '{"room":{"room_id":123456,"enabled":true}}'           # 加房间
-# 房间重启后才对录制进程生效（§8.1）
+# 房间立即开始监控；enabled 决定是否录制（§8.1）
 ```
 
 ---
