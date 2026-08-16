@@ -28,10 +28,13 @@ var (
 )
 
 const (
-	defaultFallbackPollInterval = 600 * time.Second
-	defaultMaxReconnect         = 3
-	defaultReconnectDelay       = 10 * time.Second
-	// defaultCDNTransientBudget 是 CDN 瞬时故障的重试预算，超过预算则不再重连。
+	// defaultRoomInfoPollInterval 拉取房间状态的兜底轮询间隔
+	defaultRoomInfoPollInterval = 600 * time.Second
+
+	// defaultMaxReconnect 断流决策树最大重连次数
+	defaultMaxReconnect   = 3
+	defaultReconnectDelay = 10 * time.Second
+	// defaultCDNTransientBudget CDN 瞬时故障的重试预算，超过预算则不再重连。
 	defaultCDNTransientBudget = 5
 	defaultCDNBackoffBase     = 2 * time.Second
 	cdnBackoffMax             = 60 * time.Second
@@ -69,8 +72,8 @@ type StreamQuality struct {
 	Desc string
 }
 
-// StreamHandle 是 LiveClient.OpenStream 打开的一路直播流。它对 biz 是
-// 不透明的：由 LiveClient 产生、被 RecorderRepo 消费
+// StreamHandle 是 LiveClient.OpenStream 打开的一路直播流。
+// 由 LiveClient 产生、被 RecorderRepo 消费
 type StreamHandle struct {
 	URL     string
 	Quality StreamQuality
@@ -191,7 +194,7 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 		registry:     reg,
 		repo:         repo,
 		liveClient:   lc,
-		pollInterval: defaultFallbackPollInterval,
+		pollInterval: defaultRoomInfoPollInterval,
 		rec: ReconnectPolicy{
 			AutoReconnect:      true,
 			MaxReconnect:       defaultMaxReconnect,

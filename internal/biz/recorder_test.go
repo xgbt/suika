@@ -248,7 +248,7 @@ func TestNewRecorderUsecaseNilConfig(t *testing.T) {
 	if !uc.rec.AutoReconnect || uc.rec.MaxReconnect != defaultMaxReconnect ||
 		uc.rec.ReconnectDelay != defaultReconnectDelay ||
 		uc.rec.CDNTransientBudget != defaultCDNTransientBudget ||
-		uc.pollInterval != defaultFallbackPollInterval {
+		uc.pollInterval != defaultRoomInfoPollInterval {
 		t.Fatalf("defaults not applied: %+v / %s", uc.rec, uc.pollInterval)
 	}
 }
