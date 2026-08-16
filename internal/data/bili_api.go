@@ -20,19 +20,25 @@ import (
 const biliUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 const (
+	// liveAPIBase 即 B 站直播 API 的基础 URL
 	liveAPIBase = "https://api.live.bilibili.com"
-	// defaultDanmakuServer 是 getDanmuInfo 和旧版 getConf 都被风控时
-	// 的兜底弹幕端点。
+	// riskCode352 是 B 站直播 API 的 -352 风控错误码
+	riskCode352 = -352
+	// flvStreamPriorityDefault 是默认 FLV 流的优先级
+	flvStreamPriorityDefault = 90
+	// flvStreamPriorityAVC 是 AVC 编码 FLV 流的优先级（更优）
+	flvStreamPriorityAVC = 100
+	liveStatusOn         = 1
+	// defaultDanmakuServer 是 getDanmuInfo 和旧版 getConf 都被风控时的兜底弹幕端点。
 	defaultDanmakuServer = "wss://broadcastlv.chat.bilibili.com:2245/sub"
 )
 
-// 内部风控哨兵错误；外部调用方只会看到 biz.ErrRiskControl。
 var (
 	errRiskControl352  = stderrors.New("bilibili -352 risk control")
 	errHTTPRiskControl = stderrors.New("bilibili http-layer risk control")
 )
 
-// riskCooldownLadder 是风控连续被拒后按房间递增的冷却时长。
+// riskCooldownLadder 风控被拒后，递增的冷却时长
 var riskCooldownLadder = []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute}
 
 // qnNames 将清晰度编号映射为展示名称（API 未返回 g_qn_desc 时兜底）。
@@ -53,9 +59,11 @@ func (d *Data) injectAntiRisk(ctx context.Context) string {
 		log.Warn("get buvids failed, continuing without buvid", "err", err)
 		return d.cookie
 	}
+
 	if b3 == "" && b4 == "" {
 		return d.cookie
 	}
+
 	return injectBuvids(d.cookie, b3, b4)
 }
 
@@ -77,7 +85,7 @@ func (d *Data) signURL(endpoint string) string {
 	return signed
 }
 
-// fetchJSON 携带抗风控头发 GET 请求，并把 JSON 响应体解码到 out。
+// fetchJSON 携带抗风控 header 发 GET 请求，并把 JSON 响应体解码到 out。
 // HTTP 412/403/429 映射为 errHTTPRiskControl。
 func (d *Data) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -85,7 +93,7 @@ func (d *Data) fetchJSON(ctx context.Context, endpoint string, roomID int64, coo
 		return err
 	}
 	req.Header.Set("User-Agent", biliUserAgent)
-	req.Header.Set("Referer", "https://live.bilibili.com/"+strconv.FormatInt(roomID, 10))
+	req.Header.Set("Referer", liveReferer(roomID))
 	req.Header.Set("Origin", "https://live.bilibili.com")
 	if cookie != "" {
 		req.Header.Set("Cookie", cookie)
@@ -162,8 +170,12 @@ func (lc *liveClient) noteSuccess(roomID int64) {
 	delete(lc.cooldowns, roomID)
 }
 
-func isRiskControlError(err error) bool {
-	return stderrors.Is(err, errRiskControl352) || stderrors.Is(err, errHTTPRiskControl)
+func (lc *liveClient) wrapRiskErr(roomID int64, err error) error {
+	if !stderrors.Is(err, errRiskControl352) && !stderrors.Is(err, errHTTPRiskControl) {
+		return err
+	}
+	lc.noteRiskFailure(roomID)
+	return fmt.Errorf("%w: %v", biz.ErrRiskControl, err)
 }
 
 // GetRoomInfo 经 getInfoByRoom 返回房间当前的开播状态。
@@ -174,11 +186,7 @@ func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomI
 
 	info, err := lc.roomInfo(ctx, roomID)
 	if err != nil {
-		if isRiskControlError(err) {
-			lc.noteRiskFailure(roomID)
-			return nil, fmt.Errorf("%w: %v", biz.ErrRiskControl, err)
-		}
-		return nil, err
+		return nil, lc.wrapRiskErr(roomID, err)
 	}
 
 	lc.noteSuccess(roomID)
@@ -203,14 +211,14 @@ func (lc *liveClient) roomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo
 			return nil, err
 		}
 	}
-	if resp.Code == -352 {
+	if resp.Code == riskCode352 {
 		log.Warn("getInfoByRoom risk control -352, refreshing and retrying once", "room", roomID)
 		lc.data.refreshRisk()
 		if err := query(); err != nil {
 			return nil, err
 		}
 	}
-	if resp.Code == -352 {
+	if resp.Code == riskCode352 {
 		return nil, fmt.Errorf("%w: room_id=%d", errRiskControl352, roomID)
 	}
 	if resp.Code != 0 {
@@ -228,7 +236,7 @@ func (lc *liveClient) roomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo
 	}
 	return &biz.RoomInfo{
 		RoomID:        room.RoomID,
-		Live:          room.LiveStatus == 1,
+		Live:          room.LiveStatus == liveStatusOn,
 		Title:         title,
 		StreamerName:  resp.Data.AnchorInfo.BaseInfo.UName,
 		LiveStartTime: startedAt,
@@ -244,11 +252,7 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 
 	streamURL, quality, err := lc.selectStreamURL(ctx, roomID)
 	if err != nil {
-		if isRiskControlError(err) {
-			lc.noteRiskFailure(roomID)
-			return nil, fmt.Errorf("%w: %v", biz.ErrRiskControl, err)
-		}
-		return nil, err
+		return nil, lc.wrapRiskErr(roomID, err)
 	}
 	lc.noteSuccess(roomID)
 
@@ -257,7 +261,7 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 		return nil, err
 	}
 	req.Header.Set("User-Agent", biliUserAgent)
-	req.Header.Set("Referer", "https://live.bilibili.com/"+strconv.FormatInt(roomID, 10))
+	req.Header.Set("Referer", liveReferer(roomID))
 	if lc.data.cookie != "" {
 		req.Header.Set("Cookie", lc.data.cookie)
 	}
@@ -274,33 +278,33 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 }
 
 func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string, biz.StreamQuality, error) {
-	cookie := lc.data.injectAntiRisk(ctx)
 	endpoint := liveAPIBase + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
 		strconv.FormatInt(roomID, 10) +
 		"&protocol=0,1&format=0,1,2&codec=0,1&qn=" + strconv.Itoa(lc.data.qualityQN) + "&platform=web"
 
 	var resp playInfoResponse
-	if err := lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp); err != nil {
+	fetch := func() error {
+		cookie := lc.data.injectAntiRisk(ctx)
+		return lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp)
+	}
+	if err := fetch(); err != nil {
 		return "", biz.StreamQuality{}, err
 	}
-	if resp.Code == -352 {
+	if resp.Code == riskCode352 {
 		lc.data.refreshRisk()
-		if err := lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp); err != nil {
+		if err := fetch(); err != nil {
 			return "", biz.StreamQuality{}, err
 		}
 	}
-	if resp.Code == -352 {
+	if resp.Code == riskCode352 {
 		return "", biz.StreamQuality{}, fmt.Errorf("%w: room_id=%d", errRiskControl352, roomID)
 	}
 	if resp.Code != 0 {
 		return "", biz.StreamQuality{}, fmt.Errorf("getRoomPlayInfo code=%d message=%s", resp.Code, resp.Message)
 	}
 
-	type candidate struct {
-		url      string
-		priority int
-	}
-	var candidates []candidate
+	bestURL := ""
+	bestPriority := -1
 	playURL := resp.Data.PlayURLInfo.PlayURL
 	for _, stream := range playURL.Stream {
 		for _, format := range stream.Format {
@@ -312,26 +316,20 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 					if !isFLVStream(codec.BaseURL) {
 						continue // 录制只收 FLV
 					}
-					priority := 90
+					priority := flvStreamPriorityDefault
 					if codec.CodecName == "avc" {
-						priority = 100
+						priority = flvStreamPriorityAVC
 					}
-					candidates = append(candidates, candidate{
-						url:      urlInfo.Host + codec.BaseURL + urlInfo.Extra,
-						priority: priority,
-					})
+					if priority > bestPriority {
+						bestPriority = priority
+						bestURL = urlInfo.Host + codec.BaseURL + urlInfo.Extra
+					}
 				}
 			}
 		}
 	}
-	if len(candidates) == 0 {
+	if bestURL == "" {
 		return "", biz.StreamQuality{}, fmt.Errorf("no FLV stream candidate for room %d", roomID)
-	}
-	best := candidates[0]
-	for _, c := range candidates[1:] {
-		if c.priority > best.priority {
-			best = c
-		}
 	}
 
 	// 即使授予的清晰度低于请求的 qn 也接受（cookie 过期会失去原画），
@@ -350,7 +348,7 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 	if int32(granted) != int32(lc.data.qualityQN) {
 		log.Warn("stream quality downgraded", "room", roomID, "requested", lc.data.qualityQN, "granted", granted)
 	}
-	return best.url, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
+	return bestURL, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
 }
 
 func (lc *liveClient) DanmakuConn(ctx context.Context, roomID int64) (biz.DanmakuConn, error) {
@@ -368,6 +366,10 @@ func (lc *liveClient) DanmakuConn(ctx context.Context, roomID int64) (biz.Danmak
 
 func isFLVStream(baseURL string) bool {
 	return strings.Contains(strings.ToLower(baseURL), ".flv")
+}
+
+func liveReferer(roomID int64) string {
+	return "https://live.bilibili.com/" + strconv.FormatInt(roomID, 10)
 }
 
 type roomInfoResponse struct {
