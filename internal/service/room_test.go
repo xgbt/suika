@@ -392,7 +392,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	}
 }
 
-func TestRoomServiceDoesNotBackfillOverUpdatedStreamerName(t *testing.T) {
+func TestRoomServicePlatformRefreshOverridesStreamerName(t *testing.T) {
 	ctx := context.Background()
 	d := newTestData(t)
 	seed := newTestRoomEnv(t, d)
@@ -414,8 +414,9 @@ func TestRoomServiceDoesNotBackfillOverUpdatedStreamerName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRoom() error = %v", err)
 	}
-	if got.GetRoom().GetStreamerName() != "user-name" {
-		t.Fatalf("GetRoom() streamer_name = %q, want user-name", got.GetRoom().GetStreamerName())
+	// 平台上报的非空身份直接覆盖用户经 UpdateRoom 设置的值（新语义）。
+	if got.GetRoom().GetStreamerName() != "streamer-name" {
+		t.Fatalf("GetRoom() streamer_name = %q, want streamer-name", got.GetRoom().GetStreamerName())
 	}
 	if got.GetRoom().GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_LIVE {
 		t.Fatalf("GetRoom() live_status = %v, want LIVE", got.GetRoom().GetLiveStatus())

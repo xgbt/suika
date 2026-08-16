@@ -45,27 +45,27 @@ namespace RoomManagement {
   class RoomRuntime {
     <<read model>>
     +Room Room
-    +LiveState Live
-    +RecordState Record
+    +LiveStatus LiveStatus
+    +RecordStatus RecordStatus
     +string CurrentFile
     +int64 BytesWritten
     +time.Time SessionStartedAt
     +string LastError
   }
 
-  class LiveState {
+  class LiveStatus {
     <<enumeration>>
-    LiveUnknown
-    LivePreparing
-    LiveOnAir
+    LiveStatusUnknown
+    LiveStatusPreparing
+    LiveStatusOnAir
   }
 
-  class RecordState {
+  class RecordStatus {
     <<enumeration>>
-    RecordIdle
-    RecordRecording
-    RecordRemuxing
-    RecordError
+    RecordStatusIdle
+    RecordStatusRecording
+    RecordStatusRemuxing
+    RecordStatusError
   }
 
   class ListQuery {
@@ -93,7 +93,6 @@ namespace RoomManagement {
     <<runtime state holder>>
     -repo RoomRepo
     -mu sync.Mutex
-    -rooms []Room
     -states map[int64]*roomState
     +Rooms() []Room
     +Room(roomID) Room
@@ -109,19 +108,18 @@ namespace RoomManagement {
   class roomState {
     <<internal>>
     +Room room
-    +LiveState live
-    +RecordState record
+    +LiveStatus liveStatus
+    +RecordStatus recordStatus
     +time.Time sessionStartedAt
     +string lastError
   }
 
   class RoomRepo {
     <<repository interface>>
-    +FindByRoomID(ctx, roomID) (*Room, error)
+    +GetByRoomID(ctx, roomID) (*Room, error)
     +ListRooms(ctx, query) ([]*Room, error)
     +CreateRoom(ctx, room) (*Room, error)
     +UpdateRoom(ctx, room) (*Room, error)
-    +BackfillRoomIdentity(ctx, roomID, streamerName, roomTitle) (bool, error)
     +DeleteRoom(ctx, roomID) error
   }
 
@@ -240,15 +238,15 @@ namespace RecordingExecution {
 }
 
 RoomRuntime *-- Room : composed from
-RoomRuntime ..> LiveState
-RoomRuntime ..> RecordState
+RoomRuntime ..> LiveStatus
+RoomRuntime ..> RecordStatus
 RoomRegistry o-- roomState : one per room
 roomState *-- Room : in-memory snapshot
 RoomUsecase ..> RoomRepo : persist CRUD
 RoomUsecase ..> RoomRegistry : read runtime snapshot
 RoomUsecase ..> SessionStatsRepo : enrich write progress
 RoomUsecase ..> ListQuery : query shape
-RoomRegistry ..> RoomRepo : BackfillRoomIdentity
+RoomRegistry ..> RoomRepo : persist identity via UpdateRoom
 RoomRegistry ..> RoomInfo : ApplyRoomInfo
 
 RecorderUsecase ..> RoomRegistry : drive state transitions
@@ -273,7 +271,7 @@ SessionStatsRepo ..> SessionStats
 note for RoomUsecase "类型化错误：ErrRoomNotFound / ErrRoomInvalidArgument / ErrRoomAlreadyExists"
 note for RecorderUsecase "只做编排决策，不做字节级 IO；哨兵错误 ErrStreamTransient / ErrRiskControl 供断流决策树分类"
 note for StreamHandle "不透明句柄：由 LiveClient 产生、被 RecorderRepo 消费，biz 从不检视（同 *sql.Rows 用法）"
-note for DanmakuConn "实现内部自行重连；每次重连后重新探测房态，补上断连期间错过的开播事件；Events 有界缓冲，无人消费时丢弃"
+note for DanmakuConn "实现内部自行重连；每次重连后重新探测房态，补上断连期间错过的开播事件；Events / RoomStateUpdates 均为只读通道，Events 有界缓冲，无人消费时丢弃"
 ```
 
 > 渲染提示：图使用 mermaid `namespace` 分组（mermaid ≥ 10.9，GitHub
@@ -384,19 +382,19 @@ sequenceDiagram
   DC->>P: danmuInfo + WSS 拨号 + 鉴权
   DC->>P: pushRoomState（GetRoomInfo）
   DC-->>WR: roomStateUpdates ← RoomInfo（首帧）
-  WR->>RG: ApplyRoomInfo（房态 + 空身份条件回填）
+  WR->>RG: ApplyRoomInfo（房态 + 身份覆盖写回）
   note over WR: 此后 WS 每次重连、每个房态命令都会再推一帧；<br/>600s 回退轮询独立兜底
 
   P-->>DC: 房态命令 LIVE
   DC->>P: pushRoomState
   DC-->>WR: RoomInfo(Live=true)
-  WR->>RG: ApplyRoomInfo → LiveOnAir
+  WR->>RG: ApplyRoomInfo → LiveStatusOnAir
   WR->>RS: launchSession，移交 conn.Events()
 
   RS->>RS: 获取录制槽位（满则排队，可被 ctx 取消）
   RS->>RR: PrepareSession
   note over RR: 建目录 recordings/房ID_主播/日期/<br/>meta.json = recording；<br/>重启续录则复用目录、part 号从磁盘续编；<br/>pumpStats 清零（新会话不背旧账）
-  RS->>RG: StartRecording → RecordRecording
+  RS->>RG: StartRecording → RecordStatusRecording
 
   loop recordLoop：每轮 = 一次拉流
     RS->>P: OpenStream（仅 FLV、avc 优先、接受降清晰度）
@@ -420,14 +418,14 @@ sequenceDiagram
   P-->>DC: 房态命令 PREPARING（下播）
   DC-->>WR: RoomInfo(Live=false)
   WR->>RS: cancel()（与 recordLoop 自然退出殊途同归）
-  RS->>RG: SetRemuxing → RecordRemuxing
+  RS->>RG: SetRemuxing → RecordStatusRemuxing
   RS->>RR: FinishSession（脱离运行 ctx，30s 宽限）
   note over RR: meta = remuxing + end_time →<br/>逐分段 remux FLV→MP4（流拷贝、注入元数据、失败重试一次）<br/>验证输出非空后才删源 FLV → status done / partial
   RR-->>RS: error?
   alt 收尾成功
-    RS->>RG: FinishRecording → RecordIdle
+    RS->>RG: FinishRecording → RecordStatusIdle
   else 收尾失败
-    RS->>RG: FailRecording → RecordError（lastError）
+    RS->>RG: FailRecording → RecordStatusError（lastError）
   end
 ```
 
@@ -539,7 +537,7 @@ API 读路径是录制流的镜像：录制侧写 registry/原子计数，读侧
 flowchart LR
     A[GetRoom / ListRooms] --> B[RoomRepo 读持久化字段<br/>持久字段永远以 repo 为准]
     B --> C[RoomRegistry.runtime<br/>合并直播/录制运行时快照]
-    C --> D{Record == RecordRecording?}
+    C --> D{RecordStatus == RecordStatusRecording?}
     D -->|是| E[SessionStatsRepo.SessionStats<br/>当前分段文件 + 已写字节<br/>best-effort，失败静默跳过]
     D -->|否| F[返回 RoomRuntime]
     E --> F
@@ -547,18 +545,18 @@ flowchart LR
 
 ```mermaid
 stateDiagram-v2
-    [*] --> RecordIdle
-    RecordIdle --> RecordRecording : StartRecording（清空 lastError）
-    RecordRecording --> RecordRemuxing : SetRemuxing
-    RecordRecording --> RecordError : FailRecording
-    RecordRemuxing --> RecordIdle : FinishRecording
-    RecordRemuxing --> RecordError : FailRecording
-    RecordError --> RecordRecording : 下次会话 StartRecording
+    [*] --> RecordStatusIdle
+    RecordStatusIdle --> RecordStatusRecording : StartRecording（清空 lastError）
+    RecordStatusRecording --> RecordStatusRemuxing : SetRemuxing
+    RecordStatusRecording --> RecordStatusError : FailRecording
+    RecordStatusRemuxing --> RecordStatusIdle : FinishRecording
+    RecordStatusRemuxing --> RecordStatusError : FailRecording
+    RecordStatusError --> RecordStatusRecording : 下次会话 StartRecording
 ```
 
-`NoteError` 只记录错误信息，不改变录制状态。`LiveState` 由
-`ApplyRoomInfo` 直接覆写（`Live=true → LiveOnAir`，否则
-`LivePreparing`），无状态机约束。
+`NoteError` 只记录错误信息，不改变录制状态。`LiveStatus` 由
+`ApplyRoomInfo` 直接覆写（`Live=true → LiveStatusOnAir`，否则
+`LiveStatusPreparing`），无状态机约束。
 
 ## 4. 建模说明：为什么是这些形状
 
@@ -566,17 +564,18 @@ stateDiagram-v2
 
 - **Room（DO）与 RoomRuntime（读模型）**：Room 是持久化领域对象，
   身份字段为 `StreamerName`（主播名）与 `RoomTitle`（房间标题）——
-  早期单一 `Name` 字段已拆分为二，两者均可经 CRUD 更新、也都能被
-  平台数据条件回填。RoomRuntime 是查询视图，由 Room 与运行时状态
+  早期单一 `Name` 字段已拆分为二，两者均可经 CRUD 更新、也都会被
+  平台数据覆盖刷新。RoomRuntime 是查询视图，由 Room 与运行时状态
   拼装；持久字段永远以 repo 为准，registry 只贡献运行时字段。
 - **RoomRegistry（运行时状态容器）**：每房间一份 `roomState`（含
   Room 内存快照），不替代持久化。并发模型：同一把 mutex 同时保护
   容器与每个 `roomState` 的可变字段（只护 map 仍会在状态对象上数据
   竞争），快照方法持锁拷贝、修改方法持锁完成读-改-写，仓储 IO 一律
   放在临界区之外（慢数据库不能阻塞所有录制更新与房间读取）。
-- **身份回填**：走专用窄方法 `BackfillRoomIdentity`——SQL 条件更新
-  只填充空列，用户经 UpdateRoom 设置过的值不会被平台数据覆盖；写回
-  失败只降级为 warn，内存快照仍然更新。
+- **身份刷新**：`ApplyRoomInfo` 用平台非空值覆盖内存里的
+  `StreamerName` / `RoomTitle`，随后在锁外经 `repo.UpdateRoom` 写回
+  sqlite——**覆盖语义**，平台数据优先于库里已有值（包括用户经
+  UpdateRoom 设置的值）；写回失败只降级为 warn，内存快照仍然更新。
 - **ListQuery（查询形状）**：biz 拥有，四个 optional 等值过滤字段 +
   offset/limit。service 层把 ListRoomsRequest 的 optional 字段翻译为
   ListQuery，data 层把它翻译为 SQL；存储原语不上浮。列表没有
@@ -584,7 +583,7 @@ stateDiagram-v2
 - **CRUD 重启后才对录制生效**：registry 在启动时全量加载，Run 按
   启动快照分发 monitorRoom。这是有意的取舍——运行中增删房间不重建
   常驻 goroutine 集合，换来"录制侧房间集合在两次启动之间不变"的
-  简单不变量；运行时的身份变化（回填）与状态变化（启停）仍即时可见。
+  简单不变量；运行时的身份变化（平台刷新）与状态变化（启停）仍即时可见。
 
 ### 4.2 录制执行子域
 

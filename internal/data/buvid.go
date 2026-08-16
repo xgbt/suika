@@ -116,7 +116,7 @@ func (s *buvidStore) invalidate(cookieHeader string) {
 func injectBuvids(cookieHeader, buvid3, buvid4 string) string {
 	var kept []string
 	if cookieHeader != "" {
-		for _, part := range strings.Split(cookieHeader, ";") {
+		for part := range strings.SplitSeq(cookieHeader, ";") {
 			p := strings.TrimSpace(part)
 			if p == "" || strings.HasPrefix(p, "buvid3=") || strings.HasPrefix(p, "buvid4=") {
 				continue

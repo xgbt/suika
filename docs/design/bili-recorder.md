@@ -59,22 +59,22 @@ api/room/v1/
 
 internal/biz/
   room.go                DO：Room（RoomID / StreamerName / RoomTitle / Enabled /
-                         CreateTime / UpdateTime）/ LiveState / RecordState 枚举 /
+                         CreateTime / UpdateTime）/ LiveStatus / RecordStatus 枚举 /
                          RoomRuntime（读模型：Room + 运行时字段）
                          类型化错误：ErrRoomNotFound（404）/ ErrRoomInvalidArgument（400）/
                          ErrRoomAlreadyExists（409，errors.Conflict）
-                         RoomRepo 接口（FindByRoomID / ListRooms / CreateRoom /
-                         UpdateRoom / BackfillRoomIdentity / DeleteRoom）
+                         RoomRepo 接口（GetByRoomID / ListRooms / CreateRoom /
+                         UpdateRoom / DeleteRoom）
                          + ListQuery（optional 等值过滤 + offset/limit）——房间持久化缝
                          SessionStatsRepo —— 窄统计缝（biz 声明，room API 专用）
                          RoomUsecase：房间 CRUD（写走 repo，读经 withRuntime
                          合并 registry 运行时状态与 stats）
   room_registry.go       RoomRegistry：启动时从 RoomRepo 全量加载房间，
-                         持有每个房间的 roomState（Room 快照 + live/record
-                         状态，mutex 保护，repo IO 在锁外）；daemon 写状态，
-                         room API 读快照；ApplyRoomInfo 更新房态并在
-                         streamer_name / room_title 为空时经
-                         BackfillRoomIdentity 回填写回 sqlite
+                         持有每个房间的 roomState（Room 快照 + liveStatus /
+                         recordStatus 状态，mutex 保护，repo IO 在锁外）；
+                         daemon 写状态，room API 读快照；ApplyRoomInfo
+                         更新房态、用平台非空值覆盖 streamer_name /
+                         room_title，并经 UpdateRoom 持久化写回 sqlite
   recorder.go            DO：RoomInfo / StreamQuality / StreamHandle(opaque)
                          DanmakuEvent / Session / SessionResult / SessionStats
                          事件类型常量、默认值常量
@@ -98,11 +98,11 @@ internal/data/
                          （remux 开启而缺失 → 启动失败）；cleanup 关闭数据库连接
   room.go                roomPO（rooms 表：streamer_name / room_title 列）/
                          toRoomPO(DO→PO) / toRoomDO(PO→DO)；
-                         roomRepo 实现 biz.RoomRepo：CRUD、ListQuery → SQL
-                         等值过滤（固定 room_id ASC 排序）、
-                         BackfillRoomIdentity（CASE WHEN 条件回填，只覆盖空字段）、
+                         roomRepo 实现 biz.RoomRepo：CRUD（GetByRoomID /
+                         ListRooms / CreateRoom / UpdateRoom / DeleteRoom）、
+                         ListQuery → SQL 等值过滤（固定 room_id ASC 排序）、
                          重复 room_id → ErrRoomAlreadyExists（sqlite 主键约束）
-  bili_api.go            liveClient 实现 biz.LiveClient：RoomStatus / OpenStream /
+  bili_api.go            liveClient 实现 biz.LiveClient：GetRoomInfo / OpenStream /
                          DanmakuConn 构造；getRoomPlayInfo 候选排序与降档、
                          风控门/阶梯冷却、-352 刷新重试
   wbi.go                 WBI 签名（nav API 取密钥，1h 缓存，w_rid/wts）
@@ -113,9 +113,20 @@ internal/data/
                          房态命令（LIVE/PREPARING/ROUND/ROOM_CHANGE）触发
                          pushRoomState → getInfoByRoom 复查 → RoomStateUpdates
                          通道投递 *RoomInfo
-  recorder_repo.go       recorderRepo 实现 biz.RecorderRepo：目录布局、
-                         sessionMeta/danmuLine PO、RecordSession 泵送循环、
-                         切段与 part 续号、meta.json 簿记、RecoverPending、SessionStats
+  recorder.go            recorderRepo 实现 biz.RecorderRepo（NewRecorderRepo
+                         返回接口；NewSessionStatsRepo 把同一实例转发为
+                         biz.SessionStatsRepo）：会话目录/文件名基座推导、
+                         PrepareSession（重启续录复用 + 在途 stats 清零）、
+                         RecordSession 泵送循环（切段判定、健康巡检）、
+                         FinishSession / finalizeSegments 转封装、
+                         RecoverPending 启动补跑
+  recorder_segment.go    segmentFile：FLV part + 弹幕 JSONL 文件对，头标签
+                         缓存与重注入，writeTag / writeEvent / close
+  recorder_session.go    sessionMeta / segmentMeta / danmuLine PO：meta.json
+                         读写（tmp+rename 原子写）、分段簿记
+                         （append/finishSegmentMeta）、errors 追加、
+                         可重试段判定（hasRetryableSegments）
+  recorder_stats.go      pumpStats（原子 file/bytes）与 SessionStats 读取
   remux.go               ffmpeg shell-out（stream copy + 元数据注入 + discardcorrupt 重试）
   flv/                   FLV tag 解析子包：FileHeader / Tag 读写、关键帧与
                          sequence header 识别（切段点的判定依据）
@@ -171,8 +182,8 @@ DDD 领域模型已独立到文档：`docs/design/ddd-domain-model.md`。
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
-| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / RecordSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、remux |
-| 房间存储缝 | `RoomRepo`（FindByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / BackfillRoomIdentity / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤、空字段条件回填 |
+| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / RecordSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / recorder_segment.go / recorder_session.go / recorder_stats.go）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、remux |
+| 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤 |
 | 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站 HTTP API 与弹幕 WS 流量、风控 |
 
 控制流/IO 分工：**biz 只做决定**（何时开录、是否重连、何时收尾），
@@ -202,8 +213,8 @@ NewHTTPServer → NewLiveClient → NewRecorderUsecase → NewDaemon → newApp`
 `NewRoomRepo(d *Data)` 挂在其上；`NewRoomRegistry(repo)` 改吃
 `biz.RoomRepo`（不再解析配置），启动时全量加载房间，返回 error，
 加载失败即启动失败。`NewRoomUsecase(repo, reg, stats)` 注入 repo 与
-registry：CRUD 写 repo，读合并 registry 运行时状态；recorder 回填的
-主播名/房间标题也由 registry 经 repo 的 `BackfillRoomIdentity` 写回
+registry：CRUD 写 repo，读合并 registry 运行时状态；recorder 从平台
+拿到的主播名/房间标题也由 registry 经 repo 的 `UpdateRoom` 覆盖写回
 sqlite（§3.2）。`conf.Recorder` 注入 `NewData`、`NewRecorderRepo`、
 `NewRecorderUsecase` 三处，各自取自己负责的字段并套用默认值（§7.2）。
 
@@ -250,8 +261,8 @@ App.Run
 ### 3.2 房间状态
 
 房间集合来源是 sqlite：`NewRoomRegistry(repo)` 在启动时从 RoomRepo
-全量加载一次（`ListQuery{Offset: 0, Limit: math.MaxInt32}`，加载顺序 =
-repo 默认序 room_id 升序），运行期间不再重载。因此经 CRUD API 对房间
+全量加载一次（`ListQuery{Offset: 0, Limit: math.MaxInt32}`），存入
+roomID → roomState 的 map，运行期间不再重载。因此经 CRUD API 对房间
 集合的增删改要**重启后**才对录制进程生效（设计取舍，见 §8.1）。
 nil repo 容忍为空 registry（记 warn）；加载失败即启动失败。
 
@@ -261,9 +272,9 @@ repo IO 必须在锁外）：
 
 | 字段 | 取值 | 说明 |
 |---|---|---|
-| `room` | `Room` 快照 | 持久字段的内存副本（含回填后的 streamer_name / room_title） |
-| `live` | `LiveUnknown` / `LivePreparing` / `LiveOnAir` | 平台侧开播状态（ApplyRoomInfo 只会写后两者） |
-| `record` | `RecordIdle` / `RecordRecording` / `RecordRemuxing` / `RecordError` | 录制器自身状态 |
+| `room` | `Room` 快照 | 持久字段的内存副本（含平台刷新后的 streamer_name / room_title） |
+| `liveStatus` | `LiveStatusUnknown` / `LiveStatusPreparing` / `LiveStatusOnAir` | 平台侧开播状态（ApplyRoomInfo 只会写后两者） |
+| `recordStatus` | `RecordStatusIdle` / `RecordStatusRecording` / `RecordStatusRemuxing` / `RecordStatusError` | 录制器自身状态 |
 | `sessionStartedAt` | time | 当前场次开始时刻（StartRecording 置 now，FinishRecording 清零） |
 | `lastError` | string | 最近一次错误（StartRecording 清零；NoteError/FailRecording 写入） |
 
@@ -272,14 +283,12 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
 `RoomStateUpdates` 通道以 `*RoomInfo` 形式交给 biz 的
 `ApplyRoomInfo`：
 
-1. 更新 live 状态（在播 → `LiveOnAir`，否则 `LivePreparing`）；房间不在
-   registry（启动后新建的）则整体忽略。
-2. 库里 `streamer_name` / `room_title` 为空而 API 有值时，在锁外调
-   `repo.BackfillRoomIdentity` 写回 sqlite——data 层用
-   `CASE WHEN 列 = '' THEN ? ELSE 列 END` 条件更新，**只填充空字段，
-   绝不覆盖用户已设置的值**，返回是否确实改动。回填的值重启不丢。
-3. 写回失败只记 warn，内存快照仍然更新（降级不丢状态）；写回成功且
-   有改动时同步更新 registry 内的 rooms 列表与 states 副本。
+1. 更新 live 状态（在播 → `LiveStatusOnAir`，否则 `LiveStatusPreparing`）；
+   房间不在 registry（启动后新建的）则整体忽略。
+2. 用平台非空值覆盖内存里的 `streamer_name` / `room_title`，随后在锁外
+   调 `repo.UpdateRoom` 写回 sqlite。**覆盖语义**：平台数据优先于库里
+   已有值（包括用户经 UpdateRoom 设置的值）。覆盖后的值重启不丢。
+3. 写回失败只记 warn，内存快照仍然更新（降级不丢状态）。
 
 启动后才创建的房间不在 registry 里：daemon 不为它跑监控，API 读取时
 持久字段来自 repo、运行时字段返回默认值（§8）。
@@ -295,21 +304,21 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
    `RoomName = firstNonEmpty(库存 streamer_name, API 主播名, roomID)`，
    `Title`、`LiveStartTime` 取触发开播的房态快照（场次中途标题变化
    不改名；`LiveStartTime` 决定目录，重连续录落回同一场次）。
-3. **StartRecording**：置 `RecordRecording`、刷新 sessionStartedAt、
+3. **StartRecording**：置 `RecordStatusRecording`、刷新 sessionStartedAt、
    清 lastError。
 4. **PrepareSession**：创建（或重启后重定位）场次目录与 meta.json，
    并把该房间的在途 stats（当前文件/字节数）清零——否则新场次的字节
    会累加到上一场的计数上。失败 → `FailRecording` 返回。
 5. **recordLoop**：见 §4.5。
-6. **收尾**：先置 `RecordRemuxing`，再用
+6. **收尾**：先置 `RecordStatusRemuxing`，再用
    `context.WithoutCancel(ctx)` + `finishGracePeriod = 30s` 的脱离 ctx
    执行 `FinishSession`，保证停机路径上 meta 的 `remuxing` 标记也能落盘；
    未完成的 remux 由下次启动 `RecoverPending` 补跑。成功 →
-   `FinishRecording`（回 `RecordIdle`、清 sessionStartedAt），失败 →
+   `FinishRecording`（回 `RecordStatusIdle`、清 sessionStartedAt），失败 →
    `FailRecording`。
 7. **releaseSlot**（defer）。
 
-录制中房间状态为 `RecordRecording`；Get/List 只对该状态的房间追加
+录制中房间状态为 `RecordStatusRecording`；Get/List 只对该状态的房间追加
 `SessionStatsRepo.SessionStats`（当前 part 路径 + 累计字节，原子计数，零额外采集）。
 
 ### 3.4 优雅停机
@@ -350,7 +359,7 @@ SIGTERM → kratos 触发各 server.Stop
 5. WS 保活：30s 心跳（op2）；读超时 90s（约 3 个心跳周期）杀半开连接，
    进入重连；重连指数退避 2s → 30s 封顶。
 6. 兜底轮询：每 `fallback_poll_interval`（默认 600s）±10% 抖动执行一次
-   `RoomStatus`，发现"在播但无活动场次"立即启动录制，"未开播但有活动
+   `GetRoomInfo`，发现"在播但无活动场次"立即启动录制，"未开播但有活动
    场次"则取消场次。轮询请求走风控层（§5）。
 
 ### 4.2 拉流
@@ -373,7 +382,7 @@ SIGTERM → kratos 触发各 server.Stop
 
 ```
 HTTP body（原始字节，LiveClient 打开）
-  → RecordSession 泵送（data/recorder_repo.go）
+  → RecordSession 泵送（data/recorder.go）
       ├─ flv.ParseHeader 读 9 字节文件头 + PreviousTagSize0
       ├─ tag 读取 goroutine：flv.ReadTag 逐个送入 chan（缓冲 512）
       ├─ 泵送开始时把实际清晰度写回 meta.json（quality 字段）
@@ -432,7 +441,7 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
   └─ 成功 → session.Quality = 实际档位 → repo.RecordSession 泵送
 泵送返回（EOF / 读错误 / 巡检中止 / 写失败 / ctx 取消）
   ├─ ctx 已取消 → 返回（停机路径）
-  └─ lc.RoomStatus 复查
+  └─ lc.GetRoomInfo 复查
       ├─ 失败 → 记错误，结束场次
       ├─ 已下播 → ApplyRoomInfo 后正常收尾
       └─ 仍在播：
@@ -507,7 +516,7 @@ img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；�
 2. `getDanmuInfo` 二次仍 -352 → 降级旧接口 `getConf`（无 WBI）。
 3. 仍失败 → 该房间进**阶梯冷却** 5min → 10min → 20min（按连续失败次数
    进阶，封顶 20min）；冷却期内 `enterRiskGate` 直接拒绝该房间的
-   RoomStatus/OpenStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
+   GetRoomInfo/OpenStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
 4. 任一 API 成功 → `noteSuccess` 清零该房间冷却。
 
 cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并记录 meta
@@ -747,11 +756,11 @@ recorder:
 自动刷新），`RowsAffected == 0` → ErrRoomNotFound，读-改-写全程在
 单进程内完成。
 
-**平台回填语义**：recorder 经 `BackfillRoomIdentity` 写回主播名/房间
-标题时只填充空列（SQL `CASE WHEN 列 = '' THEN ? ELSE 列 END`），
-用户经 UpdateRoom 设置过的值不会被平台数据覆盖
-（service 测试 TestRoomServiceDoesNotBackfillOverUpdatedStreamerName
-专门覆盖该语义）。
+**平台刷新语义**：recorder 经 `ApplyRoomInfo` → `repo.UpdateRoom` 写回
+主播名/房间标题时是**覆盖**语义——平台非空值优先于库里已有值（包括
+用户经 UpdateRoom 设置过的值）。写回失败只记 warn，内存快照仍然更新
+（service 测试 TestRoomServicePlatformRefreshOverridesStreamerName 专门
+覆盖该语义）。
 
 错误码：
 
@@ -772,10 +781,10 @@ biz ↔ proto 枚举映射（`service.convertRoomReply`，五个 RPC 共用）�
 
 | biz | proto LiveStatus | biz | proto RecordStatus |
 |---|---|---|---|
-| LiveUnknown | LIVE_STATUS_UNSPECIFIED | RecordIdle | RECORD_STATUS_IDLE |
-| LivePreparing | LIVE_STATUS_PREPARING | RecordRecording | RECORD_STATUS_RECORDING |
-| LiveOnAir | LIVE_STATUS_LIVE | RecordRemuxing | RECORD_STATUS_REMUXING |
-| | | RecordError | RECORD_STATUS_ERROR |
+| LiveStatusUnknown | LIVE_STATUS_UNSPECIFIED | RecordStatusIdle | RECORD_STATUS_IDLE |
+| LiveStatusPreparing | LIVE_STATUS_PREPARING | RecordStatusRecording | RECORD_STATUS_RECORDING |
+| LiveStatusOnAir | LIVE_STATUS_LIVE | RecordStatusRemuxing | RECORD_STATUS_REMUXING |
+| | | RecordStatusError | RECORD_STATUS_ERROR |
 
 数据源：持久字段来自 sqlite（repo），运行时字段来自 `RoomRegistry`
 快照（mutex）+ 仅录制中房间追加 `SessionStatsRepo.SessionStats`
@@ -798,8 +807,8 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
    只在启动时全量加载一次，运行期不热载。
 2. 由此：已删除的房间重启前**继续录制**；新建/启用的房间重启后才
    开始录制；停用（enabled=false）同样要重启才停止监控。
-3. 平台回填的主播名/房间标题会经 `BackfillRoomIdentity` 写回 sqlite，
-   重启不丢（写回失败只记 warn，内存仍更新，不影响录制）。
+3. 平台刷新的主播名/房间标题会经 `ApplyRoomInfo` → `UpdateRoom` 覆盖
+   写回 sqlite，重启不丢（写回失败只记 warn，内存仍更新，不影响录制）。
 
 启动后创建的房间 Get/List 照常可查（持久字段来自 sqlite，运行时字段
 为默认值），只是录制进程不认识它，直到下次重启。
@@ -828,7 +837,7 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 | 无活动场次时弹幕到达 | Events 缓冲（4096）满即丢弃，不阻塞 WS 读循环 |
 | watchRoom 收到重复"在播" | 幂等：已有活动场次则忽略 |
 | 场次中途改标题/轮次 | 目录与文件名沿用开播快照，不重命名；ROUND/ROOM_CHANGE 仅刷新房态 |
-| 平台回填撞上用户已设置的值 | BackfillRoomIdentity 条件更新只填空列，用户值优先（§8） |
+| 平台刷新撞上用户已设置的值 | ApplyRoomInfo 覆盖语义：平台非空值优先，经 UpdateRoom 写回（§8） |
 | 新场次字节计数 | PrepareSession 清零在途 stats，新场次进度不叠加旧场次（重启续录不受影响，stats 本是内存态） |
 
 ---
@@ -841,9 +850,9 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
 | biz | `recorder_test.go`（12） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenStream/复查失败终止、ctx 取消即停、nil/覆盖配置、抖动区间；watchRoom 收到"未开播"房态更新取消活动场次；`cdnBackoffBase`/`redialDelay` 字段供测试压缩时延 |
-| biz | `room_test.go`（8） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；ApplyRoomInfo 经 BackfillRoomIdentity 回填主播名/标题、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
-| service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（RemuxEnabled=false 免 ffmpeg 探测），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/改名/停用/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、空/越权 update_mask、不存在 404、坏 page_token）、**回填不覆盖已更新的 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
-| data | `recorder_repo_test.go`（25） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾（无 meta noop / remux 关保 FLV / 成功替换 / 失败保留 / 空 ffmpegPath）、缺源恢复、RecoverPending |
+| biz | `room_test.go`（8） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
+| service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（RemuxEnabled=false 免 ffmpeg 探测），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/改名/停用/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、空/越权 update_mask、不存在 404、坏 page_token）、**平台刷新覆盖已更新的 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
+| data | `recorder_test.go`（25） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾（无 meta noop / remux 关保 FLV / 成功替换 / 失败保留 / 空 ffmpegPath）、缺源恢复、RecoverPending |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `remux_test.go`（4） | 假 ffmpeg shell 脚本（`writeFakeFFmpeg`：记录参数、可控失败次数、写出非空产物），不依赖真 ffmpeg 验证重试与参数构造 |
 | data/flv | `flv_test.go`（4） | 构造字节流 fixture：头往返、坏签名、tag 流（含扩展字节时间戳）、截断 |
@@ -918,7 +927,7 @@ curl -X POST localhost:8000/v1/rooms/create \
 | 弹幕 WS 协议（包头/认证/心跳/brotli） | hikami-go | `internal/live_record/danmaku.go` | 移植 + 扩展事件类型（data/danmaku.go） |
 | 断流决策树/预算/巡检 | hikami-go | `internal/live_record/manager.go` | 参考重写，决策移入 biz（biz/recorder.go） |
 | 风控阶梯冷却 | hikami-go | `internal/live_record/manager.go` | Go 直接移植（data/bili_api.go） |
-| FLV tag 切段/头注入 | blrec | `blrec/flv/*`、`blrec/core/operators/*` | Go 重写（data/flv、data/recorder_repo.go） |
+| FLV tag 切段/头注入 | blrec | `blrec/flv/*`、`blrec/core/operators/*` | Go 重写（data/flv、data/recorder*.go） |
 | LIVE/PREPARING 事件驱动检测 | blrec | `blrec/bili/live_monitor.py` | Go 重写（biz + data/danmaku.go） |
 | remux 元数据注入 | blrec | `blrec/core/metadata_provider.py` | 思路照搬（data/remux.go） |
 

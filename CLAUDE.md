@@ -156,7 +156,10 @@ declared in `biz` and implemented in `data`:
   (WBI signing) and `buvid.go`.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
-  remux (`remux.go`).
+  remux (`remux.go`). Implemented across `internal/data/recorder*.go`
+  (`recorder.go` session lifecycle + recovery, `recorder_segment.go`
+  segment files, `recorder_session.go` `meta.json` bookkeeping,
+  `recorder_stats.go` write-progress stats).
 
 `RecorderUsecase` (biz/recorder.go) makes decisions only: room
 monitoring (the danmaku WS is the primary live-detection channel;
@@ -217,11 +220,13 @@ recording state. The recorder updates the registry; room reads merge the
 registry snapshot with persisted fields. For an actively recording room,
 `SessionStatsRepo` best-effort supplies `current_file` and `bytes_written`.
 CRUD changes are persisted immediately but newly created or updated rooms
-are picked up by the recorder after the next restart. A platform live-state
-refresh can backfill empty `streamer_name` / `room_title` through
-`RoomRepo.BackfillRoomIdentity` — a conditional update that only fills
-empty columns, never overwriting user-set values — and persists that
-change.
+are picked up by the recorder after the next restart. Platform room-info
+refreshes (danmaku WS events or the fallback poll) flow through
+`RoomRegistry.ApplyRoomInfo`: they update the live status and overwrite
+the in-memory `streamer_name` / `room_title` with the platform's non-empty
+values, then persist the room via `RoomRepo.UpdateRoom` — platform data
+wins over previously stored values; a failed persist only logs a warning
+and the in-memory snapshot keeps the new values.
 
 ### Web frontend
 

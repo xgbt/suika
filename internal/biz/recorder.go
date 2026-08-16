@@ -55,7 +55,7 @@ const (
 	EventInteract    = "interact_word"
 )
 
-// RoomInfo 是平台上报的直播间元数据。
+// RoomInfo 是从 B 站获取的直播间元数据
 type RoomInfo struct {
 	RoomID        int64
 	Live          bool
@@ -70,8 +70,7 @@ type StreamQuality struct {
 }
 
 // StreamHandle 是 LiveClient.OpenStream 打开的一路直播流。它对 biz 是
-// 不透明的：由 LiveClient 产生、被 RecorderRepo 消费，中间从不被检视
-// （同 *sql.Rows 的用法）。
+// 不透明的：由 LiveClient 产生、被 RecorderRepo 消费
 type StreamHandle struct {
 	URL     string
 	Quality StreamQuality
@@ -123,15 +122,21 @@ type SessionStats struct {
 // 重连成功后重新探测并重新推送房间状态，以补上断连期间错过的
 // LIVE/PREPARING 事件。Events 使用有界缓冲，无人消费时丢弃事件。
 type DanmakuConn interface {
+	// Events 返回一个只读通道，接收弹幕事件。若无人消费则丢弃事件。
 	Events() <-chan *DanmakuEvent
+	// RoomStateUpdates 返回一个只读通道，接收房间状态更新事件。若无人消费则丢弃事件。
 	RoomStateUpdates() <-chan *RoomInfo
+	// Close 关闭 websocket 连接。若已关闭则无操作。
 	Close() error
 }
 
 // LiveClient 是平台直播流和弹幕的客户端接口，网络 IO
 type LiveClient interface {
+	// GetRoomInfo 获取房间的直播状态和元数据
 	GetRoomInfo(ctx context.Context, roomID int64) (*RoomInfo, error)
+	// OpenStream 打开房间的直播流，返回一个 StreamHandle。若房间未开播则返回错误。
 	OpenStream(ctx context.Context, roomID int64) (*StreamHandle, error)
+	// DanmakuConn 打开房间的弹幕 websocket 连接，返回一个 DanmakuConn。若房间不存在则返回错误。
 	DanmakuConn(ctx context.Context, roomID int64) (DanmakuConn, error)
 }
 
@@ -444,7 +449,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 	}
 }
 
-// acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消。
+// acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消
 func (uc *RecorderUsecase) acquireSlot(ctx context.Context, roomID int64) error {
 
 	// 未配置 maxConcurrent，则不限制并发
@@ -469,12 +474,14 @@ func (uc *RecorderUsecase) acquireSlot(ctx context.Context, roomID int64) error 
 	}
 }
 
+// releaseSlot 释放一个录制槽位
 func (uc *RecorderUsecase) releaseSlot() {
 	if uc.slots != nil {
 		<-uc.slots
 	}
 }
 
+// cdnBackoff 返回 CDN 瞬时故障的重试延迟，随尝试次数指数增长，最大不超过 cdnBackoffMax。
 func (uc *RecorderUsecase) cdnBackoff(attempt int) time.Duration {
 	return min(uc.cdnBackoffBase<<attempt, cdnBackoffMax)
 }
@@ -493,7 +500,6 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// jitterDuration 返回叠加了 +/- 1/(2*div) 抖动的 d。
 func jitterDuration(d time.Duration, div int) time.Duration {
 	if d <= 0 || div <= 0 {
 		return d

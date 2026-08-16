@@ -111,33 +111,39 @@ type riskCooldown struct {
 	until    time.Time
 }
 
-// liveClient 实现 biz.LiveClient：所有 B 站 API 与弹幕 websocket 流量，
+// liveClient 实现所有 B 站 API 与弹幕 websocket 流量，
 // 包括风控重试和按房间的冷却。
 type liveClient struct {
-	d *Data
-
+	data      *Data
 	mu        sync.Mutex
-	cooldowns map[int64]*riskCooldown
+	cooldowns map[int64]*riskCooldown // key roomID
 }
 
-func NewLiveClient(d *Data) biz.LiveClient {
-	return &liveClient{d: d, cooldowns: make(map[int64]*riskCooldown)}
+func NewLiveClient(data *Data) biz.LiveClient {
+	return &liveClient{
+		data:      data,
+		cooldowns: make(map[int64]*riskCooldown),
+	}
 }
 
-// enterRiskGate 拦截处于冷却期房间的 API 调用。
-func (lc *liveClient) enterRiskGate(roomID int64) error {
+// checkRiskCooldown 检查该房间的 API 请求是否进入冷却期；若是则返回 biz.ErrRiskControl。
+func (lc *liveClient) checkRiskCooldown(roomID int64) error {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
+
 	cd := lc.cooldowns[roomID]
 	if cd != nil && time.Now().Before(cd.until) {
 		return fmt.Errorf("%w: room %d cooling down until %s", biz.ErrRiskControl, roomID, cd.until.Format(time.RFC3339))
 	}
+
 	return nil
 }
 
+// noteRiskFailure 记录该房间的 API 请求被风控拒绝，增加冷却时长。
 func (lc *liveClient) noteRiskFailure(roomID int64) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
+
 	cd := lc.cooldowns[roomID]
 	if cd == nil {
 		cd = &riskCooldown{}
@@ -149,6 +155,7 @@ func (lc *liveClient) noteRiskFailure(roomID int64) {
 	log.Warn("room risk-control cooldown started", "room", roomID, "failures", cd.failures, "until", cd.until.Format(time.RFC3339))
 }
 
+// noteSuccess 记录该房间的 API 请求成功，清除冷却状态。
 func (lc *liveClient) noteSuccess(roomID int64) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
@@ -161,9 +168,10 @@ func isRiskControlError(err error) bool {
 
 // GetRoomInfo 经 getInfoByRoom 返回房间当前的开播状态。
 func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
-	if err := lc.enterRiskGate(roomID); err != nil {
+	if err := lc.checkRiskCooldown(roomID); err != nil {
 		return nil, err
 	}
+
 	info, err := lc.roomInfo(ctx, roomID)
 	if err != nil {
 		if isRiskControlError(err) {
@@ -172,30 +180,32 @@ func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomI
 		}
 		return nil, err
 	}
+
 	lc.noteSuccess(roomID)
 	return info, nil
 }
 
+// roomInfo 调用 API 获取房间信息，处理 -352 风控。
 func (lc *liveClient) roomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	var resp roomInfoResponse
 	query := func() error {
-		cookie := lc.d.injectAntiRisk(ctx)
+		cookie := lc.data.injectAntiRisk(ctx)
 		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + strconv.FormatInt(roomID, 10)
-		return lc.d.fetchJSON(ctx, lc.d.signURL(endpoint), roomID, cookie, &resp)
+		return lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp)
 	}
 	if err := query(); err != nil {
 		if !stderrors.Is(err, errHTTPRiskControl) {
 			return nil, err
 		}
 		log.Warn("getInfoByRoom http-layer risk control, refreshing and retrying once", "room", roomID)
-		lc.d.refreshRisk()
+		lc.data.refreshRisk()
 		if err = query(); err != nil {
 			return nil, err
 		}
 	}
 	if resp.Code == -352 {
 		log.Warn("getInfoByRoom risk control -352, refreshing and retrying once", "room", roomID)
-		lc.d.refreshRisk()
+		lc.data.refreshRisk()
 		if err := query(); err != nil {
 			return nil, err
 		}
@@ -228,9 +238,10 @@ func (lc *liveClient) roomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo
 // OpenStream 选择最优 FLV 流地址并打开读取。打开/读取失败若看似 CDN
 // 侧，则包装为 biz.ErrStreamTransient，供决策树重新选择流地址。
 func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.StreamHandle, error) {
-	if err := lc.enterRiskGate(roomID); err != nil {
+	if err := lc.checkRiskCooldown(roomID); err != nil {
 		return nil, err
 	}
+
 	streamURL, quality, err := lc.selectStreamURL(ctx, roomID)
 	if err != nil {
 		if isRiskControlError(err) {
@@ -247,10 +258,10 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 	}
 	req.Header.Set("User-Agent", biliUserAgent)
 	req.Header.Set("Referer", "https://live.bilibili.com/"+strconv.FormatInt(roomID, 10))
-	if lc.d.cookie != "" {
-		req.Header.Set("Cookie", lc.d.cookie)
+	if lc.data.cookie != "" {
+		req.Header.Set("Cookie", lc.data.cookie)
 	}
-	resp, err := lc.d.streamClient.Do(req)
+	resp, err := lc.data.streamClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
@@ -263,18 +274,18 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 }
 
 func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string, biz.StreamQuality, error) {
-	cookie := lc.d.injectAntiRisk(ctx)
+	cookie := lc.data.injectAntiRisk(ctx)
 	endpoint := liveAPIBase + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
 		strconv.FormatInt(roomID, 10) +
-		"&protocol=0,1&format=0,1,2&codec=0,1&qn=" + strconv.Itoa(lc.d.qualityQN) + "&platform=web"
+		"&protocol=0,1&format=0,1,2&codec=0,1&qn=" + strconv.Itoa(lc.data.qualityQN) + "&platform=web"
 
 	var resp playInfoResponse
-	if err := lc.d.fetchJSON(ctx, lc.d.signURL(endpoint), roomID, cookie, &resp); err != nil {
+	if err := lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp); err != nil {
 		return "", biz.StreamQuality{}, err
 	}
 	if resp.Code == -352 {
-		lc.d.refreshRisk()
-		if err := lc.d.fetchJSON(ctx, lc.d.signURL(endpoint), roomID, cookie, &resp); err != nil {
+		lc.data.refreshRisk()
+		if err := lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp); err != nil {
 			return "", biz.StreamQuality{}, err
 		}
 	}
@@ -327,7 +338,7 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 	// 并记入 meta。
 	granted := playURL.CurrentQn
 	if granted == 0 {
-		granted = lc.d.qualityQN
+		granted = lc.data.qualityQN
 	}
 	desc := qnNames[int32(granted)]
 	for _, qd := range playURL.GQnDesc {
@@ -336,8 +347,8 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 			break
 		}
 	}
-	if int32(granted) != int32(lc.d.qualityQN) {
-		log.Warn("stream quality downgraded", "room", roomID, "requested", lc.d.qualityQN, "granted", granted)
+	if int32(granted) != int32(lc.data.qualityQN) {
+		log.Warn("stream quality downgraded", "room", roomID, "requested", lc.data.qualityQN, "granted", granted)
 	}
 	return best.url, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
 }
@@ -349,7 +360,7 @@ func (lc *liveClient) DanmakuConn(ctx context.Context, roomID int64) (biz.Danmak
 		events:           make(chan *biz.DanmakuEvent, danmakuEventBuffer),
 		roomStateUpdates: make(chan *biz.RoomInfo, danmakuRoomStateUpdateBuffer),
 		closed:           make(chan struct{}),
-		recordInteract:   lc.d.recordInteractWord,
+		recordInteract:   lc.data.recordInteractWord,
 	}
 	go conn.run(ctx)
 	return conn, nil

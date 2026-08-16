@@ -168,8 +168,8 @@ func (c *danmakuConn) dialAndAuth(ctx context.Context, address, token string, pr
 		"Origin":     {"https://live.bilibili.com"},
 		"Referer":    {fmt.Sprintf("https://live.bilibili.com/%d", c.roomID)},
 	}
-	if c.lc.d.cookie != "" {
-		header.Set("Cookie", c.lc.d.cookie)
+	if c.lc.data.cookie != "" {
+		header.Set("Cookie", c.lc.data.cookie)
 	}
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, address, header)
 	if err != nil {
@@ -555,12 +555,12 @@ type danmuInfo struct {
 }
 
 func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, error) {
-	if err := lc.enterRiskGate(roomID); err != nil {
+	if err := lc.checkRiskCooldown(roomID); err != nil {
 		return nil, err
 	}
 
 	query := func() (int, *danmuInfo, error) {
-		cookie := lc.d.injectAntiRisk(ctx)
+		cookie := lc.data.injectAntiRisk(ctx)
 		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getDanmuInfo?id=" + strconv.FormatInt(roomID, 10) + "&type=0"
 		var raw struct {
 			Code    int    `json:"code"`
@@ -573,7 +573,7 @@ func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, 
 				} `json:"host_list"`
 			} `json:"data"`
 		}
-		if err := lc.d.fetchJSON(ctx, lc.d.signURL(endpoint), roomID, cookie, &raw); err != nil {
+		if err := lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &raw); err != nil {
 			return 0, nil, err
 		}
 		info := &danmuInfo{token: raw.Data.Token}
@@ -595,7 +595,7 @@ func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, 
 	}
 	if code == -352 {
 		log.Warn("getDanmuInfo risk control -352, refreshing and retrying", "room", roomID)
-		lc.d.refreshRisk()
+		lc.data.refreshRisk()
 		code, info, err = query()
 		if err != nil {
 			return nil, err
@@ -624,7 +624,7 @@ func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, 
 }
 
 func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, error) {
-	cookie := lc.d.injectAntiRisk(ctx)
+	cookie := lc.data.injectAntiRisk(ctx)
 	endpoint := liveAPIBase + "/room/v1/Danmu/getConf?room_id=" + strconv.FormatInt(roomID, 10) + "&platform=pc&player=web"
 	var raw struct {
 		Code int    `json:"code"`
@@ -637,7 +637,7 @@ func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, 
 			} `json:"host_server_list"`
 		} `json:"data"`
 	}
-	if err := lc.d.fetchJSON(ctx, endpoint, roomID, cookie, &raw); err != nil {
+	if err := lc.data.fetchJSON(ctx, endpoint, roomID, cookie, &raw); err != nil {
 		return nil, err
 	}
 	if raw.Code != 0 {
@@ -659,10 +659,10 @@ func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, 
 // danmuBuvid 返回弹幕认证载荷使用的 buvid3：优先取配置 cookie 中的，
 // 其次回退到指纹存储。
 func (lc *liveClient) danmuBuvid(ctx context.Context) string {
-	if buvid := cookieValue(lc.d.cookie, "buvid3"); buvid != "" {
+	if buvid := cookieValue(lc.data.cookie, "buvid3"); buvid != "" {
 		return buvid
 	}
-	b3, _, err := lc.d.buvids.getBuvids(ctx, lc.d.cookie)
+	b3, _, err := lc.data.buvids.getBuvids(ctx, lc.data.cookie)
 	if err != nil {
 		log.Warn("get buvid3 for danmaku failed, continuing without", "err", err)
 		return ""
