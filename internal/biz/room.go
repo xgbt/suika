@@ -15,21 +15,21 @@ var (
 	ErrRoomAlreadyExists   = errors.Conflict(v1.ErrorReason_ERROR_REASON_ALREADY_EXISTS.String(), "room already exists")
 )
 
-type LiveState int
+type LiveStatus int
 
 const (
-	LiveUnknown LiveState = iota
-	LivePreparing
-	LiveOnAir
+	LiveStatusUnknown LiveStatus = iota
+	LiveStatusPreparing
+	LiveStatusOnAir
 )
 
-type RecordState int
+type RecordStatus int
 
 const (
-	RecordIdle RecordState = iota
-	RecordRecording
-	RecordRemuxing
-	RecordError
+	RecordStatusIdle RecordStatus = iota
+	RecordStatusRecording
+	RecordStatusRemuxing
+	RecordStatusError
 )
 
 // Room 领域对象（DO）。
@@ -46,8 +46,8 @@ type Room struct {
 // 服务于 RoomUsecase 的 GetRoom、ListRoomRuntimes, 返回给 API 层 DTO 转换使用。
 type RoomRuntime struct {
 	Room             Room
-	LiveState        LiveState
-	RecordState      RecordState
+	LiveStatus       LiveStatus
+	RecordStatus     RecordStatus
 	CurrentFile      string
 	BytesWritten     int64
 	SessionStartedAt time.Time
@@ -145,7 +145,7 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime {
 	runtime := uc.reg.runtime(room.RoomID)
 	runtime.Room = *room
-	if runtime.RecordState == RecordRecording {
+	if runtime.RecordStatus == RecordStatusRecording {
 		stats, err := uc.stats.SessionStats(ctx, room.RoomID)
 		if err == nil && stats != nil {
 			runtime.CurrentFile = stats.CurrentFile

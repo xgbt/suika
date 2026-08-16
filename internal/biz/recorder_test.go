@@ -361,10 +361,10 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	}()
 
 	// waitRecord 轮询 RoomRegistry，直到房间 42 到达期望的录制状态或超时。
-	waitRecord := func(want RecordState) bool {
+	waitRecord := func(want RecordStatus) bool {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
-			var got RecordState
+			var got RecordStatus
 			var ok bool
 			uc.registry.mu.Lock()
 			st, found := uc.registry.states[42]
@@ -381,12 +381,12 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	}
 
 	conn.roomStateUpdates <- liveInfo(42, true)
-	if !waitRecord(RecordRecording) {
+	if !waitRecord(RecordStatusRecording) {
 		t.Fatal("session did not start recording after live control event")
 	}
 
 	conn.roomStateUpdates <- liveInfo(42, false)
-	if !waitRecord(RecordIdle) {
+	if !waitRecord(RecordStatusIdle) {
 		t.Fatal("offline control event did not cancel the active session")
 	}
 	if len(repo.finished) != 1 {

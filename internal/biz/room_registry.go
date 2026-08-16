@@ -10,11 +10,11 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// roomState 表示单个 Room 的可变运行时状态
+// roomState 表示单个 Room 的内部运行状态
 type roomState struct {
 	room             Room
-	live             LiveState
-	record           RecordState
+	live             LiveStatus
+	record           RecordStatus
 	sessionStartedAt time.Time
 	lastError        string
 }
@@ -90,8 +90,8 @@ func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 	}
 	return &RoomRuntime{
 		Room:             st.room,
-		LiveState:        st.live,
-		RecordState:      st.record,
+		LiveStatus:       st.live,
+		RecordStatus:     st.record,
 		SessionStartedAt: st.sessionStartedAt,
 		LastError:        st.lastError,
 	}
@@ -111,9 +111,9 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 		return
 	}
 	if info.Live {
-		st.live = LiveOnAir
+		st.live = LiveStatusOnAir
 	} else {
-		st.live = LivePreparing
+		st.live = LiveStatusPreparing
 	}
 	if info.StreamerName != "" {
 		st.room.StreamerName = info.StreamerName
@@ -132,7 +132,7 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 // StartRecording 将房间标记为正在录制新会话。
 func (reg *RoomRegistry) StartRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
-		st.record = RecordRecording
+		st.record = RecordStatusRecording
 		st.sessionStartedAt = time.Now()
 		st.lastError = ""
 	})
@@ -140,13 +140,13 @@ func (reg *RoomRegistry) StartRecording(roomID int64) {
 
 // SetRemuxing 将房间会话标记为收尾中（正在转封装）。
 func (reg *RoomRegistry) SetRemuxing(roomID int64) {
-	reg.setState(roomID, func(st *roomState) { st.record = RecordRemuxing })
+	reg.setState(roomID, func(st *roomState) { st.record = RecordStatusRemuxing })
 }
 
 // FailRecording 将房间会话标记为失败并记录错误。
 func (reg *RoomRegistry) FailRecording(roomID int64, err error) {
 	reg.setState(roomID, func(st *roomState) {
-		st.record = RecordError
+		st.record = RecordStatusError
 		st.lastError = err.Error()
 	})
 }
@@ -154,7 +154,7 @@ func (reg *RoomRegistry) FailRecording(roomID int64, err error) {
 // FinishRecording 在会话收尾完成后将房间恢复空闲。
 func (reg *RoomRegistry) FinishRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
-		st.record = RecordIdle
+		st.record = RecordStatusIdle
 		st.sessionStartedAt = time.Time{}
 	})
 }
