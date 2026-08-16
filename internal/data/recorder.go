@@ -89,23 +89,21 @@ func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
 
 // PrepareSession 创建（或在重启后重新定位）会话目录和 meta.json。
 func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session) error {
+
+	// 获取目录和文件名前缀
 	dir, base, err := r.sessionPaths(session)
 	if err != nil {
 		return err
 	}
+	// 创建目录
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	metaPath := filepath.Join(dir, base+".meta.json")
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 会话（重新）启动时把写入进度清零，与 RoomRegistry.StartRecording
-	// 重置 sessionStartedAt/lastError 相对应：否则 RecordSession 的 baseBytes
-	// 续算逻辑会在进程存活期间，把同一房间新一轮开播的字节数累加到
-	// 上一场会话的总数上。重启续录不受影响——统计在内存中，新进程里
-	// 本来就是零。
+	// 一次录制会话启动时, 把写入进度清零
 	ps, ok := r.stats[session.RoomID]
 	if !ok {
 		ps = &pumpStats{}
@@ -114,18 +112,17 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 	ps.bytes.Store(0)
 	ps.file.Store("")
 
+	// 读取 meta.json，
+	metaPath := filepath.Join(dir, base+".meta.json")
 	if meta, err := loadMeta(metaPath); err == nil {
-		// 重启续录：同一会话目录，保留已录分段。
+		// 之前已经录制过，已存在 meta.json, 更新 meta.json 的状态为 recording, 并更新标题和房间名
 		meta.Status = metaStatusRecording
-		if session.Title != "" {
-			meta.Title = session.Title
-		}
-		if session.RoomName != "" {
-			meta.RoomName = session.RoomName
-		}
+		meta.Title = session.Title
+		meta.RoomName = session.RoomName
 		return saveMeta(metaPath, meta)
 	}
 
+	// 目录下不存在 meta.json 时，创建新的 meta.json
 	start := session.LiveStartTime
 	if start.IsZero() {
 		start = time.Now()
@@ -168,9 +165,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, 
 	// 把授予的清晰度记入 meta。
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Quality = qualityMeta{Qn: stream.Quality.Qn, Desc: stream.Quality.Desc}
-		if session.Title != "" {
-			meta.Title = session.Title
-		}
+		meta.Title = session.Title
 	})
 
 	// 拉流写入循环：按分段时长切分，写入 meta.json。
@@ -327,9 +322,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Session) 
 	}
 	meta.Status = metaStatusRemuxing
 	meta.EndTime = time.Now().Unix()
-	if session.Title != "" {
-		meta.Title = session.Title
-	}
+	meta.Title = session.Title
 	meta.Quality = qualityMeta{Qn: session.Quality.Qn, Desc: session.Quality.Desc}
 	err = saveMeta(metaPath, meta)
 	r.mu.Unlock()

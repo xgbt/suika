@@ -22,6 +22,7 @@ const (
 	remuxStatusFailed  = "failed"  // 转封装失败
 )
 
+// sessionMeta 关键元数据，存储在 meta.json 中, 记录录制会话的状态、分段信息、错误日志等
 type sessionMeta struct {
 	RoomID        int64         `json:"room_id"`
 	RoomName      string        `json:"room_name"`
@@ -35,11 +36,13 @@ type sessionMeta struct {
 	UpdatedAt     int64         `json:"updated_at"`
 }
 
+// qualityMeta 记录录制的清晰度信息，存储在 meta.json 中
 type qualityMeta struct {
 	Qn   int32  `json:"qn"`
 	Desc string `json:"desc"`
 }
 
+// segmentMeta 记录每个分段的元数据，存储在 meta.json 中
 type segmentMeta struct {
 	Part        int    `json:"part"`
 	Video       string `json:"video"`
@@ -77,6 +80,7 @@ type danmuLine struct {
 	Raw      json.RawMessage `json:"raw,omitempty"`
 }
 
+// loadMeta 读取 meta 文件
 func loadMeta(path string) (*sessionMeta, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
