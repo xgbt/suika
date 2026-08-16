@@ -290,21 +290,6 @@ func (h *monitorHandle) signal() {
 	}
 }
 
-// startMonitor 启动指定房间的监控协程。
-func (uc *RecorderUsecase) startMonitor(ctx context.Context, roomID int64) *monitorHandle {
-	mctx, cancel := context.WithCancel(ctx)
-	h := &monitorHandle{
-		roomChanged: make(chan struct{}, 1),
-		cancel:      cancel,
-		done:        make(chan struct{}),
-	}
-	go func() {
-		defer close(h.done)
-		uc.monitorRoom(mctx, h.roomChanged, roomID)
-	}()
-	return h
-}
-
 // reconcile 按注册表快照调和监控协程集合：为新增房间启动监控；停止并
 // 移除已删除房间的监控（移入 retired 自行优雅收尾，不阻塞调和）；
 // enabled 翻转的房间投递重评估信号。
@@ -342,12 +327,27 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 			monitors[roomID] = h
 			continue
 		}
-		// 核心逻辑: 录制状态变动后，向monitors发送信号
+		// * 核心逻辑: 录制状态变动后，向monitors发送信号
 		if h.enabled != room.Enabled {
 			h.enabled = room.Enabled
 			h.signal()
 		}
 	}
+}
+
+// startMonitor 启动指定房间的监控协程。
+func (uc *RecorderUsecase) startMonitor(ctx context.Context, roomID int64) *monitorHandle {
+	mctx, cancel := context.WithCancel(ctx)
+	h := &monitorHandle{
+		roomChanged: make(chan struct{}, 1),
+		cancel:      cancel,
+		done:        make(chan struct{}),
+	}
+	go func() {
+		defer close(h.done)
+		uc.monitorRoom(mctx, h.roomChanged, roomID)
+	}()
+	return h
 }
 
 // monitorRoom 维持房间的弹幕连接，断开即重拨，直到 ctx 被取消。
@@ -371,11 +371,11 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan s
 func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
 
 	// 1. 弹幕连接
-	conn, err := uc.liveClient.DanmakuConn(ctx, roomID)
+	danmakuConn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
 		return fmt.Errorf("open danmaku conn: %w", err)
 	}
-	defer conn.Close()
+	defer danmakuConn.Close()
 
 	// 2. 带抖动的轮询
 	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
@@ -394,7 +394,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 		var events <-chan *DanmakuEvent
 		var done chan struct{}
 		if active == nil {
-			events = conn.Events()
+			events = danmakuConn.Events()
 		} else {
 			done = active.done
 		}
@@ -412,13 +412,15 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 			active = nil
 			if resumeOnFinish && latestRoomInfo != nil && latestRoomInfo.Live {
 				resumeOnFinish = false
-				active = uc.launchSession(ctx, roomID, latestRoomInfo, conn.Events())
+
+				// 会话收尾完成后仍在播，立即恢复录制
+				active = uc.launchSession(ctx, roomID, latestRoomInfo, danmakuConn.Events())
 			}
-		case roomInfo := <-conn.RoomStateUpdates():
+		case roomInfo := <-danmakuConn.RoomStateUpdates():
 			latestRoomInfo = roomInfo
 			uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
 			if roomInfo.Live && enabled && active == nil {
-				active = uc.launchSession(ctx, roomID, roomInfo, conn.Events())
+				active = uc.launchSession(ctx, roomID, roomInfo, danmakuConn.Events())
 			} else if !roomInfo.Live && active != nil {
 				active.cancel()
 			}
@@ -431,7 +433,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 				latestRoomInfo = roomInfo
 				uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
 				if roomInfo.Live && enabled && active == nil {
-					active = uc.launchSession(ctx, roomID, roomInfo, conn.Events())
+					active = uc.launchSession(ctx, roomID, roomInfo, danmakuConn.Events())
 				} else if !roomInfo.Live && active != nil {
 					active.cancel()
 				}
@@ -452,7 +454,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 			if enabled { // 启用录制
 				if active == nil {
 					if latestRoomInfo != nil && latestRoomInfo.Live {
-						active = uc.launchSession(ctx, roomID, latestRoomInfo, conn.Events())
+						active = uc.launchSession(ctx, roomID, latestRoomInfo, danmakuConn.Events())
 					}
 				} else { // active !=nil, 录制 session 还存在，正在收尾中,收尾完成后再决定是否恢复
 					resumeOnFinish = true
