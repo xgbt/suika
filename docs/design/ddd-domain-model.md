@@ -137,6 +137,8 @@ namespace RecordingExecution {
     -liveClient LiveClient
     -rec ReconnectPolicy
     -pollInterval time.Duration
+    -maxConcurrent int
+    -slots chan struct{}
     +Run(ctx) error
     -monitorRoom(ctx, roomID)
     -watchRoom(ctx, roomID) error
@@ -231,8 +233,8 @@ namespace RecordingExecution {
 
   class DanmakuConn {
     <<acl interface>>
-    +Events() chan *DanmakuEvent
-    +RoomStateUpdates() chan *RoomInfo
+    +Events() <-chan *DanmakuEvent
+    +RoomStateUpdates() <-chan *RoomInfo
     +Close() error
   }
 }
@@ -246,12 +248,14 @@ RoomUsecase ..> RoomRepo : persist CRUD
 RoomUsecase ..> RoomRegistry : read runtime snapshot
 RoomUsecase ..> SessionStatsRepo : enrich write progress
 RoomUsecase ..> ListQuery : query shape
-RoomRegistry ..> RoomRepo : persist identity via UpdateRoom
+RoomRegistry ..> RoomRepo : load rooms on init + persist identity
 RoomRegistry ..> RoomInfo : ApplyRoomInfo
 
 RecorderUsecase ..> RoomRegistry : drive state transitions
+RecorderUsecase ..> Room : build Session from registry
 RecorderUsecase ..> RecorderRepo : storage IO
 RecorderUsecase ..> LiveClient : platform IO
+RecorderUsecase ..> DanmakuConn : monitor per room
 RecorderUsecase ..> ReconnectPolicy : drop decision tree
 RecorderUsecase ..> Session : create / finish
 RecorderUsecase ..> RoomInfo : live detection
@@ -392,9 +396,9 @@ sequenceDiagram
   WR->>RS: launchSession，移交 conn.Events()
 
   RS->>RS: 获取录制槽位（满则排队，可被 ctx 取消）
+  RS->>RG: StartRecording → RecordStatusRecording
   RS->>RR: PrepareSession
   note over RR: 建目录 recordings/房ID_主播/日期/<br/>meta.json = recording；<br/>重启续录则复用目录、part 号从磁盘续编；<br/>pumpStats 清零（新会话不背旧账）
-  RS->>RG: StartRecording → RecordStatusRecording
 
   loop recordLoop：每轮 = 一次拉流
     RS->>P: OpenStream（仅 FLV、avc 优先、接受降清晰度）
