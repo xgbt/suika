@@ -145,7 +145,7 @@ type LiveClient interface {
 
 // RecorderRepo 是录制器的存储接口。负责磁盘 IO
 type RecorderRepo interface {
-	// PrepareSession 按"房间 + 开播时间" 创建（或在重启后重新定位） 会话目录和 meta.json。
+	// PrepareSession 按"房间 + 开播时间" 创建/定位 目录和 meta.json。
 	PrepareSession(ctx context.Context, session *Session) error
 	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入对应的 JSONL 文件，直到流结束或 ctx 被取消。
 	RecordSession(ctx context.Context, session *Session, stream *StreamHandle, events <-chan *DanmakuEvent) (*SessionResult, error)

@@ -341,23 +341,34 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Session) 
 
 // --- 辅助函数 ---
 
-// sessionPaths 计算会话目录和文件名基座（所有分段与 meta 文件共享的日期/时间/标题前缀）。
-// 样例: recordings/12345_主播名/2024-06-01/20240601_1504_直播标题
-// 返回 (dir, base, error)
-// dir : recordings/12345_主播名/2024-06-01
-// base : 20240601_1504_直播标题
-func (r *recorderRepo) sessionPaths(session *biz.Session) (string, string, error) {
+// sessionPaths 计算会话目录和文件名前缀（所有分段与 meta 文件共享的日期/时间/标题前缀）。
+//
+// 目录结构示例：
+//
+//	recordings/
+//	└── 12345_主播名/
+//	    └── 2024-06-01/
+//	        ├── 20240601_1504_直播标题.meta.json
+//	        ├── 20240601_1504_直播标题_part1.flv
+//	        └── 20240601_1504_直播标题_part1.danmu.jsonl
+//
+// 返回值：
+//   - dir  : recordings/12345_主播名/2024-06-01
+//   - base : 20240601_1504_直播标题
+func (r *recorderRepo) sessionPaths(session *biz.Session) (dir string, base string, err error) {
 	if session == nil || session.RoomID <= 0 {
 		return "", "", biz.ErrRoomInternal
 	}
+
 	start := session.LiveStartTime
 	if start.IsZero() {
 		start = time.Now()
 	}
+
 	roomDir := fmt.Sprintf("%d_%s", session.RoomID, sanitizeSegment(session.RoomName, maxNameLen))
-	dir := filepath.Join(r.recordRoot, roomDir, start.Format("2006-01-02"))
-	base := start.Format("20060102_1504") + "_" + sanitizeSegment(session.Title, maxTitleLen)
-	return dir, base, nil
+	dir = filepath.Join(r.recordRoot, roomDir, start.Format("2006-01-02"))
+	base = start.Format("20060102_1504") + "_" + sanitizeSegment(session.Title, maxTitleLen)
+	return
 }
 
 var (
