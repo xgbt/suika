@@ -137,11 +137,28 @@ namespace RecordingExecution {
     -maxConcurrent int
     -slots chan token
     +Run(ctx) error
-    -monitorRoom(ctx, roomID)
-    -watchRoom(ctx, roomID) error
-    -launchSession(ctx, roomID, info, events)
+    -reconcile(ctx, monitors, retired)
+    -startMonitor(ctx, roomID) *monitorHandle
+    -monitorRoom(ctx, roomChanged, roomID)
+    -watchRoom(ctx, roomChanged, roomID) error
+    -launchSession(ctx, roomID, info, events) *sessionHandle
     -runSession(ctx, roomID, info, events)
     -recordLoop(ctx, roomID, session, events)
+  }
+
+  class monitorHandle {
+    <<internal>>
+    +bool enabled
+    +chan struct roomChanged
+    +context.CancelFunc cancel
+    +chan struct done
+    +signal()
+  }
+
+  class sessionHandle {
+    <<internal>>
+    +context.CancelFunc cancel
+    +chan struct done
   }
 
   class Session {
@@ -244,6 +261,8 @@ RecorderUsecase ..> Room : build Session from registry
 RecorderUsecase ..> RecorderRepo : storage IO
 RecorderUsecase ..> LiveClient : platform IO
 RecorderUsecase ..> DanmakuConn : monitor per room
+RecorderUsecase o-- monitorHandle : one per room, reconciled on registry changes
+RecorderUsecase o-- sessionHandle : one per active session
 RecorderUsecase ..> Session : create / finish
 RecorderUsecase ..> RoomInfo : live detection
 RecorderRepo ..> Session : session layout
@@ -261,6 +280,7 @@ SessionStatsRepo ..> SessionStats
 
 note for RoomUsecase "类型化错误：ErrRoomNotFound / ErrRoomInvalidArgument / ErrRoomAlreadyExists"
 note for RecorderUsecase "只做编排决策，不做字节级 IO；哨兵错误 ErrStreamTransient / ErrRiskControl 供断流决策树分类"
+note for monitorHandle "roomChanged 是合并式重评估信号（enabled 翻转），由监督循环送达 watchRoom；被删房间的监控移入 retired 优雅收尾，不阻塞调和"
 note for StreamHandle "不透明句柄：由 LiveClient 产生、被 RecorderRepo 消费，biz 从不检视（同 *sql.Rows 用法）"
 note for DanmakuConn "实现内部自行重连；每次重连后重新探测房态，补上断连期间错过的开播事件；Events / RoomStateUpdates 均为只读通道，Events 有界缓冲，无人消费时丢弃"
 ```
@@ -301,7 +321,7 @@ flowchart TB
   end
 
   subgraph G1["biz · watchRoom（每房间常驻，select 分发）"]
-    sel["roomStateUpdates → ApplyRoomInfo + 启停会话<br/>events（仅空闲时挂在 select 上）→ 排空丢弃<br/>done → 会话结束，active 置空<br/>poll 600s±10% → GetRoomInfo 兜底<br/>ctx → 关停：cancel 会话并等 done"]
+    sel["roomStateUpdates → ApplyRoomInfo + 启停会话<br/>events（仅空闲时挂在 select 上）→ 排空丢弃<br/>done → 会话结束，active 置空；仍在播则按恢复标记重启<br/>roomChanged → 重评估 enabled 门控（禁用停录、启用若在播即录）<br/>poll 600s±10% → GetRoomInfo 兜底<br/>ctx → 关停：cancel 会话并等 done"]
   end
 
   subgraph G4["biz · runSession（每会话一个，launchSession 产生）"]
