@@ -13,8 +13,8 @@ import (
 // roomState 表示单个 Room 的内部运行状态
 type roomState struct {
 	room             Room
-	live             LiveStatus
-	record           RecordStatus
+	liveStatus       LiveStatus
+	recordStatus     RecordStatus
 	sessionStartedAt time.Time
 	lastError        string
 }
@@ -54,7 +54,6 @@ func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 	return reg, nil
 }
 
-// Rooms 按 room_id 升序返回所有已注册房间的快照。
 func (reg *RoomRegistry) Rooms() []Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -66,8 +65,6 @@ func (reg *RoomRegistry) Rooms() []Room {
 	return out
 }
 
-// Room 返回单个房间当前的配置快照（含已回填的主播元数据）。未知房间
-// 退化为只带房间号的空房间。
 func (reg *RoomRegistry) Room(roomID int64) Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -78,8 +75,8 @@ func (reg *RoomRegistry) Room(roomID int64) Room {
 	return Room{RoomID: roomID}
 }
 
-// runtime 返回单个房间运行时状态的拷贝。RoomRegistry 中不存在的房间
-// （启动后新建的）返回默认状态值。
+// runtime 提取某房间的运行时状态快照
+// roomState -> RoomRuntime
 func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -88,17 +85,17 @@ func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 	if !ok {
 		return &RoomRuntime{Room: Room{RoomID: roomID}}
 	}
+
 	return &RoomRuntime{
 		Room:             st.room,
-		LiveStatus:       st.live,
-		RecordStatus:     st.record,
+		LiveStatus:       st.liveStatus,
+		RecordStatus:     st.recordStatus,
 		SessionStartedAt: st.sessionStartedAt,
 		LastError:        st.lastError,
 	}
 }
 
-// ApplyRoomInfo 记录平台上报的房间直播状态，并在主播名/标题为空时回填。
-// 回填值会经 RoomRepo 写回持久化
+// ApplyRoomInfo 记录从B 站获取的房间信息, 并回填到 DB
 func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *RoomInfo) {
 	if info == nil {
 		return
@@ -111,9 +108,9 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 		return
 	}
 	if info.Live {
-		st.live = LiveStatusOnAir
+		st.liveStatus = LiveStatusOnAir
 	} else {
-		st.live = LiveStatusPreparing
+		st.liveStatus = LiveStatusPreparing
 	}
 	if info.StreamerName != "" {
 		st.room.StreamerName = info.StreamerName
@@ -132,7 +129,7 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 // StartRecording 将房间标记为正在录制新会话。
 func (reg *RoomRegistry) StartRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
-		st.record = RecordStatusRecording
+		st.recordStatus = RecordStatusRecording
 		st.sessionStartedAt = time.Now()
 		st.lastError = ""
 	})
@@ -140,13 +137,13 @@ func (reg *RoomRegistry) StartRecording(roomID int64) {
 
 // SetRemuxing 将房间会话标记为收尾中（正在转封装）。
 func (reg *RoomRegistry) SetRemuxing(roomID int64) {
-	reg.setState(roomID, func(st *roomState) { st.record = RecordStatusRemuxing })
+	reg.setState(roomID, func(st *roomState) { st.recordStatus = RecordStatusRemuxing })
 }
 
 // FailRecording 将房间会话标记为失败并记录错误。
 func (reg *RoomRegistry) FailRecording(roomID int64, err error) {
 	reg.setState(roomID, func(st *roomState) {
-		st.record = RecordStatusError
+		st.recordStatus = RecordStatusError
 		st.lastError = err.Error()
 	})
 }
@@ -154,7 +151,7 @@ func (reg *RoomRegistry) FailRecording(roomID int64, err error) {
 // FinishRecording 在会话收尾完成后将房间恢复空闲。
 func (reg *RoomRegistry) FinishRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
-		st.record = RecordStatusIdle
+		st.recordStatus = RecordStatusIdle
 		st.sessionStartedAt = time.Time{}
 	})
 }

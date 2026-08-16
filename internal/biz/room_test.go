@@ -189,7 +189,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	}
 	reg.ApplyRoomInfo(context.Background(), 1, liveInfo(1, true))
 	reg.setState(1, func(st *roomState) {
-		st.record = RecordStatusRecording
+		st.recordStatus = RecordStatusRecording
 		st.sessionStartedAt = time.Unix(100, 0)
 	})
 	reg.NoteError(2, stderrors.New("boom"))

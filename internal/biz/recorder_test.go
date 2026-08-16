@@ -369,7 +369,7 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 			uc.registry.mu.Lock()
 			st, found := uc.registry.states[42]
 			if found {
-				got, ok = st.record, true
+				got, ok = st.recordStatus, true
 			}
 			uc.registry.mu.Unlock()
 			if ok && got == want {
