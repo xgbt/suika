@@ -32,7 +32,7 @@ const (
 	RecordError
 )
 
-// Room 房间领域对象（DO）。
+// Room 领域对象（DO）。
 type Room struct {
 	RoomID       int64
 	StreamerName string
@@ -42,12 +42,12 @@ type Room struct {
 	UpdateTime   time.Time
 }
 
-// RoomRuntime 是单个房间对外暴露的状态视图：持久化字段、直播状态、
-// 录制状态，以及正在进行中的写入进度。
+// RoomRuntime 是 Room 的运行时状态, 包含持久化字段、RoomRegistry 运行时状态与会话写入进度。
+// 服务于 RoomUsecase 的 GetRoom、ListRoomRuntimes, 返回给 API 层 DTO 转换使用。
 type RoomRuntime struct {
 	Room             Room
-	Live             LiveState
-	Record           RecordState
+	LiveState        LiveState
+	RecordState      RecordState
 	CurrentFile      string
 	BytesWritten     int64
 	SessionStartedAt time.Time
@@ -55,7 +55,7 @@ type RoomRuntime struct {
 }
 
 type RoomRepo interface {
-	FindByRoomID(context.Context, int64) (*Room, error)
+	GetByRoomID(context.Context, int64) (*Room, error)
 	ListRooms(context.Context, ListQuery) ([]*Room, error)
 	CreateRoom(context.Context, *Room) (*Room, error)
 	UpdateRoom(context.Context, *Room) (*Room, error)
@@ -72,10 +72,8 @@ type ListQuery struct {
 	Limit        int
 }
 
-// SessionStatsRepo 是房间 API 消费的窄统计接口：上报房间当前活跃会话
-// 的写入进度。
 type SessionStatsRepo interface {
-	// SessionStats 返回房间当前活跃会话的写入进度。若房间未在录制中或已结束，则返回 nil。
+	// SessionStats 返回房间当前录制 session 的写入进度。若房间未在录制中或已结束，则返回 nil。
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
 }
 
@@ -95,7 +93,7 @@ func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime,
 	if roomID <= 0 {
 		return nil, ErrRoomInvalidArgument
 	}
-	room, err := uc.repo.FindByRoomID(ctx, roomID)
+	room, err := uc.repo.GetByRoomID(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -144,12 +142,11 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	return uc.repo.DeleteRoom(ctx, roomID)
 }
 
-// withRuntime 合并 Room 持久化字段、RoomRegistry 运行时状态与会话写入进度。
-// 持久化字段始终来自 DB；进度查询失败时静默跳过（仅作尽力而为的展示）。
+// withRuntime 将持久化字段 Room 与 RoomRegistry 中的运行时状态合并后返回 RoomRuntime。
 func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime {
 	runtime := uc.reg.runtime(room.RoomID)
 	runtime.Room = *room
-	if runtime.Record == RecordRecording {
+	if runtime.RecordState == RecordRecording {
 		stats, err := uc.stats.SessionStats(ctx, room.RoomID)
 		if err == nil && stats != nil {
 			runtime.CurrentFile = stats.CurrentFile

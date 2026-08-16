@@ -10,7 +10,7 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// roomState 是单个已注册房间的可变运行时状态。
+// roomState 表示单个 Room 的可变运行时状态
 type roomState struct {
 	room             Room
 	live             LiveState
@@ -30,7 +30,6 @@ type RoomRegistry struct {
 	// 修改方法持锁完成整个读-改-写。仓储 IO 必须放在临界区之外，避免
 	// 慢速数据库调用阻塞所有录制更新和房间读取。
 	mu     sync.Mutex
-	rooms  []Room
 	states map[int64]*roomState
 }
 
@@ -50,18 +49,20 @@ func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 		return nil, fmt.Errorf("room registry: load rooms: %w", err)
 	}
 	for _, room := range rooms {
-		reg.rooms = append(reg.rooms, *room)
 		reg.states[room.RoomID] = &roomState{room: *room}
 	}
 	return reg, nil
 }
 
-// Rooms 按加载顺序返回所有已注册房间的快照。
+// Rooms 按 room_id 升序返回所有已注册房间的快照。
 func (reg *RoomRegistry) Rooms() []Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
-	out := make([]Room, len(reg.rooms))
-	copy(out, reg.rooms)
+
+	out := make([]Room, 0, len(reg.states))
+	for _, st := range reg.states {
+		out = append(out, st.room)
+	}
 	return out
 }
 
@@ -82,21 +83,22 @@ func (reg *RoomRegistry) Room(roomID int64) Room {
 func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
+
 	st, ok := reg.states[roomID]
 	if !ok {
 		return &RoomRuntime{Room: Room{RoomID: roomID}}
 	}
 	return &RoomRuntime{
 		Room:             st.room,
-		Live:             st.live,
-		Record:           st.record,
+		LiveState:        st.live,
+		RecordState:      st.record,
 		SessionStartedAt: st.sessionStartedAt,
 		LastError:        st.lastError,
 	}
 }
 
 // ApplyRoomInfo 记录平台上报的房间直播状态，并在主播名/标题为空时回填。
-// 回填值会经 RoomRepo 写回持久化，重启后仍然保留。
+// 回填值会经 RoomRepo 写回持久化
 func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *RoomInfo) {
 	if info == nil {
 		return
@@ -112,65 +114,17 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	} else {
 		st.live = LivePreparing
 	}
-	var backfilledStreamerName string
-	var backfilledRoomTitle string
-	if st.room.StreamerName == "" && info.StreamerName != "" {
-		backfilledStreamerName = info.StreamerName
+	if info.StreamerName != "" {
+		st.room.StreamerName = info.StreamerName
 	}
-	if st.room.RoomTitle == "" && info.Title != "" {
-		backfilledRoomTitle = info.Title
+	if info.Title != "" {
+		st.room.RoomTitle = info.Title
 	}
 	reg.mu.Unlock()
 
-	if (backfilledStreamerName != "" || backfilledRoomTitle != "") && reg.repo != nil {
-		updated, err := reg.repo.BackfillRoomIdentity(ctx, roomID, backfilledStreamerName, backfilledRoomTitle)
-		if err != nil {
+	if (info.StreamerName != "" || info.Title != "") && reg.repo != nil {
+		if _, err := reg.repo.BackfillRoomIdentity(ctx, roomID, info.StreamerName, info.Title); err != nil {
 			log.Warn("room registry: persist backfilled room metadata failed", "room", roomID, "err", err)
-			reg.mu.Lock()
-			if st, ok := reg.states[roomID]; ok {
-				if st.room.StreamerName == "" && backfilledStreamerName != "" {
-					st.room.StreamerName = backfilledStreamerName
-				}
-				if st.room.RoomTitle == "" && backfilledRoomTitle != "" {
-					st.room.RoomTitle = backfilledRoomTitle
-				}
-				for i := range reg.rooms {
-					if reg.rooms[i].RoomID == roomID {
-						if reg.rooms[i].StreamerName == "" && backfilledStreamerName != "" {
-							reg.rooms[i].StreamerName = backfilledStreamerName
-						}
-						if reg.rooms[i].RoomTitle == "" && backfilledRoomTitle != "" {
-							reg.rooms[i].RoomTitle = backfilledRoomTitle
-						}
-						break
-					}
-				}
-			}
-			reg.mu.Unlock()
-			return
-		}
-		if updated {
-			reg.mu.Lock()
-			if st, ok := reg.states[roomID]; ok {
-				if st.room.StreamerName == "" && backfilledStreamerName != "" {
-					st.room.StreamerName = backfilledStreamerName
-				}
-				if st.room.RoomTitle == "" && backfilledRoomTitle != "" {
-					st.room.RoomTitle = backfilledRoomTitle
-				}
-				for i := range reg.rooms {
-					if reg.rooms[i].RoomID == roomID {
-						if reg.rooms[i].StreamerName == "" && backfilledStreamerName != "" {
-							reg.rooms[i].StreamerName = backfilledStreamerName
-						}
-						if reg.rooms[i].RoomTitle == "" && backfilledRoomTitle != "" {
-							reg.rooms[i].RoomTitle = backfilledRoomTitle
-						}
-						break
-					}
-				}
-			}
-			reg.mu.Unlock()
 		}
 	}
 }

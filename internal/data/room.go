@@ -58,7 +58,7 @@ func NewRoomRepo(d *Data) biz.RoomRepo {
 	return &roomRepo{data: d}
 }
 
-func (r *roomRepo) FindByRoomID(ctx context.Context, roomID int64) (*biz.Room, error) {
+func (r *roomRepo) GetByRoomID(ctx context.Context, roomID int64) (*biz.Room, error) {
 	var po roomPO
 	err := r.data.db.WithContext(ctx).Where("room_id = ?", roomID).First(&po).Error
 	if err != nil {
@@ -133,7 +133,7 @@ func (r *roomRepo) UpdateRoom(ctx context.Context, room *biz.Room) (*biz.Room, e
 		return nil, biz.ErrRoomNotFound
 	}
 
-	return r.FindByRoomID(ctx, room.RoomID)
+	return r.GetByRoomID(ctx, room.RoomID)
 }
 
 func (r *roomRepo) BackfillRoomIdentity(ctx context.Context, roomID int64, streamerName string, roomTitle string) (bool, error) {

@@ -447,8 +447,8 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "preparing",
 			in: &biz.RoomRuntime{
-				Room: biz.Room{RoomID: 2, StreamerName: "room-two"},
-				Live: biz.LivePreparing,
+				Room:      biz.Room{RoomID: 2, StreamerName: "room-two"},
+				LiveState: biz.LivePreparing,
 			},
 			want: &v1.Room{
 				RoomId:       2,
@@ -461,8 +461,8 @@ func TestConvertRoomReply(t *testing.T) {
 			name: "on air recording passes progress through",
 			in: &biz.RoomRuntime{
 				Room:             biz.Room{RoomID: 3, StreamerName: "room-three", Enabled: true, CreateTime: createdAt, UpdateTime: updatedAt},
-				Live:             biz.LiveOnAir,
-				Record:           biz.RecordRecording,
+				LiveState:        biz.LiveOnAir,
+				RecordState:      biz.RecordRecording,
 				CurrentFile:      "recordings/room-three/part-0001.flv",
 				BytesWritten:     123456789,
 				SessionStartedAt: startedAt,
@@ -483,8 +483,8 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "remuxing",
 			in: &biz.RoomRuntime{
-				Room:   biz.Room{RoomID: 4, StreamerName: "room-four"},
-				Record: biz.RecordRemuxing,
+				Room:        biz.Room{RoomID: 4, StreamerName: "room-four"},
+				RecordState: biz.RecordRemuxing,
 			},
 			want: &v1.Room{
 				RoomId:       4,
@@ -496,10 +496,10 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "error passes last_error through",
 			in: &biz.RoomRuntime{
-				Room:      biz.Room{RoomID: 5, StreamerName: "room-five", Enabled: true},
-				Live:      biz.LivePreparing,
-				Record:    biz.RecordError,
-				LastError: "prepare session failed: disk full",
+				Room:        biz.Room{RoomID: 5, StreamerName: "room-five", Enabled: true},
+				LiveState:   biz.LivePreparing,
+				RecordState: biz.RecordError,
+				LastError:   "prepare session failed: disk full",
 			},
 			want: &v1.Room{
 				RoomId:       5,

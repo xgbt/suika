@@ -44,7 +44,7 @@ type backfillCall struct {
 	updated      bool
 }
 
-func (r *fakeRoomRepo) FindByRoomID(_ context.Context, roomID int64) (*Room, error) {
+func (r *fakeRoomRepo) GetByRoomID(_ context.Context, roomID int64) (*Room, error) {
 	if room, ok := r.rooms[roomID]; ok {
 		return room, nil
 	}
@@ -232,8 +232,8 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	if out[0].Room.RoomID != 1 || out[1].Room.RoomID != 2 || out[2].Room.RoomID != 3 {
 		t.Fatalf("room order not preserved: %+v", out)
 	}
-	if out[0].Live != LiveOnAir || out[0].Record != RecordRecording {
-		t.Fatalf("room 1 state = %v/%v", out[0].Live, out[0].Record)
+	if out[0].LiveState != LiveOnAir || out[0].RecordState != RecordRecording {
+		t.Fatalf("room 1 state = %v/%v", out[0].LiveState, out[0].RecordState)
 	}
 	if out[0].CurrentFile != "/rec/1_part2.flv" || out[0].BytesWritten != 4096 {
 		t.Fatalf("room 1 stats = %q/%d", out[0].CurrentFile, out[0].BytesWritten)
@@ -248,8 +248,8 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 		t.Fatalf("room 2 unexpectedly got stats: %q/%d", out[1].CurrentFile, out[1].BytesWritten)
 	}
 	// 录制中但统计查询失败的房间：静默跳过，不报错。
-	if out[2].Record != RecordRecording {
-		t.Fatalf("room 3 state = %v", out[2].Record)
+	if out[2].RecordState != RecordRecording {
+		t.Fatalf("room 3 state = %v", out[2].RecordState)
 	}
 	if out[2].CurrentFile != "" || out[2].BytesWritten != 0 {
 		t.Fatalf("room 3 stats = %q/%d, want zero values after stats error", out[2].CurrentFile, out[2].BytesWritten)

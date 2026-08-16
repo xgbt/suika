@@ -148,7 +148,7 @@ func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 	}
 
 	var liveStatus v1.LiveStatus
-	switch rt.Live {
+	switch rt.LiveState {
 	case biz.LivePreparing:
 		liveStatus = v1.LiveStatus_LIVE_STATUS_PREPARING
 	case biz.LiveOnAir:
@@ -157,7 +157,7 @@ func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
 		liveStatus = v1.LiveStatus_LIVE_STATUS_UNSPECIFIED
 	}
 	var recordStatus v1.RecordStatus
-	switch rt.Record {
+	switch rt.RecordState {
 	case biz.RecordRecording:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_RECORDING
 	case biz.RecordRemuxing:
