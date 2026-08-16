@@ -136,26 +136,6 @@ func (r *roomRepo) UpdateRoom(ctx context.Context, room *biz.Room) (*biz.Room, e
 	return r.GetByRoomID(ctx, room.RoomID)
 }
 
-func (r *roomRepo) BackfillRoomIdentity(ctx context.Context, roomID int64, streamerName string, roomTitle string) (bool, error) {
-	if streamerName == "" && roomTitle == "" {
-		return false, nil
-	}
-	updates := map[string]any{}
-	if streamerName != "" {
-		updates["streamer_name"] = gorm.Expr("CASE WHEN streamer_name = '' THEN ? ELSE streamer_name END", streamerName)
-	}
-	if roomTitle != "" {
-		updates["room_title"] = gorm.Expr("CASE WHEN room_title = '' THEN ? ELSE room_title END", roomTitle)
-	}
-	result := r.data.db.WithContext(ctx).Model(&roomPO{}).
-		Where("room_id = ?", roomID).
-		Updates(updates)
-	if result.Error != nil {
-		return false, result.Error
-	}
-	return result.RowsAffected > 0, nil
-}
-
 func (r *roomRepo) DeleteRoom(ctx context.Context, roomID int64) error {
 	result := r.data.db.WithContext(ctx).Where("room_id = ?", roomID).Delete(&roomPO{})
 	if result.Error != nil {

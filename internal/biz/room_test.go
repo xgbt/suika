@@ -29,19 +29,10 @@ func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionS
 
 // fakeRoomRepo 为 RoomRegistry 和 usecase 测试模拟 RoomRepo 行为。
 type fakeRoomRepo struct {
-	rooms       map[int64]*Room
-	listErr     error
-	updateErr   error
-	backfillErr error
-	updates     []*Room
-	backfills   []backfillCall
-}
-
-type backfillCall struct {
-	roomID       int64
-	streamerName string
-	roomTitle    string
-	updated      bool
+	rooms     map[int64]*Room
+	listErr   error
+	updateErr error
+	updates   []*Room
 }
 
 func (r *fakeRoomRepo) GetByRoomID(_ context.Context, roomID int64) (*Room, error) {
@@ -83,26 +74,6 @@ func (r *fakeRoomRepo) UpdateRoom(_ context.Context, room *Room) (*Room, error) 
 	}
 	r.rooms[room.RoomID] = room
 	return room, nil
-}
-
-func (r *fakeRoomRepo) BackfillRoomIdentity(_ context.Context, roomID int64, streamerName string, roomTitle string) (bool, error) {
-	if r.backfillErr != nil {
-		r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: false})
-		return false, r.backfillErr
-	}
-	updated := false
-	if room, ok := r.rooms[roomID]; ok {
-		if room.StreamerName == "" && streamerName != "" {
-			room.StreamerName = streamerName
-			updated = true
-		}
-		if room.RoomTitle == "" && roomTitle != "" {
-			room.RoomTitle = roomTitle
-			updated = true
-		}
-	}
-	r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: updated})
-	return updated, nil
 }
 
 func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
@@ -151,7 +122,7 @@ func TestNewRoomRegistryLoadError(t *testing.T) {
 	}
 }
 
-func TestApplyRoomInfoBackfillsIdentityThroughRepo(t *testing.T) {
+func TestApplyRoomInfoUpdatesIdentityThroughRepo(t *testing.T) {
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Enabled: true}}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
@@ -161,24 +132,27 @@ func TestApplyRoomInfoBackfillsIdentityThroughRepo(t *testing.T) {
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
 
 	if got := reg.Room(1).StreamerName; got != "streamer" {
-		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
+		t.Fatalf("streamer_name = %q, want streamer", got)
 	}
 	if got := reg.Room(1).RoomTitle; got != "title-a" {
-		t.Fatalf("backfilled room_title = %q, want title-a", got)
+		t.Fatalf("room_title = %q, want title-a", got)
 	}
-	if len(repo.backfills) != 1 || !repo.backfills[0].updated || repo.backfills[0].roomID != 1 || repo.backfills[0].streamerName != "streamer" || repo.backfills[0].roomTitle != "title-a" {
-		t.Fatalf("repo backfills = %+v, want one successful backfill", repo.backfills)
+	if len(repo.updates) != 1 || repo.updates[0].RoomID != 1 || repo.updates[0].StreamerName != "streamer" || repo.updates[0].RoomTitle != "title-a" {
+		t.Fatalf("repo.updates = %+v, want one update", repo.updates)
 	}
 
-	// 元数据已存在时再次上报，不应重复写入。
+	// 再次上报新值，内存和持久化都应更新。
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other", Title: "title-b"})
-	if len(repo.backfills) != 1 {
-		t.Fatalf("repo backfills = %d, want exactly 1", len(repo.backfills))
+	if got := reg.Room(1).StreamerName; got != "other" {
+		t.Fatalf("streamer_name after update = %q, want other", got)
+	}
+	if len(repo.updates) != 2 {
+		t.Fatalf("repo.updates = %d, want 2", len(repo.updates))
 	}
 }
 
 func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
-	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, backfillErr: stderrors.New("db locked")}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, updateErr: stderrors.New("db locked")}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)

@@ -103,6 +103,7 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	if info == nil {
 		return
 	}
+
 	reg.mu.Lock()
 	st, ok := reg.states[roomID]
 	if !ok {
@@ -120,12 +121,11 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	if info.Title != "" {
 		st.room.RoomTitle = info.Title
 	}
+	roomSnapshot := st.room
 	reg.mu.Unlock()
 
-	if (info.StreamerName != "" || info.Title != "") && reg.repo != nil {
-		if _, err := reg.repo.BackfillRoomIdentity(ctx, roomID, info.StreamerName, info.Title); err != nil {
-			log.Warn("room registry: persist backfilled room metadata failed", "room", roomID, "err", err)
-		}
+	if _, err := reg.repo.UpdateRoom(ctx, &roomSnapshot); err != nil {
+		log.Warn("room registry: persist room identity update failed", "room", roomID, "err", err)
 	}
 }
 
