@@ -136,7 +136,7 @@ func (reg *RoomRegistry) Remove(roomID int64) {
 	reg.notifyLocked()
 }
 
-// notifyLocked 向订阅者发送合并式唤醒信号；
+// notifyLocked 向订阅者发送合并式唤醒信号, 调用方须已持有 mu
 func (reg *RoomRegistry) notifyLocked() {
 	for _, ch := range reg.subscribers {
 		select {
