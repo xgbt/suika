@@ -514,14 +514,14 @@ func TestConvertRoomReply(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := convertRoomReply(tt.in)
+			got := toRoomDTO(tt.in)
 			if !proto.Equal(got, tt.want) {
 				t.Fatalf("convertRoomReply() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
 
-	if got := convertRoomReply(nil); got != nil {
+	if got := toRoomDTO(nil); got != nil {
 		t.Fatalf("convertRoomReply(nil) = %+v, want nil", got)
 	}
 }

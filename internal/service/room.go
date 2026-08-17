@@ -35,11 +35,11 @@ func NewRoomService(uc *biz.RoomUsecase) *RoomService {
 }
 
 func (s *RoomService) CreateRoom(ctx context.Context, req *v1.CreateRoomRequest) (*v1.CreateRoomResponse, error) {
-	rt, err := s.uc.CreateRoom(ctx, convertRoom(req.GetRoom()))
+	rt, err := s.uc.CreateRoom(ctx, toRoomDO(req.GetRoom()))
 	if err != nil {
 		return nil, err
 	}
-	return &v1.CreateRoomResponse{Room: convertRoomReply(rt)}, nil
+	return &v1.CreateRoomResponse{Room: toRoomDTO(rt)}, nil
 }
 
 func (s *RoomService) GetRoom(ctx context.Context, req *v1.GetRoomRequest) (*v1.GetRoomResponse, error) {
@@ -47,7 +47,7 @@ func (s *RoomService) GetRoom(ctx context.Context, req *v1.GetRoomRequest) (*v1.
 	if err != nil {
 		return nil, err
 	}
-	return &v1.GetRoomResponse{Room: convertRoomReply(roomRuntime)}, nil
+	return &v1.GetRoomResponse{Room: toRoomDTO(roomRuntime)}, nil
 }
 
 func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (*v1.ListRoomsResponse, error) {
@@ -94,7 +94,7 @@ func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (
 		response.NextPageToken = pageToken.Next(req).String()
 	}
 	for _, rt := range roomRuntimes {
-		response.Rooms = append(response.Rooms, convertRoomReply(rt))
+		response.Rooms = append(response.Rooms, toRoomDTO(rt))
 	}
 
 	return response, nil
@@ -115,11 +115,11 @@ func (s *RoomService) UpdateRoom(ctx context.Context, req *v1.UpdateRoomRequest)
 	}
 	curRoom := curResp.GetRoom()
 	fieldmask.Update(req.GetUpdateMask(), curRoom, req.GetRoom())
-	rt, err := s.uc.UpdateRoom(ctx, convertRoom(curRoom))
+	rt, err := s.uc.UpdateRoom(ctx, toRoomDO(curRoom))
 	if err != nil {
 		return nil, err
 	}
-	return &v1.UpdateRoomResponse{Room: convertRoomReply(rt)}, nil
+	return &v1.UpdateRoomResponse{Room: toRoomDTO(rt)}, nil
 }
 
 func (s *RoomService) DeleteRoom(ctx context.Context, req *v1.DeleteRoomRequest) (*v1.DeleteRoomResponse, error) {
@@ -129,7 +129,7 @@ func (s *RoomService) DeleteRoom(ctx context.Context, req *v1.DeleteRoomRequest)
 	return &v1.DeleteRoomResponse{Empty: &emptypb.Empty{}}, nil
 }
 
-func convertRoom(in *v1.Room) *biz.Room {
+func toRoomDO(in *v1.Room) *biz.Room {
 	if in == nil {
 		return nil
 	}
@@ -141,8 +141,8 @@ func convertRoom(in *v1.Room) *biz.Room {
 	}
 }
 
-// convertRoomReply 把 RoomRuntime 转换回 DTO。
-func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
+// toRoomDTO 把 RoomRuntime 转换回 DTO。
+func toRoomDTO(rt *biz.RoomRuntime) *v1.Room {
 	if rt == nil {
 		return nil
 	}
