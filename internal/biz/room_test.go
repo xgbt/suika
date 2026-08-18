@@ -97,11 +97,16 @@ func TestNewRoomRegistryLoadsRooms(t *testing.T) {
 	if len(rooms) != 2 {
 		t.Fatalf("rooms = %d, want 2", len(rooms))
 	}
-	if rooms[0].RoomID != 1 || rooms[0].StreamerName != "a" || !rooms[0].Enabled {
-		t.Fatalf("room[0] = %+v", rooms[0])
+	// Rooms() 由 map 迭代产生，顺序不作保证：按 RoomID 索引后断言。
+	byID := make(map[int64]Room, len(rooms))
+	for _, room := range rooms {
+		byID[room.RoomID] = room
 	}
-	if rooms[1].RoomID != 2 || rooms[1].StreamerName != "b" || rooms[1].Enabled {
-		t.Fatalf("room[1] = %+v", rooms[1])
+	if got, ok := byID[1]; !ok || got.StreamerName != "a" || !got.Enabled {
+		t.Fatalf("room 1 = %+v, present = %v", got, ok)
+	}
+	if got, ok := byID[2]; !ok || got.StreamerName != "b" || got.Enabled {
+		t.Fatalf("room 2 = %+v, present = %v", got, ok)
 	}
 }
 
