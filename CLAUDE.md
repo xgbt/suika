@@ -301,3 +301,17 @@ companion DDD view: subdomains, domain class diagram, and the
 repository/ACL seam relationships. Both defer repo-level conventions
 (layering, naming, build commands) to this file — when changing template
 rules, keep the three consistent.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as markdown files under `.scratch/<feature>/` in this repo. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), used as `Status:` values in issue files. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` at repo root, ADRs in `docs/adr/`. See `docs/agents/domain.md`.
