@@ -28,9 +28,7 @@ const (
 	danmakuRoomStateUpdateBuffer = 16
 
 	danmakuHeartbeatInterval = 30 * time.Second
-	// danmakuReadTimeout 用于掐掉半开连接：这么久（错过三轮心跳）
-	// 没收到任何入站帧就强制重连。
-	danmakuReadTimeout = 90 * time.Second
+	danmakuReadTimeout       = 90 * time.Second // 用于掐掉半开连接：错过三轮心跳仍无入站帧则强制重连
 
 	danmakuReconnectBase = 2 * time.Second
 	danmakuReconnectMax  = 30 * time.Second

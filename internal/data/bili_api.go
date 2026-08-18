@@ -20,17 +20,12 @@ import (
 const biliUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 const (
-	// liveAPIBase 即 B 站直播 API 的基础 URL
-	liveAPIBase = "https://api.live.bilibili.com"
-	// riskCode352 是 B 站直播 API 的 -352 风控错误码
-	riskCode352 = -352
-	// flvStreamPriorityDefault 是默认 FLV 流的优先级
-	flvStreamPriorityDefault = 90
-	// flvStreamPriorityAVC 是 AVC 编码 FLV 流的优先级（更优）
-	flvStreamPriorityAVC = 100
-	liveStatusOn         = 1
-	// defaultDanmakuServer 是 getDanmuInfo 和旧版 getConf 都被风控时的兜底弹幕端点。
-	defaultDanmakuServer = "wss://broadcastlv.chat.bilibili.com:2245/sub"
+	liveAPIBase              = "https://api.live.bilibili.com" // B 站直播 API 基础 URL
+	riskCode352              = -352                            // B 站直播 API 的 -352 风控错误码
+	flvStreamPriorityDefault = 90                              // 默认 FLV 流优先级
+	flvStreamPriorityAVC     = 100                             // AVC 编码 FLV 流优先级（更优）
+	liveStatusOn             = 1
+	defaultDanmakuServer     = "wss://broadcastlv.chat.bilibili.com:2245/sub" // getDanmuInfo 和旧版 getConf 都被风控时的兜底弹幕端点
 )
 
 var (

@@ -27,24 +27,15 @@ var (
 )
 
 const (
-	// defaultRoomInfoPollInterval 拉取房间状态的兜底轮询间隔
-	defaultRoomInfoPollInterval = 600 * time.Second
-
-	// defaultMaxReconnect 断流决策树最大重连次数
-	defaultMaxReconnect   = 3
-	defaultReconnectDelay = 10 * time.Second
-	// defaultCDNTransientBudget CDN 瞬时故障的重试预算，超过预算则不再重连。
-	defaultCDNTransientBudget = 5
-	defaultCDNBackoffBase     = 2 * time.Second
-	cdnBackoffMax             = 60 * time.Second
-	// monitorRedialDelay 是弹幕连接重拨前的停顿。
-	monitorRedialDelay = 10 * time.Second
-	// finishGracePeriod 限定关停期间 FinishSession 脱离已取消的运行
-	// context 后仍可用的工作时长。
-	finishGracePeriod = 30 * time.Second
-	// pollJitterFraction 是回退轮询间隔的相对抖动幅度
-	//（间隔 +/- fraction/2）。
-	pollJitterFraction = 5 // => +/- 10%
+	defaultRoomInfoPollInterval = 600 * time.Second // 拉取房间状态的兜底轮询间隔
+	defaultMaxReconnect         = 3                 // 断流决策树最大重连次数
+	defaultReconnectDelay       = 10 * time.Second  // 断流决策树重连延迟
+	defaultCDNTransientBudget   = 5                 // CDN 瞬时故障的重试预算，超过预算则不再重连
+	defaultCDNBackoffBase       = 2 * time.Second   // CDN 瞬时故障首次重试的延迟，随尝试次数指数增长
+	cdnBackoffMax               = 60 * time.Second  // CDN 瞬时故障的重试延迟上限
+	monitorRedialDelay          = 10 * time.Second  // 弹幕连接重拨前的停顿
+	finishGracePeriod           = 30 * time.Second  // 限定关停期间 FinishSession 脱离已取消运行 context 后仍可用的工作时长
+	pollJitterFraction          = 5                 // 回退轮询间隔的相对抖动幅度（间隔 +/- fraction/2）
 )
 
 // 写入 JSONL 的弹幕事件类型。
