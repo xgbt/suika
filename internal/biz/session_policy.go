@@ -12,8 +12,8 @@ package biz
 type sessionPolicy struct {
 	// enabled 是房间的录制启用门控。
 	enabled bool
-	// latest 是最近一次到达的房间信息。
-	latest *RoomInfo
+	// latestRoomInfo 是最近一次到达的房间信息。
+	latestRoomInfo *RoomInfo
 	// phase 是会话阶段：空闲、录制中、收尾中（已发送停止、尚未结束）。
 	phase sessionPhase
 	// resumeOnFinish 在"启用到达时会话正在收尾"置位：收尾完成后若最新
@@ -56,7 +56,7 @@ func newSessionPolicy(enabled bool) *sessionPolicy {
 // RoomInfoArrived 处理到达的房间信息——弹幕房间状态事件与回退轮询的共享
 // 入口。无论决策如何，最新房间信息总是更新。
 func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) policyDecision {
-	p.latest = info
+	p.latestRoomInfo = info
 	switch {
 	case info.Live && p.enabled && p.phase == phaseIdle:
 		p.phase = phaseRunning
@@ -77,12 +77,14 @@ func (p *sessionPolicy) EnabledFlipped(enabled bool) policyDecision {
 		return policyDecision{}
 	}
 	p.enabled = enabled
+
+	// 启用到达时会话空闲：若最新信息显示在播则立即开始录制。
 	if enabled {
 		switch p.phase {
 		case phaseIdle:
-			if p.latest != nil && p.latest.Live {
+			if p.latestRoomInfo != nil && p.latestRoomInfo.Live {
 				p.phase = phaseRunning
-				return policyDecision{kind: decisionStart, info: p.latest}
+				return policyDecision{kind: decisionStart, info: p.latestRoomInfo}
 			}
 		case phaseFinishing:
 			// 启用到达时会话正在收尾：收尾完成后若仍在播则恢复录制。
@@ -90,6 +92,8 @@ func (p *sessionPolicy) EnabledFlipped(enabled bool) policyDecision {
 		}
 		return policyDecision{}
 	}
+
+	// 禁用到达时会话正在录制或收尾：立即停止。
 	p.resumeOnFinish = false
 	if p.phase == phaseRunning {
 		p.phase = phaseFinishing
@@ -101,10 +105,10 @@ func (p *sessionPolicy) EnabledFlipped(enabled bool) policyDecision {
 // SessionFinished 处理会话协程结束：若恢复标志置位且最新信息仍显示在播
 // 则立即恢复录制（标志随之清除），否则回到空闲。
 func (p *sessionPolicy) SessionFinished() policyDecision {
-	if p.resumeOnFinish && p.latest != nil && p.latest.Live {
+	if p.resumeOnFinish && p.latestRoomInfo != nil && p.latestRoomInfo.Live {
 		p.resumeOnFinish = false
 		p.phase = phaseRunning
-		return policyDecision{kind: decisionStart, info: p.latest}
+		return policyDecision{kind: decisionStart, info: p.latestRoomInfo}
 	}
 	p.phase = phaseIdle
 	return policyDecision{}

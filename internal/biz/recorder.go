@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-kratos/kratos/v3/errors"
 	"github.com/go-kratos/kratos/v3/log"
+	"github.com/samber/lo"
 )
 
 var (
@@ -57,6 +58,7 @@ type RoomInfo struct {
 	LiveStartTime time.Time
 }
 
+// 调用 B 站接口获取的授予直播流清晰度信息
 type StreamQuality struct {
 	Qn   int32
 	Desc string
@@ -228,13 +230,17 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 // 随之优雅停止）；enabled 翻转不影响监控，只作为重评估信号送达监控协
 // 程，由其决定开始或停止录制。
 func (uc *RecorderUsecase) Run(ctx context.Context) error {
+
+	// 收尾上次运行遗留的转封装工作，若失败则记录错误并继续运行。
 	if err := uc.repo.RecoverPending(ctx); err != nil {
 		log.Error("recorder: recover pending remux", "err", err)
 	}
 
+	// 订阅 Room 注册表变更通知，返回一个通道和取消函数。
 	changes, unsubscribe := uc.registry.Subscribe()
 	defer unsubscribe()
 
+	// monitors 是当前活跃的房间监控协程集合；retired 是已停止的监控协程集合，等待收尾。
 	monitors := make(map[int64]*monitorHandle)
 	var retired []*monitorHandle
 	defer func() {
@@ -266,14 +272,14 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 // monitorHandle 是监督循环管理的一个房间监控协程句柄。roomChanged 是
 // 合并式重评估信号（如 enabled 翻转），由监督循环送达 watchRoom。
 type monitorHandle struct {
-	// enabled 记录最近一次 reconcile 时的启用状态，用于发现翻转。
+	// enabled 记录最近一次 reconcile 时，房间的监控是否启用。用于监督循环向监控协程投递重评估信号。
 	enabled     bool
 	roomChanged chan struct{}
 	cancel      context.CancelFunc
 	done        chan struct{}
 }
 
-// signal 发送一个 roomChanged 信号，若通道已满则丢弃。
+// signal 向 roomChanged 投递一个重评估信号，若通道已满则丢弃。
 func (h *monitorHandle) signal() {
 	select {
 	case h.roomChanged <- struct{}{}:
@@ -285,6 +291,7 @@ func (h *monitorHandle) signal() {
 // 移除已删除房间的监控（移入 retired 自行优雅收尾，不阻塞调和）；
 // enabled 翻转的房间投递重评估信号。
 func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*monitorHandle, retired *[]*monitorHandle) {
+
 	// 回收已完成收尾的被移除监控。
 	alive := (*retired)[:0]
 	for _, h := range *retired {
@@ -297,11 +304,10 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 	*retired = alive
 
 	rooms := uc.registry.Rooms()
-	want := make(map[int64]Room, len(rooms))
-	for _, room := range rooms {
-		want[room.RoomID] = room
-	}
+	// want 是当前注册表快照的房间集合，按 roomID 索引。
+	want := lo.KeyBy(rooms, func(r Room) int64 { return r.RoomID })
 
+	// 1. 停止并移除已删除房间的监控。
 	for roomID, h := range monitors {
 		if _, ok := want[roomID]; !ok {
 			h.cancel()
@@ -311,17 +317,20 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 	}
 
 	for roomID, room := range want {
-		h, running := monitors[roomID]
-		if !running {
-			h = uc.startMonitor(ctx, roomID)
-			h.enabled = room.Enabled
-			monitors[roomID] = h
+		handle, ok := monitors[roomID]
+
+		//  初次启动，或中途新增房间，启动监控协程并登记到 monitors。
+		if !ok {
+			handle = uc.startMonitor(ctx, roomID)
+			handle.enabled = room.Enabled
+			monitors[roomID] = handle
 			continue
 		}
-		// * 核心逻辑: 录制状态变动后，向monitors发送信号
-		if h.enabled != room.Enabled {
-			h.enabled = room.Enabled
-			h.signal()
+
+		// 已存在房间监控状态变动，发送重评估信号
+		if handle.enabled != room.Enabled {
+			handle.enabled = room.Enabled
+			handle.signal()
 		}
 	}
 }
@@ -381,8 +390,10 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 		var events <-chan *DanmakuEvent
 		var done chan struct{}
 		if active == nil {
+			// 当前无录制会话，持续消费弹幕事件以维持监控
 			events = danmakuConn.Events()
 		} else {
+			// 当前有录制会话，事件由录制会话协程直接消费；watchRoom 只监听其结束信号
 			done = active.done
 		}
 
@@ -390,13 +401,13 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 		case <-ctx.Done():
 			if active != nil {
 				active.cancel()
-				<-active.done
+				<-active.done // 等待录制会话协程自然结束，避免中途取消导致转封装失败
 			}
 			return nil
 		case <-events:
-			// 无活跃会话：丢弃
+			// 无LIVE 事件：丢弃
 		case <-done:
-			// 会话协程已结束；先置空句柄，再请策略裁决是否续录。
+			// 录制会话结束
 			active = uc.executeDecision(ctx, roomID, danmakuConn, nil, policy.SessionFinished())
 		case roomInfo := <-danmakuConn.RoomStateUpdates():
 			uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
@@ -468,6 +479,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 		return
 	}
 
+	// * 录制循环：持续拉流直到连接结束，然后重新探测直播状态，要么重连（新分段），要么结束会话并保留已录内容。
 	uc.recordLoop(ctx, roomID, session, events)
 
 	// 收尾脱离（可能已取消的）运行 context，保证关停期间转封装标记
@@ -480,6 +492,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 		uc.registry.FailRecording(roomID, err)
 		return
 	}
+
 	uc.registry.FinishRecording(roomID)
 }
 
