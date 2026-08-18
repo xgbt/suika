@@ -1,6 +1,6 @@
 # Spec: sessionPolicy — one home for the session start/stop policy
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 

@@ -369,11 +369,20 @@ func (c *fakeDanmakuConn) isClosed() bool {
 	}
 }
 
-// watchClient 是完全经由弹幕连接驱动的 LiveClient；状态探测恒报未开播，
-// 测试只由控制事件推动。
-type watchClient struct{ conn DanmakuConn }
+// watchClient 是完全经由弹幕连接驱动的 LiveClient；状态探测默认恒报未
+// 开播，pollInfo 非 nil 时固定返回该信息（回退轮询接线测试用），
+// pollCalls 计数探测次数。
+type watchClient struct {
+	conn      DanmakuConn
+	pollInfo  *RoomInfo
+	pollCalls atomic.Int64
+}
 
 func (c *watchClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, error) {
+	c.pollCalls.Add(1)
+	if c.pollInfo != nil {
+		return c.pollInfo, nil
+	}
 	return &RoomInfo{RoomID: roomID}, nil
 }
 
@@ -501,6 +510,41 @@ func TestWatchRoomGatesSessionsOnEnabled(t *testing.T) {
 	<-watchDone
 }
 
+// TestWatchRoomFallbackPollStartsSession 验证回退轮询的端到端接线：弹幕
+// 通道全程沉默，轮询定时器（经同一延迟旋钮模式压缩至毫秒级）触发房间信
+// 息拉取，信息投递给会话策略后启动会话。
+func TestWatchRoomFallbackPollStartsSession(t *testing.T) {
+	repo := &pumpBlockRepo{}
+	conn := &fakeDanmakuConn{
+		events:           make(chan *DanmakuEvent),
+		roomStateUpdates: make(chan *RoomInfo),
+	}
+	lc := &watchClient{conn: conn, pollInfo: liveInfo(42, true)}
+	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
+		u.pollInterval = 5 * time.Millisecond
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		if err := uc.watchRoom(ctx, make(chan struct{}, 1), 42); err != nil {
+			t.Errorf("watchRoom: %v", err)
+		}
+	}()
+
+	// 弹幕房间状态事件一个不发：会话只能由"定时器 → 拉取 → 策略"路径启动。
+	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+		t.Fatal("fallback poll did not start the session")
+	}
+	if lc.pollCalls.Load() == 0 {
+		t.Fatal("session started without any fallback poll call")
+	}
+
+	cancel()
+	<-watchDone
+}
 // gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的转封装收尾，
 // 让测试可以稳定命中"会话正在停止中"的窗口。
 type gatedFinishRepo struct {

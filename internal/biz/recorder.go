@@ -363,11 +363,13 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan s
 	}
 }
 
-// watchRoom 持有一条弹幕连接：把控制事件翻译成会话的开始/结束，并运行
-// 回退轮询。会话是否启动受房间 enabled 门控；roomChanged 信号触发对该
-// 门控的重评估——禁用立即停止录制，启用时若在播则立即开始录制，但监控
-// 本身不受影响。无活跃会话时事件被直接丢弃；活跃会话的 RecordSession
-// 直接消费事件。
+// watchRoom 是单个房间的监控分发器：持有弹幕连接、回退轮询定时器和会话
+// 协程的上下文，本身不含任何会话启停判断。启停策略集中在 sessionPolicy：
+// 各 select 分支把输入投递给策略（房间信息到达前先应用到注册表），并执
+// 行返回的决策——Start 启动会话协程，Stop 取消活跃会话。会话是否启动受
+// 房间 enabled 门控；roomChanged 信号只承担重评估的投递，监控本身不受影
+// 响。无活跃会话时弹幕事件被直接丢弃；活跃会话的 RecordSession 直接消费
+// 事件。
 func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
 
 	// 1. 弹幕连接
@@ -381,13 +383,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
 	defer poll.Stop()
 
-	enabled := uc.registry.Room(roomID).Enabled
-
-	// latestRoomInfo 记录最近一次的房间信息，供启用信号到达时判断当前是否在播。
-	var latestRoomInfo *RoomInfo
-
-	// resumeOnFinish 在"启用到达时会话正在停止中"置位：会话收尾完成后若仍在播则恢复录制。
-	resumeOnFinish := false
+	policy := newSessionPolicy(uc.registry.Room(roomID).Enabled)
 	var active *sessionHandle
 	for {
 		// 3. 事件分发
@@ -409,64 +405,41 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 		case <-events:
 			// 无活跃会话：丢弃
 		case <-done:
-			active = nil
-			if resumeOnFinish && latestRoomInfo != nil && latestRoomInfo.Live {
-				resumeOnFinish = false
-
-				// 会话收尾完成后仍在播，立即恢复录制
-				active = uc.launchSession(ctx, roomID, latestRoomInfo, danmakuConn.Events())
-			}
+			// 会话协程已结束；先置空句柄，再请策略裁决是否续录。
+			active = uc.executeDecision(ctx, roomID, danmakuConn, nil, policy.SessionFinished())
 		case roomInfo := <-danmakuConn.RoomStateUpdates():
-			latestRoomInfo = roomInfo
 			uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-			if roomInfo.Live && enabled && active == nil {
-				active = uc.launchSession(ctx, roomID, roomInfo, danmakuConn.Events())
-			} else if !roomInfo.Live && active != nil {
-				active.cancel()
-			}
+			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
 		case <-poll.C:
 			roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
 			if err != nil {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
 				uc.registry.NoteError(roomID, err)
 			} else {
-				latestRoomInfo = roomInfo
 				uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-				if roomInfo.Live && enabled && active == nil {
-					active = uc.launchSession(ctx, roomID, roomInfo, danmakuConn.Events())
-				} else if !roomInfo.Live && active != nil {
-					active.cancel()
-				}
+				active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
 			}
 			poll.Reset(jitterDuration(uc.pollInterval, pollJitterFraction))
-		// 管理后台通过 API 修改房间监控状态
 		case <-roomChanged:
-
-			// 获取内存中【最新】的 Room 对象
+			// 取得注册表中最新的启用状态后投递给策略；值未变时策略自
+			// 行吸收为无操作决策。
 			room := uc.registry.Room(roomID)
-			// 与上次的 enabled 状态比较，若没有变化, 则继续等待
-			if room.Enabled == enabled {
-				continue
-			}
-
-			// 房间监控状态发生变化
-			enabled = room.Enabled
-			if enabled { // 启用录制
-				if active == nil {
-					if latestRoomInfo != nil && latestRoomInfo.Live {
-						active = uc.launchSession(ctx, roomID, latestRoomInfo, danmakuConn.Events())
-					}
-				} else { // active !=nil, 录制 session 还存在，正在收尾中,收尾完成后再决定是否恢复
-					resumeOnFinish = true
-				}
-			} else { // 停止录制
-				resumeOnFinish = false
-				if active != nil {
-					active.cancel()
-				}
-			}
+			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.EnabledFlipped(room.Enabled))
 		}
 	}
+}
+
+// executeDecision 执行会话策略的决策并返回（可能更新的）活跃会话句柄：
+// Start 以决策携带的房间信息启动会话协程；Stop 取消活跃会话（策略保证
+// Stop 只在会话录制中产生）；None 不做任何事。
+func (uc *RecorderUsecase) executeDecision(ctx context.Context, roomID int64, conn DanmakuConn, active *sessionHandle, decision policyDecision) *sessionHandle {
+	switch decision.kind {
+	case decisionStart:
+		return uc.launchSession(ctx, roomID, decision.info, conn.Events())
+	case decisionStop:
+		active.cancel()
+	}
+	return active
 }
 
 // launchSession 启动录制会话协程，独占完整的录制循环、FinishSession和槽位释放。
