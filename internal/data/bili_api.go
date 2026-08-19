@@ -183,6 +183,7 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 	return &biz.StreamHandle{URL: streamURL, Quality: quality, Body: resp.Body}, nil
 }
 
+// selectStreamURL 调用 B 站接口获取房间的播放信息，并选择最优 FLV 流地址。
 func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string, biz.StreamQuality, error) {
 	endpoint := liveAPIBase + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
 		strconv.FormatInt(roomID, 10) +

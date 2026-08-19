@@ -552,6 +552,7 @@ type danmuInfo struct {
 	buvid     string
 }
 
+// danmuInfo 返回房间的弹幕认证信息：token、主机列表与 buvid3。
 func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, error) {
 	var info *danmuInfo
 	attempt := func(ctx context.Context) (int, error) {
@@ -660,7 +661,7 @@ func (lc *liveClient) danmuBuvid(ctx context.Context) string {
 }
 
 func cookieValue(cookieHeader, name string) string {
-	for _, item := range strings.Split(cookieHeader, ";") {
+	for item := range strings.SplitSeq(cookieHeader, ";") {
 		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
 		if len(parts) == 2 && parts[0] == name {
 			return parts[1]
