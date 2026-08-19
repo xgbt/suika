@@ -31,9 +31,6 @@ type riskCall struct {
 	// err==nil）视为整体成功。可选，目前仅弹幕取 token 一路使用
 	// （旧版 getConf，无需 WBI 签名）。
 	fallback func(ctx context.Context) (code int, err error)
-	// retryOnHTTPRisk 决定 HTTP 层风控（412/403/429）是否刷新并重试
-	// 一次。第一阶段用于逐端点保持现状；统一策略后删除。
-	retryOnHTTPRisk bool
 }
 
 // riskGuard 是所有 B 站 API 流量的风控编排模块：冷却闸门、412/-352
@@ -53,15 +50,16 @@ func newRiskGuard(refresh func()) *riskGuard {
 }
 
 // call 执行一次受风控保护的 API 调用：冷却检查 → 尝试 → 风控重试 →
-// 兜底 → 分类。风控类失败记入冷却并包装为 biz.ErrRiskControl；
-// code==0 时清除冷却。业务码非零且非风控时原样返回，由端点翻译。
+// 兜底 → 分类。HTTP 层风控（412/403/429）与 -352 一律刷新并重试一次；
+// 风控类失败记入冷却并包装为 biz.ErrRiskControl；code==0 时清除冷却。
+// 业务码非零且非风控时原样返回，由端点翻译。
 func (g *riskGuard) call(ctx context.Context, roomID int64, rc riskCall) (int, error) {
 	if err := g.checkCooldown(roomID); err != nil {
 		return 0, err
 	}
 
 	code, err := rc.attempt(ctx)
-	if err != nil && stderrors.Is(err, errHTTPRiskControl) && rc.retryOnHTTPRisk {
+	if err != nil && stderrors.Is(err, errHTTPRiskControl) {
 		log.Warn("http-layer risk control, refreshing and retrying once", "op", rc.op, "room", roomID)
 		g.refresh()
 		code, err = rc.attempt(ctx)

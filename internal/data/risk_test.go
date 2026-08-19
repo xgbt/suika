@@ -102,11 +102,11 @@ func TestRiskGuardPlainErrorPassesThrough(t *testing.T) {
 	}
 }
 
-func TestRiskGuardHTTPRiskRetryEnabled(t *testing.T) {
+func TestRiskGuardHTTPRiskRetriesOnce(t *testing.T) {
 	g, refreshes := newTestGuard()
 	attempt := &scripted{steps: []scriptStep{{err: httpRiskErr(412)}, {code: 0}}}
 
-	code, err := g.call(context.Background(), 1, riskCall{op: "t", attempt: attempt.run, retryOnHTTPRisk: true})
+	code, err := g.call(context.Background(), 1, riskCall{op: "t", attempt: attempt.run})
 	if err != nil || code != 0 {
 		t.Fatalf("call = (%d, %v), want success after retry", code, err)
 	}
@@ -119,7 +119,7 @@ func TestRiskGuardHTTPRiskRetryExhausted(t *testing.T) {
 	g, refreshes := newTestGuard()
 	attempt := &scripted{steps: []scriptStep{{err: httpRiskErr(412)}}}
 
-	_, err := g.call(context.Background(), 1, riskCall{op: "t", attempt: attempt.run, retryOnHTTPRisk: true})
+	_, err := g.call(context.Background(), 1, riskCall{op: "t", attempt: attempt.run})
 	if !stderrors.Is(err, biz.ErrRiskControl) {
 		t.Fatalf("err = %v, want biz.ErrRiskControl", err)
 	}
@@ -128,22 +128,6 @@ func TestRiskGuardHTTPRiskRetryExhausted(t *testing.T) {
 	}
 	if err := g.checkCooldown(1); err == nil {
 		t.Fatal("cooldown expected after exhausted risk retry")
-	}
-}
-
-func TestRiskGuardHTTPRiskFailFastDisabled(t *testing.T) {
-	g, refreshes := newTestGuard()
-	attempt := &scripted{steps: []scriptStep{{err: httpRiskErr(412)}}}
-
-	_, err := g.call(context.Background(), 1, riskCall{op: "t", attempt: attempt.run})
-	if !stderrors.Is(err, biz.ErrRiskControl) {
-		t.Fatalf("err = %v, want biz.ErrRiskControl", err)
-	}
-	if attempt.calls != 1 || refreshes.Load() != 0 {
-		t.Fatalf("calls=%d refreshes=%d, want 1/0 (fail-fast)", attempt.calls, refreshes.Load())
-	}
-	if err := g.checkCooldown(1); err == nil {
-		t.Fatal("cooldown expected on fail-fast risk error")
 	}
 }
 
@@ -294,7 +278,7 @@ func TestRiskGuardConcurrentUse(t *testing.T) {
 			attempt := &scripted{steps: []scriptStep{{err: httpRiskErr(412)}, {code: 0}}}
 			for i := 0; i < 50; i++ {
 				attempt.calls = 0
-				_, _ = g.call(context.Background(), room, riskCall{op: "t", attempt: attempt.run, retryOnHTTPRisk: true})
+				_, _ = g.call(context.Background(), room, riskCall{op: "t", attempt: attempt.run})
 			}
 		}(room)
 	}

@@ -127,7 +127,7 @@ func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomI
 		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + strconv.FormatInt(roomID, 10)
 		return resp.Code, lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp)
 	}
-	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getInfoByRoom", attempt: attempt, retryOnHTTPRisk: true})
+	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getInfoByRoom", attempt: attempt})
 	if err != nil {
 		return nil, err
 	}
