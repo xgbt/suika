@@ -553,11 +553,8 @@ type danmuInfo struct {
 }
 
 func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, error) {
-	if err := lc.checkRiskCooldown(roomID); err != nil {
-		return nil, err
-	}
-
-	query := func() (int, *danmuInfo, error) {
+	var info *danmuInfo
+	attempt := func(ctx context.Context) (int, error) {
 		cookie := lc.data.injectAntiRisk(ctx)
 		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getDanmuInfo?id=" + strconv.FormatInt(roomID, 10) + "&type=0"
 		var raw struct {
@@ -572,47 +569,41 @@ func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, 
 			} `json:"data"`
 		}
 		if err := lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &raw); err != nil {
-			return 0, nil, err
+			return 0, err
 		}
-		info := &danmuInfo{token: raw.Data.Token}
+		parsed := &danmuInfo{token: raw.Data.Token}
 		for _, host := range raw.Data.HostList {
 			if host.Host != "" && host.WSSPort > 0 {
-				info.addresses = append(info.addresses, fmt.Sprintf("wss://%s:%d/sub", host.Host, host.WSSPort))
+				parsed.addresses = append(parsed.addresses, fmt.Sprintf("wss://%s:%d/sub", host.Host, host.WSSPort))
 			}
 		}
-		return raw.Code, info, nil
+		info = parsed
+		return raw.Code, nil
+	}
+	// 旧版 getConf 接口不需要 WBI 签名，双重 -352 时兜底。
+	var confInfo *danmuInfo
+	fallback := func(ctx context.Context) (int, error) {
+		conf, err := lc.danmuConf(ctx, roomID)
+		if err != nil {
+			return 0, err
+		}
+		if conf.token == "" {
+			return 0, stderrors.New("legacy getConf returned empty token")
+		}
+		confInfo = conf
+		return 0, nil
 	}
 
-	code, info, err := query()
+	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getDanmuInfo", attempt: attempt, fallback: fallback})
 	if err != nil {
-		if stderrors.Is(err, errHTTPRiskControl) {
-			lc.noteRiskFailure(roomID)
-			return nil, fmt.Errorf("%w: %v", biz.ErrRiskControl, err)
-		}
 		return nil, err
 	}
-	if code == -352 {
-		log.Warn("getDanmuInfo risk control -352, refreshing and retrying", "room", roomID)
-		lc.data.refreshRisk()
-		code, info, err = query()
-		if err != nil {
-			return nil, err
-		}
-	}
-	if code == -352 {
-		// 旧版 getConf 接口不需要 WBI 签名。
-		log.Warn("getDanmuInfo still -352, trying legacy getConf", "room", roomID)
-		if confInfo, confErr := lc.danmuConf(ctx, roomID); confErr == nil && confInfo.token != "" {
-			lc.noteSuccess(roomID)
-			return confInfo, nil
-		}
-		lc.noteRiskFailure(roomID)
-		return nil, fmt.Errorf("%w: room_id=%d", errRiskControl352, roomID)
+	if confInfo != nil {
+		return confInfo, nil
 	}
 	if code != 0 {
 		return nil, fmt.Errorf("getDanmuInfo code=%d", code)
 	}
-	lc.noteSuccess(roomID)
 
 	if len(info.addresses) == 0 {
 		info.addresses = []string{defaultDanmakuServer}

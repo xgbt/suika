@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"suika/internal/biz"
@@ -32,9 +31,6 @@ var (
 	errRiskControl352  = stderrors.New("bilibili -352 risk control")
 	errHTTPRiskControl = stderrors.New("bilibili http-layer risk control")
 )
-
-// riskCooldownLadder 风控被拒后，递增的冷却时长
-var riskCooldownLadder = []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute}
 
 // qnNames 将清晰度编号映射为展示名称（API 未返回 g_qn_desc 时兜底）。
 var qnNames = map[int32]string{
@@ -109,115 +105,34 @@ func (d *Data) fetchJSON(ctx context.Context, endpoint string, roomID int64, coo
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-type riskCooldown struct {
-	failures int
-	until    time.Time
-}
-
-// liveClient 实现所有 B 站 API 与弹幕 websocket 流量，
-// 包括风控重试和按房间的冷却。
+// liveClient 实现所有 B 站 API 与弹幕 websocket 流量；
+// 风控重试与按房间的冷却由 riskGuard 统一编排。
 type liveClient struct {
-	data      *Data
-	mu        sync.Mutex
-	cooldowns map[int64]*riskCooldown // key roomID
+	data *Data
+	risk *riskGuard
 }
 
 func NewLiveClient(data *Data) biz.LiveClient {
 	return &liveClient{
-		data:      data,
-		cooldowns: make(map[int64]*riskCooldown),
+		data: data,
+		risk: newRiskGuard(data.refreshRisk),
 	}
-}
-
-// checkRiskCooldown 检查该房间的 API 请求是否进入冷却期；若是则返回 biz.ErrRiskControl。
-func (lc *liveClient) checkRiskCooldown(roomID int64) error {
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-
-	cd := lc.cooldowns[roomID]
-	if cd != nil && time.Now().Before(cd.until) {
-		return fmt.Errorf("%w: room %d cooling down until %s", biz.ErrRiskControl, roomID, cd.until.Format(time.RFC3339))
-	}
-
-	return nil
-}
-
-// noteRiskFailure 记录该房间的 API 请求被风控拒绝，增加冷却时长。
-func (lc *liveClient) noteRiskFailure(roomID int64) {
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-
-	cd := lc.cooldowns[roomID]
-	if cd == nil {
-		cd = &riskCooldown{}
-		lc.cooldowns[roomID] = cd
-	}
-	cd.failures++
-	idx := min(cd.failures-1, len(riskCooldownLadder)-1)
-	cd.until = time.Now().Add(riskCooldownLadder[idx])
-	log.Warn("room risk-control cooldown started", "room", roomID, "failures", cd.failures, "until", cd.until.Format(time.RFC3339))
-}
-
-// noteSuccess 记录该房间的 API 请求成功，清除冷却状态。
-func (lc *liveClient) noteSuccess(roomID int64) {
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	delete(lc.cooldowns, roomID)
-}
-
-func (lc *liveClient) wrapRiskErr(roomID int64, err error) error {
-	if !stderrors.Is(err, errRiskControl352) && !stderrors.Is(err, errHTTPRiskControl) {
-		return err
-	}
-	lc.noteRiskFailure(roomID)
-	return fmt.Errorf("%w: %v", biz.ErrRiskControl, err)
 }
 
 // GetRoomInfo 经 getInfoByRoom 返回房间当前的开播状态。
 func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
-	if err := lc.checkRiskCooldown(roomID); err != nil {
-		return nil, err
-	}
-
-	info, err := lc.roomInfo(ctx, roomID)
-	if err != nil {
-		return nil, lc.wrapRiskErr(roomID, err)
-	}
-
-	lc.noteSuccess(roomID)
-	return info, nil
-}
-
-// roomInfo 调用 API 获取房间信息，处理 -352 风控。
-func (lc *liveClient) roomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	var resp roomInfoResponse
-	query := func() error {
+	attempt := func(ctx context.Context) (int, error) {
 		cookie := lc.data.injectAntiRisk(ctx)
 		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + strconv.FormatInt(roomID, 10)
-		return lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp)
+		return resp.Code, lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp)
 	}
-	if err := query(); err != nil {
-		if !stderrors.Is(err, errHTTPRiskControl) {
-			return nil, err
-		}
-		log.Warn("getInfoByRoom http-layer risk control, refreshing and retrying once", "room", roomID)
-		lc.data.refreshRisk()
-		if err = query(); err != nil {
-			return nil, err
-		}
+	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getInfoByRoom", attempt: attempt, retryOnHTTPRisk: true})
+	if err != nil {
+		return nil, err
 	}
-	if resp.Code == riskCode352 {
-		log.Warn("getInfoByRoom risk control -352, refreshing and retrying once", "room", roomID)
-		lc.data.refreshRisk()
-		if err := query(); err != nil {
-			return nil, err
-		}
-	}
-	if resp.Code == riskCode352 {
-		return nil, fmt.Errorf("%w: room_id=%d", errRiskControl352, roomID)
-	}
-	if resp.Code != 0 {
-		return nil, fmt.Errorf("getInfoByRoom code=%d message=%s", resp.Code, resp.Message)
+	if code != 0 {
+		return nil, fmt.Errorf("getInfoByRoom code=%d message=%s", code, resp.Message)
 	}
 
 	room := resp.Data.RoomInfo
@@ -240,16 +155,12 @@ func (lc *liveClient) roomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo
 
 // OpenStream 选择最优 FLV 流地址并打开读取。打开/读取失败若看似 CDN
 // 侧，则包装为 biz.ErrStreamTransient，供决策树重新选择流地址。
+// API 侧的冷却与风控重试在 selectStreamURL 内经 riskGuard 完成。
 func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.StreamHandle, error) {
-	if err := lc.checkRiskCooldown(roomID); err != nil {
-		return nil, err
-	}
-
 	streamURL, quality, err := lc.selectStreamURL(ctx, roomID)
 	if err != nil {
-		return nil, lc.wrapRiskErr(roomID, err)
+		return nil, err
 	}
-	lc.noteSuccess(roomID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
 	if err != nil {
@@ -278,30 +189,28 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 		"&protocol=0,1&format=0,1,2&codec=0,1&qn=" + strconv.Itoa(lc.data.qualityQN) + "&platform=web"
 
 	var resp playInfoResponse
-	fetch := func() error {
+	attempt := func(ctx context.Context) (int, error) {
 		cookie := lc.data.injectAntiRisk(ctx)
-		return lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp)
+		return resp.Code, lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &resp)
 	}
-	if err := fetch(); err != nil {
+	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getRoomPlayInfo", attempt: attempt})
+	if err != nil {
 		return "", biz.StreamQuality{}, err
 	}
-	if resp.Code == riskCode352 {
-		lc.data.refreshRisk()
-		if err := fetch(); err != nil {
-			return "", biz.StreamQuality{}, err
-		}
-	}
-	if resp.Code == riskCode352 {
-		return "", biz.StreamQuality{}, fmt.Errorf("%w: room_id=%d", errRiskControl352, roomID)
-	}
-	if resp.Code != 0 {
-		return "", biz.StreamQuality{}, fmt.Errorf("getRoomPlayInfo code=%d message=%s", resp.Code, resp.Message)
+	if code != 0 {
+		return "", biz.StreamQuality{}, fmt.Errorf("getRoomPlayInfo code=%d message=%s", code, resp.Message)
 	}
 
+	return pickFLVStream(resp.Data.PlayURLInfo.PlayURL, lc.data.qualityQN, roomID)
+}
+
+// pickFLVStream 从播放信息中挑选最优 FLV 流地址与清晰度：AVC 编码优先，
+// 仅收 FLV。清晰度以平台实际授予为准（cookie 过期会失去原画），
+// 即使低于请求档也接受。
+func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.StreamQuality, error) {
 	bestURL := ""
 	bestPriority := -1
-	playURL := resp.Data.PlayURLInfo.PlayURL
-	for _, stream := range playURL.Stream {
+	for _, stream := range pu.Stream {
 		for _, format := range stream.Format {
 			for _, codec := range format.Codec {
 				for _, urlInfo := range codec.URLInfo {
@@ -327,21 +236,19 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 		return "", biz.StreamQuality{}, fmt.Errorf("no FLV stream candidate for room %d", roomID)
 	}
 
-	// 即使授予的清晰度低于请求的 qn 也接受（cookie 过期会失去原画），
-	// 并记入 meta。
-	granted := playURL.CurrentQn
+	granted := pu.CurrentQn
 	if granted == 0 {
-		granted = lc.data.qualityQN
+		granted = requestedQN
 	}
 	desc := qnNames[int32(granted)]
-	for _, qd := range playURL.GQnDesc {
+	for _, qd := range pu.GQnDesc {
 		if qd.Qn == granted {
 			desc = qd.Desc
 			break
 		}
 	}
-	if int32(granted) != int32(lc.data.qualityQN) {
-		log.Warn("stream quality downgraded", "room", roomID, "requested", lc.data.qualityQN, "granted", granted)
+	if granted != requestedQN {
+		log.Warn("stream quality downgraded", "room", roomID, "requested", requestedQN, "granted", granted)
 	}
 	return bestURL, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
 }
@@ -390,26 +297,39 @@ type playInfoResponse struct {
 	Message string `json:"message"`
 	Data    struct {
 		PlayURLInfo struct {
-			PlayURL struct {
-				CurrentQn int `json:"current_qn"`
-				GQnDesc   []struct {
-					Qn   int    `json:"qn"`
-					Desc string `json:"desc"`
-				} `json:"g_qn_desc"`
-				Stream []struct {
-					Format []struct {
-						FormatName string `json:"format_name"`
-						Codec      []struct {
-							CodecName string `json:"codec_name"`
-							BaseURL   string `json:"base_url"`
-							URLInfo   []struct {
-								Host  string `json:"host"`
-								Extra string `json:"extra"`
-							} `json:"url_info"`
-						} `json:"codec"`
-					} `json:"format"`
-				} `json:"stream"`
-			} `json:"playurl"`
+			PlayURL playURL `json:"playurl"`
 		} `json:"playurl_info"`
 	} `json:"data"`
+}
+
+// playURL 是 getRoomPlayInfo 返回的流地址清单。
+type playURL struct {
+	CurrentQn int          `json:"current_qn"`
+	GQnDesc   []qnDesc     `json:"g_qn_desc"`
+	Stream    []streamLine `json:"stream"`
+}
+
+type qnDesc struct {
+	Qn   int    `json:"qn"`
+	Desc string `json:"desc"`
+}
+
+type streamLine struct {
+	Format []formatLine `json:"format"`
+}
+
+type formatLine struct {
+	FormatName string      `json:"format_name"`
+	Codec      []codecLine `json:"codec"`
+}
+
+type codecLine struct {
+	CodecName string    `json:"codec_name"`
+	BaseURL   string    `json:"base_url"`
+	URLInfo   []hostURL `json:"url_info"`
+}
+
+type hostURL struct {
+	Host  string `json:"host"`
+	Extra string `json:"extra"`
 }

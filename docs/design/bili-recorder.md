@@ -103,8 +103,11 @@ internal/data/
                          ListQuery → SQL 等值过滤（固定 room_id ASC 排序）、
                          重复 room_id → ErrRoomAlreadyExists（sqlite 主键约束）
   bili_api.go            liveClient 实现 biz.LiveClient：GetRoomInfo / OpenStream /
-                         DanmakuConn 构造；getRoomPlayInfo 候选排序与降档、
-                         风控门/阶梯冷却、-352 刷新重试
+                         DanmakuConn 构造；getRoomPlayInfo 候选排序与降档
+                         （pickFLVStream 纯函数）；风控编排统一委托 riskGuard
+  risk.go                riskGuard：全部 B 站 API 流量的风控编排深模块——
+                         冷却闸门、412/-352 刷新重试、兜底调用、错误分类与
+                         每房间阶梯冷却；端点只构造请求、解析响应、翻译业务码
   wbi.go                 WBI 签名（nav API 取密钥，1h 缓存，w_rid/wts）
   buvid.go               buvid3/buvid4 指纹（spi，24h 缓存，cookie 注入替换语义）
   danmaku.go             danmakuConn 实现 biz.DanmakuConn：二进制包协议、认证、
@@ -519,14 +522,18 @@ img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；�
 再追加（B 站取同名第一个，替换语义保证新指纹生效）。buvid 获取失败
 降级为裸 cookie。
 
-**-352 / HTTP 风控处理**：
+**-352 / HTTP 风控处理**（统一由 `riskGuard` 编排，`risk.go`）：
 
-1. 首次命中 → `refreshRisk()`（强刷 WBI 密钥 + 作废 buvid 缓存）→ 原请求重试一次。
-2. `getDanmuInfo` 二次仍 -352 → 降级旧接口 `getConf`（无 WBI）。
-3. 仍失败 → 该房间进**阶梯冷却** 5min → 10min → 20min（按连续失败次数
-   进阶，封顶 20min）；冷却期内 `enterRiskGate` 直接拒绝该房间的
+1. -352 命中 → `refreshRisk()`（强刷 WBI 密钥 + 作废 buvid 缓存）→ 原请求重试一次。
+2. HTTP 层风控（412/403/429）：`getInfoByRoom` 刷新重试一次；
+   `getRoomPlayInfo` / `getDanmuInfo` 目前直接进冷却
+   （`riskCall.retryOnHTTPRisk` 分支，后续统一为刷新重试）。
+3. `getDanmuInfo` 二次仍 -352 → 降级旧接口 `getConf`（无 WBI，guard 的
+   可选 fallback 钩子）。
+4. 仍失败 → 该房间进**阶梯冷却** 5min → 10min → 20min（按连续失败次数
+   进阶，封顶 20min）；冷却期内 guard 直接拒绝该房间的
    GetRoomInfo/OpenStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
-4. 任一 API 成功 → `noteSuccess` 清零该房间冷却。
+5. 任一 API 成功 → `noteSuccess` 清零该房间冷却。
 
 cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并记录 meta
 （运维动作：换 cookie）。无 cookie 也能运行（启动记 warn），但更易触发风控。
