@@ -4,6 +4,7 @@ go 1.25.12
 
 require (
 	github.com/andybalholm/brotli v1.2.2
+	github.com/go-resty/resty/v2 v2.17.2
 	github.com/google/wire v0.7.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.22

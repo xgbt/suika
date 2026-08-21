@@ -27,6 +27,7 @@ export interface Room {
   record_status: RecordStatus;
   current_file: string;
   bytes_written: number;
+  download_speed_bps: number;
   session_started_at?: string;
   last_error: string;
   create_time?: string;

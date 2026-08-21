@@ -197,6 +197,9 @@ components:
                     type: string
                 roomTitle:
                     type: string
+                downloadSpeedBps:
+                    readOnly: true
+                    type: string
         room.v1.UpdateRoomRequest:
             required:
                 - room

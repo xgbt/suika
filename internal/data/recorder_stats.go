@@ -12,6 +12,7 @@ import (
 type pumpStats struct {
 	file  atomic.Value // string
 	bytes atomic.Int64
+	speed atomic.Int64
 }
 
 // SessionStats 读取 pumpStats 的原子字段，返回 SessionStats
@@ -24,7 +25,7 @@ func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.Sessi
 		return nil, nil
 	}
 	file, _ := ps.file.Load().(string)
-	return &biz.SessionStats{CurrentFile: file, BytesWritten: ps.bytes.Load()}, nil
+	return &biz.SessionStats{CurrentFile: file, BytesWritten: ps.bytes.Load(), DownloadBPS: ps.speed.Load()}, nil
 }
 
 // statsFor 返回指定房间的 pumpStats

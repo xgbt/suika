@@ -87,6 +87,7 @@ message Room {
   google.protobuf.Timestamp update_time = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
   string streamer_name = 12;
   string room_title = 13;
+  int64 download_speed_bps = 14 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 message CreateRoomRequest {

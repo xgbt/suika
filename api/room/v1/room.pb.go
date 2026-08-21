@@ -153,6 +153,7 @@ type Room struct {
 	UpdateTime       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
 	StreamerName     string                 `protobuf:"bytes,12,opt,name=streamer_name,json=streamerName,proto3" json:"streamer_name,omitempty"`
 	RoomTitle        string                 `protobuf:"bytes,13,opt,name=room_title,json=roomTitle,proto3" json:"room_title,omitempty"`
+	DownloadSpeedBps int64                  `protobuf:"varint,14,opt,name=download_speed_bps,json=downloadSpeedBps,proto3" json:"download_speed_bps,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -269,6 +270,13 @@ func (x *Room) GetRoomTitle() string {
 		return x.RoomTitle
 	}
 	return ""
+}
+
+func (x *Room) GetDownloadSpeedBps() int64 {
+	if x != nil {
+		return x.DownloadSpeedBps
+	}
+	return 0
 }
 
 type CreateRoomRequest struct {
@@ -771,7 +779,7 @@ var File_room_v1_room_proto protoreflect.FileDescriptor
 
 const file_room_v1_room_proto_rawDesc = "" +
 	"\n" +
-	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc2\x04\n" +
+	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf5\x04\n" +
 	"\x04Room\x12\x17\n" +
 	"\aroom_id\x18\x01 \x01(\x03R\x06roomId\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x129\n" +
@@ -790,7 +798,8 @@ const file_room_v1_room_proto_rawDesc = "" +
 	"updateTime\x12#\n" +
 	"\rstreamer_name\x18\f \x01(\tR\fstreamerName\x12\x1d\n" +
 	"\n" +
-	"room_title\x18\r \x01(\tR\troomTitle\";\n" +
+	"room_title\x18\r \x01(\tR\troomTitle\x121\n" +
+	"\x12download_speed_bps\x18\x0e \x01(\x03B\x03\xe0A\x03R\x10downloadSpeedBps\";\n" +
 	"\x11CreateRoomRequest\x12&\n" +
 	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomB\x03\xe0A\x02R\x04room\"7\n" +
 	"\x12CreateRoomResponse\x12!\n" +

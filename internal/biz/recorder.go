@@ -110,6 +110,7 @@ type SessionResult struct {
 type SessionStats struct {
 	CurrentFile  string // 当前正在写入的分段文件名（可能为空）
 	BytesWritten int64  // 当前分段已写入的字节数
+	DownloadBPS  int64  // 当前下载速度（字节/秒）
 }
 
 // DanmakuConn 是一个房间的常驻弹幕 websocket，同时服务于开播检测

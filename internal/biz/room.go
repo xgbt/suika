@@ -50,6 +50,7 @@ type RoomRuntime struct {
 	RecordStatus     RecordStatus // 运行时状态: 录制状态
 	CurrentFile      string       // 录制会话进度: 当前录制文件
 	BytesWritten     int64        // 录制会话进度: 已写入字节数
+	DownloadSpeedBPS int64        // 录制会话进度: 当前下载速度（字节/秒）
 	SessionStartedAt time.Time    // 录制会话进度: 会话开始时间
 	LastError        string       // 录制会话进度: 最后错误信息
 }
@@ -156,6 +157,7 @@ func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime
 		if err == nil && stats != nil {
 			runtime.CurrentFile = stats.CurrentFile
 			runtime.BytesWritten = stats.BytesWritten
+			runtime.DownloadSpeedBPS = stats.DownloadBPS
 		}
 	}
 	return runtime

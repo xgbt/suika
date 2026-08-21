@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 // buvidTTL 是 finger/spi 指纹的缓存有效期。
@@ -25,13 +26,13 @@ type cachedBuvid struct {
 // buvidStore 获取并缓存 B 站设备指纹（buvid3/buvid4），注入 cookie
 // 头以通过 -352 风控。移植自 hikami-go/internal/biliutil/buvid.go。
 type buvidStore struct {
-	httpClient *http.Client
+	httpClient *resty.Client
 	spiURL     string
 	cache      map[string]cachedBuvid
 	mu         sync.Mutex
 }
 
-func newBuvidStore(httpc *http.Client) *buvidStore {
+func newBuvidStore(httpc *resty.Client) *buvidStore {
 	return &buvidStore{
 		httpClient: httpc,
 		spiURL:     defaultBuvidSpiURL,
@@ -52,24 +53,21 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 	}
 	s.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.spiURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("User-Agent", biliUserAgent)
-	req.Header.Set("Referer", "https://www.bilibili.com")
-	req.Header.Set("Origin", "https://www.bilibili.com")
+	req := s.httpClient.R().
+		SetContext(ctx).
+		SetHeader("User-Agent", biliUserAgent).
+		SetHeader("Referer", "https://www.bilibili.com").
+		SetHeader("Origin", "https://www.bilibili.com")
 	if cookieHeader != "" {
-		req.Header.Set("Cookie", cookieHeader)
+		req.SetHeader("Cookie", cookieHeader)
 	}
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := req.Get(s.spiURL)
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("get buvids http status %d", resp.StatusCode)
+	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
+		return "", "", fmt.Errorf("get buvids http status %d", resp.StatusCode())
 	}
 
 	var result struct {
@@ -80,7 +78,7 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 			B4 string `json:"b_4"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
 		return "", "", err
 	}
 	if result.Code != 0 {

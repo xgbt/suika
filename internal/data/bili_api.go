@@ -79,30 +79,30 @@ func (d *Data) signURL(endpoint string) string {
 // fetchJSON 携带抗风控 header 发 GET 请求，并把 JSON 响应体解码到 out。
 // HTTP 412/403/429 映射为 errHTTPRiskControl。
 func (d *Data) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", biliUserAgent)
-	req.Header.Set("Referer", liveReferer(roomID))
-	req.Header.Set("Origin", "https://live.bilibili.com")
+	req := d.apiClient.R().
+		SetContext(ctx).
+		SetHeader("User-Agent", biliUserAgent).
+		SetHeader("Referer", liveReferer(roomID)).
+		SetHeader("Origin", "https://live.bilibili.com")
 	if cookie != "" {
-		req.Header.Set("Cookie", cookie)
+		req.SetHeader("Cookie", cookie)
 	}
-	resp, err := d.apiClient.Do(req)
+	resp, err := req.Get(endpoint)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		switch resp.StatusCode {
+	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
+		switch resp.StatusCode() {
 		case http.StatusPreconditionFailed, http.StatusForbidden, http.StatusTooManyRequests:
-			return fmt.Errorf("%w: status=%d", errHTTPRiskControl, resp.StatusCode)
+			return fmt.Errorf("%w: status=%d", errHTTPRiskControl, resp.StatusCode())
 		default:
-			return fmt.Errorf("bilibili http status %d", resp.StatusCode)
+			return fmt.Errorf("bilibili http status %d", resp.StatusCode())
 		}
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.Unmarshal(resp.Body(), out); err != nil {
+		return err
+	}
+	return nil
 }
 
 // liveClient 实现所有 B 站 API 与弹幕 websocket 流量；
@@ -162,25 +162,30 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", biliUserAgent)
-	req.Header.Set("Referer", liveReferer(roomID))
+	req := lc.data.streamClient.R().
+		SetContext(ctx).
+		SetHeader("User-Agent", biliUserAgent).
+		SetHeader("Referer", liveReferer(roomID)).
+		SetDoNotParseResponse(true)
 	if lc.data.cookie != "" {
-		req.Header.Set("Cookie", lc.data.cookie)
+		req.SetHeader("Cookie", lc.data.cookie)
 	}
-	resp, err := lc.data.streamClient.Do(req)
+	resp, err := req.Get(streamURL)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		resp.Body.Close()
-		return nil, fmt.Errorf("%w: stream http status %d", biz.ErrStreamTransient, resp.StatusCode)
+	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
+		if resp.RawBody() != nil {
+			_ = resp.RawBody().Close()
+		}
+		return nil, fmt.Errorf("%w: stream http status %d", biz.ErrStreamTransient, resp.StatusCode())
+	}
+	body := resp.RawBody()
+	if body == nil {
+		return nil, fmt.Errorf("%w: stream response body is empty", biz.ErrStreamTransient)
 	}
 	log.Info("stream opened", "room", roomID, "qn", quality.Qn, "desc", quality.Desc)
-	return &biz.StreamHandle{URL: streamURL, Quality: quality, Body: resp.Body}, nil
+	return &biz.StreamHandle{URL: streamURL, Quality: quality, Body: body}, nil
 }
 
 // selectStreamURL 调用 B 站接口获取房间的播放信息，并选择最优 FLV 流地址。

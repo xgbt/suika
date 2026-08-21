@@ -35,6 +35,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+function formatSpeed(bytesPerSecond: number): string {
+  if (!bytesPerSecond) return '—';
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
 const LIVE_STATUS_MAP: Record<LiveStatus, React.ReactNode> = {
   [LiveStatus.LIVE_STATUS_UNSPECIFIED]: <Tag>未知</Tag>,
   [LiveStatus.LIVE_STATUS_PREPARING]: <Tag color="default">未开播</Tag>,
@@ -67,6 +72,7 @@ export default function RoomList() {
 
   const [form] = Form.useForm();
   const PAGE_SIZE = 20;
+  const REFRESH_INTERVAL_MS = 2000;
 
   const loadPage = useCallback(async (token: string) => {
     setLoading(true);
@@ -81,7 +87,7 @@ export default function RoomList() {
     }
   }, [message]);
 
-  // Auto-refresh every 5 seconds
+  // Auto-refresh every 2 seconds
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tokenRef = useRef<string>('');
 
@@ -93,11 +99,11 @@ export default function RoomList() {
   useEffect(() => {
     timerRef.current = setInterval(() => {
       loadPage(tokenRef.current);
-    }, 5000);
+    }, REFRESH_INTERVAL_MS);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [loadPage]);
+  }, [loadPage, REFRESH_INTERVAL_MS]);
 
   function handleRefresh() {
     loadPage(pageTokenStack[currentPage] ?? '');
@@ -256,6 +262,12 @@ export default function RoomList() {
       dataIndex: 'bytes_written',
       width: 100,
       render: (v: number) => formatBytes(v),
+    },
+    {
+      title: '下载速度',
+      dataIndex: 'download_speed_bps',
+      width: 110,
+      render: (v: number) => formatSpeed(v),
     },
     {
       title: '最近错误',

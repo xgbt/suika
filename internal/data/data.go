@@ -2,7 +2,6 @@ package data
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"suika/internal/conf"
 
 	"github.com/go-kratos/kratos/v3/log"
+	"github.com/go-resty/resty/v2"
 	"github.com/google/wire"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -27,10 +27,10 @@ type Data struct {
 	db *gorm.DB
 
 	// apiClient 用于短小的 B 站 API 调用。
-	apiClient *http.Client
+	apiClient *resty.Client
 	// streamClient 拉取直播流；不设超时，因为读取是长生命周期的，
 	// 取消经请求 context 传递。
-	streamClient *http.Client
+	streamClient *resty.Client
 
 	cookie string
 	signer *wbiSigner
@@ -54,11 +54,11 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 		return nil, nil, fmt.Errorf("data: auto-migrate rooms table: %w", err)
 	}
 
-	apiClient := &http.Client{Timeout: 15 * time.Second}
+	apiClient := resty.New().SetTimeout(15 * time.Second)
 	d := &Data{
 		db:           db,
 		apiClient:    apiClient,
-		streamClient: &http.Client{},
+		streamClient: resty.New(),
 		cookie:       rc.GetCookie(),
 		qualityQN:    10000,
 		remuxEnabled: true,

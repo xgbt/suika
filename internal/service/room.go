@@ -169,15 +169,16 @@ func toRoomDTO(rt *biz.RoomRuntime) *v1.Room {
 	}
 
 	room := &v1.Room{
-		RoomId:       rt.Room.RoomID,
-		StreamerName: rt.Room.StreamerName,
-		RoomTitle:    rt.Room.RoomTitle,
-		Enabled:      rt.Room.Enabled,
-		LiveStatus:   liveStatus,
-		RecordStatus: recordStatus,
-		CurrentFile:  rt.CurrentFile,
-		BytesWritten: rt.BytesWritten,
-		LastError:    rt.LastError,
+		RoomId:           rt.Room.RoomID,
+		StreamerName:     rt.Room.StreamerName,
+		RoomTitle:        rt.Room.RoomTitle,
+		Enabled:          rt.Room.Enabled,
+		LiveStatus:       liveStatus,
+		RecordStatus:     recordStatus,
+		CurrentFile:      rt.CurrentFile,
+		BytesWritten:     rt.BytesWritten,
+		DownloadSpeedBps: rt.DownloadSpeedBPS,
+		LastError:        rt.LastError,
 	}
 	if !rt.Room.CreateTime.IsZero() {
 		room.CreateTime = timestamppb.New(rt.Room.CreateTime)

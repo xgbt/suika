@@ -104,6 +104,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 	}
 	ps.bytes.Store(0)
 	ps.file.Store("")
+	ps.speed.Store(0)
 
 	// 读取 meta.json，
 	metaPath := filepath.Join(dir, base+".meta.json")
@@ -183,10 +184,14 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, 
 		result       biz.SessionResult
 		sessionBytes int64
 		lastGrowth   int64
+		lastSampleAt = time.Now()
+		lastSample   int64
 		failRounds   int
 	)
 	health := time.NewTicker(r.healthInterval)
 	defer health.Stop()
+	speedSampler := time.NewTicker(time.Second)
+	defer speedSampler.Stop()
 
 	// openNewSegment 打开新分段文件，写入头标签并更新 meta.json。
 	openNewSegment := func() error {
@@ -268,6 +273,19 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, 
 			if err := seg.writeEvent(ev); err != nil {
 				log.Warn("danmaku write failed", "room", session.RoomID, "err", err)
 			}
+		case <-speedSampler.C:
+			now := time.Now()
+			delta := sessionBytes - lastSample
+			if delta < 0 {
+				delta = 0
+			}
+			elapsed := now.Sub(lastSampleAt)
+			if elapsed <= 0 {
+				continue
+			}
+			stats.speed.Store(int64(float64(delta) / elapsed.Seconds()))
+			lastSample = sessionBytes
+			lastSampleAt = now
 		case <-health.C:
 			if sessionBytes > lastGrowth {
 				lastGrowth = sessionBytes
