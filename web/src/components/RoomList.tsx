@@ -119,7 +119,20 @@ export default function RoomList() {
     setLoading(true);
     try {
       const res = await roomsApi.list({ page_size: PAGE_SIZE, page_token: token || undefined });
-      setRooms(res.rooms ?? []);
+      const nextRooms = res.rooms ?? [];
+      setRooms(nextRooms);
+      setSpeedHistoryByRoom((prev) => {
+        const next: Record<number, number[]> = {};
+        for (const room of nextRooms) {
+          const history = prev[room.room_id] ?? [];
+          const merged = [...history, room.download_speed_bps ?? 0];
+          if (merged.length > SPEED_HISTORY_POINTS) {
+            merged.splice(0, merged.length - SPEED_HISTORY_POINTS);
+          }
+          next[room.room_id] = merged;
+        }
+        return next;
+      });
       setNextPageToken(res.next_page_token ?? '');
     } catch (e: unknown) {
       message.error((e as Error).message ?? '加载失败');
@@ -136,21 +149,6 @@ export default function RoomList() {
     tokenRef.current = pageTokenStack[currentPage] ?? '';
     loadPage(tokenRef.current);
   }, [currentPage, pageTokenStack, loadPage]);
-
-  useEffect(() => {
-    setSpeedHistoryByRoom((prev) => {
-      const next: Record<number, number[]> = {};
-      for (const room of rooms) {
-        const history = prev[room.room_id] ?? [];
-        const merged = [...history, room.download_speed_bps ?? 0];
-        if (merged.length > SPEED_HISTORY_POINTS) {
-          merged.splice(0, merged.length - SPEED_HISTORY_POINTS);
-        }
-        next[room.room_id] = merged;
-      }
-      return next;
-    });
-  }, [rooms]);
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
