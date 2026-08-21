@@ -364,7 +364,7 @@ export default function RoomList() {
                     <div className="metric-box">
                       <span>实时下载速度</span>
                       <Tooltip placement="top" title={<SpeedTooltipChart speeds={speedHistory} />}>
-                        <strong className={`speed-chip ${isLive ? 'speed-chip-live' : ''}`}>{formatSpeed(room.download_speed_bps)}</strong>
+                        <strong className={`speed-chip ${isRecording ? 'speed-chip-live' : ''}`}>{formatSpeed(room.download_speed_bps)}</strong>
                       </Tooltip>
                     </div>
                   </div>
