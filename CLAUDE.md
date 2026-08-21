@@ -153,7 +153,12 @@ declared in `biz` and implemented in `data`:
 - `LiveClient` — the platform seam; ALL Bilibili traffic goes through it
   (room info, stream URLs, danmaku websocket). Implemented in `data` by
   `bili_api.go` / `danmaku.go` plus the risk-control helpers `wbi.go`
-  (WBI signing) and `buvid.go`.
+  (WBI signing) and `buvid.go`. All risk orchestration lives in the
+  single `riskGuard` module (`risk.go`): cooldown gates, 412/403/429 and
+  -352 refresh-and-retry, legacy-API fallback, error classification, and
+  the per-room cooldown ladder. Endpoint code only builds requests,
+  parses responses, and translates business codes — never retries or
+  sleeps on risk itself.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
   remux (`remux.go`). Implemented across `internal/data/recorder*.go`
@@ -166,7 +171,19 @@ supervisor loop reconciling the registry's change notifications against
 per-room monitor goroutines, room monitoring (the danmaku WS is the primary
 live-detection channel; `fallback_poll_interval` polling is the backup),
 session lifecycles, and the stream-drop/reconnect decision tree. Byte-level
-IO belongs to the seams. Recordings land under `record_root` (default
+IO belongs to the seams.
+
+Session start/stop/resume decisions are NOT inline in the monitor: they
+live in one stateful module, `sessionPolicy` (biz/session_policy.go,
+ADR-0001). The monitor's (`watchRoom`) select arms only deliver inputs —
+room info arrived, `enabled` flipped, session finished — and execute the
+returned decision (Start/Stop/None); phases (idle/running/finishing) and
+the resume-after-finish rule live inside the module. The decision matrix
+is `.scratch/session-policy/spec.md` and every matrix row has a test —
+when changing policy, update the matrix and its tests together. `watchRoom`
+remains the only owner of goroutines, contexts, and the danmaku
+connection; "reconcile" stays reserved for the supervisor loop's
+monitor-set level. Recordings land under `record_root` (default
 `./recordings`, gitignored); each session's `meta.json` is the history
 source of truth, and `RecoverPending` finalizes sessions interrupted by a
 crash or restart at startup.
@@ -195,8 +212,8 @@ are `OUTPUT_ONLY` and must be populated by the service:
 - `record_status`: `RECORD_STATUS_UNSPECIFIED`, `RECORD_STATUS_IDLE`,
   `RECORD_STATUS_RECORDING`, `RECORD_STATUS_REMUXING`, or
   `RECORD_STATUS_ERROR`.
-- `current_file`, `bytes_written`, `session_started_at`, `last_error`,
-  `create_time`, and `update_time`.
+- `current_file`, `bytes_written`, `download_speed_bps`,
+  `session_started_at`, `last_error`, `create_time`, and `update_time`.
 
 `room_id` is the caller-provided unique platform room ID and is immutable.
 `CreateRoomRequest.room` and `UpdateRoomRequest.room` are required;
@@ -220,8 +237,8 @@ default page size is 20. The response uses `rooms` and
 CRUD after each successful persist (`Add` / `Update` / `Remove`), and holds
 mutable live and recording state. The recorder updates the registry; room
 reads merge the registry snapshot with persisted fields. For an actively
-recording room, `SessionStatsRepo` best-effort supplies `current_file` and
-`bytes_written`. CRUD changes take effect on the recorder in real time via
+recording room, `SessionStatsRepo` best-effort supplies `current_file`,
+`bytes_written`, and `download_speed_bps`. CRUD changes take effect on the recorder in real time via
 its supervisor loop (no restart): created rooms are monitored immediately
 regardless of `enabled`, deleting a room stops its monitor immediately
 (gracefully stopping any active session, recorded files are kept), and
@@ -315,3 +332,10 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context: `CONTEXT.md` at repo root, ADRs in `docs/adr/`. See `docs/agents/domain.md`.
+
+`CONTEXT.md` is also the canonical glossary — Room, Session, Monitor,
+Fallback poll, Session policy, Reconcile — each with an explicit "avoid"
+list (e.g. don't call the per-room goroutine a watcher/poller; don't use
+"reconcile" for session-level start/stop). Use these exact terms in code
+names, comments, tests, and issues; new architectural decisions go into
+`docs/adr/`, not into the pre-existing `docs/design/` docs.
