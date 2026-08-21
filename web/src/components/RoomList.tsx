@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useId } from 'react';
 import {
-  Table,
+  Card,
   Button,
   Modal,
   Form,
@@ -14,6 +14,8 @@ import {
   Typography,
   App,
   Badge,
+  Empty,
+  Spin,
 } from 'antd';
 import {
   PlusOutlined,
@@ -21,9 +23,9 @@ import {
   EditOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
-import type { ColumnsType } from 'antd/es/table';
 import { roomsApi, LiveStatus, RecordStatus } from '../api/rooms';
 import type { Room } from '../api/rooms';
+import './RoomList.css';
 
 const { Text } = Typography;
 
@@ -40,12 +42,6 @@ function formatSpeed(bytesPerSecond: number): string {
   return `${formatBytes(bytesPerSecond)}/s`;
 }
 
-const LIVE_STATUS_MAP: Record<LiveStatus, React.ReactNode> = {
-  [LiveStatus.LIVE_STATUS_UNSPECIFIED]: <Tag>未知</Tag>,
-  [LiveStatus.LIVE_STATUS_PREPARING]: <Tag color="default">未开播</Tag>,
-  [LiveStatus.LIVE_STATUS_LIVE]: <Badge status="processing" color="red" text={<Text type="danger">直播中</Text>} />,
-};
-
 const RECORD_STATUS_MAP: Record<RecordStatus, React.ReactNode> = {
   [RecordStatus.RECORD_STATUS_UNSPECIFIED]: <Tag>未知</Tag>,
   [RecordStatus.RECORD_STATUS_IDLE]: <Tag color="default">空闲</Tag>,
@@ -55,6 +51,50 @@ const RECORD_STATUS_MAP: Record<RecordStatus, React.ReactNode> = {
 };
 
 type ModalMode = 'create' | 'edit';
+const SPEED_HISTORY_POINTS = 24;
+
+type SpeedSparklineProps = {
+  speeds: number[];
+};
+
+function SpeedSparkline({ speeds }: SpeedSparklineProps) {
+  const gradientId = useId().replace(/:/g, '_');
+  const width = 220;
+  const height = 72;
+  const padding = 8;
+  const max = Math.max(1, ...speeds);
+  const denominator = Math.max(1, speeds.length - 1);
+  const points = speeds.map((value, idx) => {
+    const x = padding + (idx / denominator) * (width - padding * 2);
+    const y = height - padding - (value / max) * (height - padding * 2);
+    return `${x},${y}`;
+  });
+  const areaPoints = [`${padding},${height - padding}`, ...points, `${width - padding},${height - padding}`].join(' ');
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="speed-chart" role="img" aria-label="下载速度折线图">
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(123, 149, 136, 0.10)" />
+          <stop offset="100%" stopColor="rgba(123, 149, 136, 0.01)" />
+        </linearGradient>
+      </defs>
+      <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} className="speed-chart-axis" />
+      <polygon points={areaPoints} fill={`url(#${gradientId})`} />
+      <polyline points={points.join(' ')} className="speed-chart-line" fill="none" />
+      {points.length > 0 ? <circle cx={width - padding} cy={Number(points[points.length - 1].split(',')[1])} r="3" className="speed-chart-dot" /> : null}
+    </svg>
+  );
+}
+
+function SpeedTooltipChart({ speeds }: SpeedSparklineProps) {
+  return (
+    <div className="speed-tooltip-panel">
+      <div className="speed-tooltip-title">下载速度趋势</div>
+      <SpeedSparkline speeds={speeds} />
+    </div>
+  );
+}
 
 export default function RoomList() {
   const { message, modal } = App.useApp();
@@ -64,6 +104,7 @@ export default function RoomList() {
   const [nextPageToken, setNextPageToken] = useState<string>('');
   const [pageTokenStack, setPageTokenStack] = useState<string[]>(['']);
   const [currentPage, setCurrentPage] = useState(0);
+  const [speedHistoryByRoom, setSpeedHistoryByRoom] = useState<Record<number, number[]>>({});
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<ModalMode>('create');
@@ -95,6 +136,21 @@ export default function RoomList() {
     tokenRef.current = pageTokenStack[currentPage] ?? '';
     loadPage(tokenRef.current);
   }, [currentPage, pageTokenStack, loadPage]);
+
+  useEffect(() => {
+    setSpeedHistoryByRoom((prev) => {
+      const next: Record<number, number[]> = {};
+      for (const room of rooms) {
+        const history = prev[room.room_id] ?? [];
+        const merged = [...history, room.download_speed_bps ?? 0];
+        if (merged.length > SPEED_HISTORY_POINTS) {
+          merged.splice(0, merged.length - SPEED_HISTORY_POINTS);
+        }
+        next[room.room_id] = merged;
+      }
+      return next;
+    });
+  }, [rooms]);
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
@@ -195,127 +251,13 @@ export default function RoomList() {
     }
   }
 
-  const columns: ColumnsType<Room> = [
-    {
-      title: '房间 ID',
-      dataIndex: 'room_id',
-      width: 110,
-      render: (id: number) => (
-        <a href={`https://live.bilibili.com/${id}`} target="_blank" rel="noreferrer">
-          {id}
-        </a>
-      ),
-    },
-    {
-      title: '主播',
-      dataIndex: 'streamer_name',
-      ellipsis: true,
-      render: (streamerName: string) => streamerName || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '房间标题',
-      dataIndex: 'room_title',
-      ellipsis: true,
-      render: (roomTitle: string) => roomTitle || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '启用',
-      dataIndex: 'enabled',
-      width: 70,
-      render: (v: boolean, record: Room) => (
-        <Switch
-          size="small"
-          checked={v}
-          onChange={(checked) => {
-            modal.confirm({
-              title: checked ? `启用房间 ${record.room_id}？` : `禁用房间 ${record.room_id}？`,
-              okText: checked ? '启用' : '禁用',
-              cancelText: '取消',
-              okButtonProps: checked ? {} : { danger: true },
-              onOk: async () => {
-                try {
-                  await roomsApi.update({ room_id: record.room_id, enabled: checked }, ['enabled']);
-                  loadPage(pageTokenStack[currentPage] ?? '');
-                } catch (e: unknown) {
-                  message.error((e as Error).message ?? '更新失败');
-                }
-              },
-            });
-          }}
-        />
-      ),
-    },
-    {
-      title: '直播状态',
-      dataIndex: 'live_status',
-      width: 100,
-      render: (v: LiveStatus) => LIVE_STATUS_MAP[v] ?? <Tag>未知</Tag>,
-    },
-    {
-      title: '录制状态',
-      dataIndex: 'record_status',
-      width: 100,
-      render: (v: RecordStatus) => RECORD_STATUS_MAP[v] ?? <Tag>未知</Tag>,
-    },
-    {
-      title: '已录制',
-      dataIndex: 'bytes_written',
-      width: 100,
-      render: (v: number) => formatBytes(v),
-    },
-    {
-      title: '下载速度',
-      dataIndex: 'download_speed_bps',
-      width: 110,
-      render: (v: number) => formatSpeed(v),
-    },
-    {
-      title: '最近错误',
-      dataIndex: 'last_error',
-      ellipsis: true,
-      render: (v: string) =>
-        v ? (
-          <Tooltip title={v}>
-            <Text type="danger" ellipsis>
-              {v}
-            </Text>
-          </Tooltip>
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
-    },
-    {
-      title: '操作',
-      width: 100,
-      render: (_: unknown, record: Room) => (
-        <Space>
-          <Tooltip title="编辑">
-            <Button
-              type="text"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => openEdit(record)}
-            />
-          </Tooltip>
-          <Popconfirm
-            title={`确认删除房间 ${record.room_id}？`}
-            onConfirm={() => handleDelete(record.room_id)}
-            okText="删除"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-          >
-            <Tooltip title="删除">
-              <Button type="text" size="small" danger icon={<DeleteOutlined />} />
-            </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
+  function openRoomWithConfirm(roomID: number) {
+    window.open(`https://live.bilibili.com/${roomID}`, '_blank', 'noopener,noreferrer');
+  }
 
   return (
     <>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div className="room-toolbar">
         <Space>
           <Button icon={<PlusOutlined />} type="primary" onClick={openCreate}>
             添加房间
@@ -335,15 +277,118 @@ export default function RoomList() {
         </Space>
       </div>
 
-      <Table
-        rowKey="room_id"
-        columns={columns}
-        dataSource={rooms}
-        loading={loading}
-        pagination={false}
-        size="middle"
-        bordered
-      />
+      <Spin spinning={loading}>
+        {rooms.length === 0 ? (
+          <Card className="room-card-empty" bordered={false}>
+            <Empty description="当前页暂无房间" />
+          </Card>
+        ) : (
+          <div className="room-grid">
+            {rooms.map((room) => {
+              const speedHistory = speedHistoryByRoom[room.room_id] ?? [0];
+              const isLive = room.live_status === LiveStatus.LIVE_STATUS_LIVE;
+              const isRecording = room.record_status === RecordStatus.RECORD_STATUS_RECORDING;
+              const livePillClassName = isRecording ? 'live-pill live-pill-strong' : 'live-pill live-pill-light';
+              return (
+                <Card key={room.room_id} className={`room-card ${isLive ? 'room-card-live' : ''}`} bordered={false}>
+                  <div className="room-card-head">
+                    <div>
+                      <div className="room-link-row">
+                        <Popconfirm
+                          title={`确认打开房间 ${room.room_id}？`}
+                          description="将在新标签页跳转到 Bilibili 直播间"
+                          okText="打开"
+                          cancelText="取消"
+                          onConfirm={() => openRoomWithConfirm(room.room_id)}
+                        >
+                          <button type="button" className="room-link room-link-trigger">
+                            房间 #{room.room_id}
+                          </button>
+                        </Popconfirm>
+                        {isLive ? <span className={livePillClassName}>LIVE</span> : null}
+                      </div>
+                      <div className="room-name">{room.streamer_name || '未命名主播'}</div>
+                    </div>
+                    <Space align="start" className="room-head-actions">
+                      <Tooltip title="编辑">
+                        <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(room)} />
+                      </Tooltip>
+                      <Popconfirm
+                        title={`确认删除房间 ${room.room_id}？`}
+                        onConfirm={() => handleDelete(room.room_id)}
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                      >
+                        <Tooltip title="删除">
+                          <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                        </Tooltip>
+                      </Popconfirm>
+                    </Space>
+                  </div>
+
+                  <div className="room-title">{room.room_title || '暂无房间标题'}</div>
+
+                  <div className="room-status-row">
+                    {RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>}
+                    <span className="room-toggle">
+                      启用
+                      <Switch
+                        size="small"
+                        checked={room.enabled}
+                        onChange={(checked) => {
+                          modal.confirm({
+                            title: checked ? `启用房间 ${room.room_id}？` : `禁用房间 ${room.room_id}？`,
+                            okText: checked ? '启用' : '禁用',
+                            cancelText: '取消',
+                            okButtonProps: checked ? {} : { danger: true },
+                            onOk: async () => {
+                              try {
+                                await roomsApi.update({ room_id: room.room_id, enabled: checked }, ['enabled']);
+                                loadPage(pageTokenStack[currentPage] ?? '');
+                              } catch (e: unknown) {
+                                message.error((e as Error).message ?? '更新失败');
+                              }
+                            },
+                          });
+                        }}
+                      />
+                    </span>
+                  </div>
+
+                  <div className="room-metrics">
+                    <div className="metric-box">
+                      <span>已录制</span>
+                      <strong>{formatBytes(room.bytes_written)}</strong>
+                    </div>
+                    <div className="metric-box">
+                      <span>实时下载速度</span>
+                      <Tooltip placement="top" title={<SpeedTooltipChart speeds={speedHistory} />}>
+                        <strong className={`speed-chip ${isLive ? 'speed-chip-live' : ''}`}>{formatSpeed(room.download_speed_bps)}</strong>
+                      </Tooltip>
+                    </div>
+                  </div>
+
+                  <div className="room-foot">
+                    <Text type="secondary" ellipsis={{ tooltip: room.current_file || '暂无录制文件' }}>
+                      文件: {room.current_file || '—'}
+                    </Text>
+                    {room.last_error ? (
+                      <Tooltip title={room.last_error}>
+                        <Text type="danger" ellipsis>
+                          错误: {room.last_error}
+                        </Text>
+                      </Tooltip>
+                    ) : (
+                      <Text type="secondary">错误: —</Text>
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </Spin>
 
       <Modal
         title={modalMode === 'create' ? '添加房间' : '编辑房间'}

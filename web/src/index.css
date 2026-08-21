@@ -3,3 +3,25 @@
   margin: 0;
   padding: 0;
 }
+
+:root {
+  --font-sans: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --surface: #fbfcfb;
+  font-family: var(--font-sans);
+}
+
+body {
+  min-width: 320px;
+  color: var(--text-primary);
+  background: var(--surface);
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
