@@ -25,7 +25,11 @@ func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.Sessi
 		return nil, nil
 	}
 	file, _ := ps.file.Load().(string)
-	return &biz.SessionStats{CurrentFile: file, BytesWritten: ps.bytes.Load(), DownloadBPS: ps.speed.Load()}, nil
+	return &biz.SessionStats{
+		CurrentFile:      file,
+		BytesWritten:     ps.bytes.Load(),
+		DownloadSpeedBPS: ps.speed.Load(),
+	}, nil
 }
 
 // statsFor 返回指定房间的 pumpStats

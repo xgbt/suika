@@ -157,7 +157,7 @@ func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime
 		if err == nil && stats != nil {
 			runtime.CurrentFile = stats.CurrentFile
 			runtime.BytesWritten = stats.BytesWritten
-			runtime.DownloadSpeedBPS = stats.DownloadBPS
+			runtime.DownloadSpeedBPS = stats.DownloadSpeedBPS
 		}
 	}
 	return runtime
