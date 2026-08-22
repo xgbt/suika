@@ -76,25 +76,27 @@ func (reg *RoomRegistry) Room(roomID int64) Room {
 	return Room{RoomID: roomID}
 }
 
-// Subscribe 订阅房间集合变更。返回的通道只承担"有变更发生"的唤醒职责：
-// 合并式通知，通道内最多积压一个信号，订阅者收到信号后重新读取 Rooms()
-// 全量快照做调和，因此丢弃积压信号不丢状态。返回的函数用于退订。
+// Subscribe 订阅房间集合变更通知，返回一个 channel 用于接收唤醒信号, 以及一个取消订阅函数。
+// 唤醒信号是合并式的：多次变更只会触发一次唤醒，订阅者应在收到唤醒后主动拉取最新房间列表。
+// 订阅者应在不再需要时调用取消订阅函数，否则会造成内存泄漏。
 func (reg *RoomRegistry) Subscribe() (<-chan struct{}, func()) {
-	ch := make(chan struct{}, 1)
+	changes := make(chan struct{}, 1)
 	reg.mu.Lock()
-	reg.subscribers = append(reg.subscribers, ch)
+	reg.subscribers = append(reg.subscribers, changes)
 	reg.mu.Unlock()
 
-	return ch, func() {
+	unsubscribe := func() {
 		reg.mu.Lock()
 		defer reg.mu.Unlock()
 		for i, sub := range reg.subscribers {
-			if sub == ch {
+			if sub == changes {
 				reg.subscribers = append(reg.subscribers[:i], reg.subscribers[i+1:]...)
 				return
 			}
 		}
 	}
+
+	return changes, unsubscribe
 }
 
 // Add 在房间创建落库成功后登记到注册表，使其立即对录制守护进程可见。
