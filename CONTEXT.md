@@ -21,7 +21,7 @@ Periodic polling of the platform's room-info API that backs up the danmaku conne
 _Avoid_: heartbeat, health check
 
 **Session policy** (会话启停策略):
-The rules deciding when a room's session starts, stops, and resumes: gated by the room's enabled flag, driven by live status, with a resume rule for an enable that arrives while a session is still finishing.
+The rules deciding when a room's session starts, stops, and resumes. Level-triggered: every input (room info arrival, enabled flip, session finish) re-evaluates one criterion — the enabled gate is open and the latest info says live — against the session phase (idle / running / finishing). A stopped session resumes when its finish completes if the world then says record; a naturally ended session waits for fresh world state.
 _Avoid_: scheduler, controller
 
 **Reconcile** (调和):

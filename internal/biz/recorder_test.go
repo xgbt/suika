@@ -545,6 +545,7 @@ func TestWatchRoomFallbackPollStartsSession(t *testing.T) {
 	cancel()
 	<-watchDone
 }
+
 // gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的转封装收尾，
 // 让测试可以稳定命中"会话正在停止中"的窗口。
 type gatedFinishRepo struct {

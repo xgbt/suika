@@ -58,7 +58,7 @@ type RoomInfo struct {
 	LiveStartTime time.Time
 }
 
-// 调用 B 站接口获取的授予直播流清晰度信息
+// StreamQuality 调用 B 站接口获取的授予直播流清晰度信息
 type StreamQuality struct {
 	Qn   int32
 	Desc string
@@ -80,15 +80,15 @@ type DanmakuEvent struct {
 	UID      int64
 	Uname    string
 	Text     string // 弹幕文本 / SC 文本 / 进场特效文本
-	Color    int32  // 弹幕
-	Mode     int32  // 弹幕
-	GiftName string // 礼物
+	Color    int32  // 弹幕颜色 / SC 颜色
+	Mode     int32  // 弹幕模式 / SC 模式
+	GiftName string // 礼物名称
 	Num      int32  // 礼物/舰长数量
 	Price    int64  // 礼物价格（金瓜子）/ SC 价格
-	CoinType string // 礼物：gold/silver
+	CoinType string // 礼物类型：gold/silver
 	Duration int32  // SC 保留秒数
 	Level    int32  // 舰长等级
-	Raw      []byte // 原始 JSON 载荷
+	Raw      []byte // 原始 JSON Payload
 }
 
 // Session 是一次录制会话（同一房间的一次开播）。

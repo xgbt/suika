@@ -6,6 +6,8 @@ import "testing"
 // 无 fake。每个用例是一串"投递事件 → 断言决策"的步骤，与
 // .scratch/session-policy/spec.md 决策矩阵逐行对应；阶段（idle /
 // running / finishing）不直接断言，而是通过后续事件的决策体现。
+// 策略是电平触发的（ADR-0002）：收尾后续录等恢复行为不需要专门标志，
+// 是会话结束后重算的自然结果，相关用例同样逐行锁定。
 
 type policyStep struct {
 	send func(*sessionPolicy) policyDecision
@@ -66,12 +68,15 @@ func TestSessionPolicyRoomInfoArrived(t *testing.T) {
 			},
 		},
 		{
-			name:           "live enabled finishing does not start",
+			name:           "live enabled finishing resumes after finish",
 			initialEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: roomInfoArrived(offline), want: wantStop()},
+				// 收尾期间到达的开播信息只更新 latest，不立即启动。
 				{send: roomInfoArrived(liveAgain), want: wantNone()},
+				// 收尾完成：重算发现仍该录（启用且在播），立即恢复。
+				{send: sessionFinished(), want: wantStart(liveAgain)},
 			},
 		},
 		{
@@ -90,6 +95,8 @@ func TestSessionPolicyRoomInfoArrived(t *testing.T) {
 				// live · disabled · finishing：收尾期间到达的开播信息
 				// 只更新 latest，不启动会话。
 				{send: roomInfoArrived(liveAgain), want: wantNone()},
+				// 收尾完成：门控仍关着，即便最新信息说在播也不恢复。
+				{send: sessionFinished(), want: wantNone()},
 			},
 		},
 		{
@@ -125,8 +132,8 @@ func TestSessionPolicyRoomInfoArrived(t *testing.T) {
 }
 
 // TestSessionPolicyEnabledFlipped 覆盖决策矩阵中"enabled flipped"的全部
-// 行；恢复标志的可观察后果（收尾后续录）由
-// TestSessionPolicySessionFinished 与 TestSessionPolicyPreservedQuirks 验证。
+// 行；收尾后续录由 TestSessionPolicySessionFinished 与
+// TestSessionPolicyPreservedQuirks 验证。
 func TestSessionPolicyEnabledFlipped(t *testing.T) {
 	live := &RoomInfo{RoomID: 42, Live: true}
 	offline := &RoomInfo{RoomID: 42}
@@ -241,7 +248,7 @@ func TestSessionPolicySessionFinished(t *testing.T) {
 			},
 		},
 		{
-			name:           "resume flag set during finishing starts on finish",
+			name:           "enable during finishing resumes after finish",
 			initialEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
@@ -251,7 +258,7 @@ func TestSessionPolicySessionFinished(t *testing.T) {
 			},
 		},
 		{
-			name:           "resume flag cleared after resume",
+			name:           "resume is one-shot: second finish goes idle",
 			initialEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
@@ -269,8 +276,9 @@ func TestSessionPolicySessionFinished(t *testing.T) {
 	}
 }
 
-// TestSessionPolicyPreservedQuirks 锁定规格要求原样保留的三个既有行为，
-// 即便它们看起来像缺陷。
+// TestSessionPolicyPreservedQuirks 锁定原电平触发实现需要专门补丁（恢复
+// 标志等）才能给出的三个行为。电平触发重算（ADR-0002）让它们成为重算的
+// 自然结果，但这些可观察行为不变，继续逐例锁定。
 func TestSessionPolicyPreservedQuirks(t *testing.T) {
 	live := &RoomInfo{RoomID: 42, Live: true, Title: "stale"}
 	liveFresh := &RoomInfo{RoomID: 42, Live: true, Title: "fresh"}
@@ -306,13 +314,13 @@ func TestSessionPolicyPreservedQuirks(t *testing.T) {
 			},
 		},
 		{
-			name: "flip off after enable clears the resume flag",
+			name: "disable during finishing suppresses the resume",
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: enabledFlipped(false), want: wantStop()},
 				{send: enabledFlipped(true), want: wantNone()},
 				{send: enabledFlipped(false), want: wantNone()},
-				// 标志已被清除：收尾完成不再恢复。
+				// 门控最终是关的：收尾完成不恢复。
 				{send: sessionFinished(), want: wantNone()},
 			},
 		},

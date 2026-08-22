@@ -38,30 +38,32 @@ Collapse the four copies into one stateful **session policy** module. The Monito
 ## Implementation Decisions
 
 - **One new stateful module in the biz layer: the session policy.** It is a concrete type with a single consumer (`watchRoom`); **no interface** is introduced for it — a seam with one adapter is not justified. It is owned exclusively by one Monitor goroutine and therefore needs no mutex.
-- **Module state** (all previously scattered across `watchRoom` locals): the room's enabled flag, the latest known RoomInfo, the session phase (`idle` / `running` / `finishing`), and the resume-on-finish flag. The constructor takes the room's initial enabled flag.
+- **Module state** (all previously scattered across `watchRoom` locals): the room's enabled flag, the latest known RoomInfo, and the session phase (`idle` / `running` / `finishing`). The constructor takes the room's initial enabled flag. (The extraction originally also carried a resume-on-finish flag; issue 02 dissolved it into the level-triggered recompute — see ADR-0002.)
 - **Input vocabulary** — three events, delivered by the Monitor:
   1. *room info arrived* (carrying a RoomInfo) — shared by the danmaku room-state arm and the fallback-poll arm; the arms apply it to the RoomRegistry **before** feeding it to the module (registry application stays in the arms, out of the module).
   2. *enabled flipped* (carrying the new value, read from the registry by the arm) — no-op decision when the value equals the module's current state, which absorbs coalesced/duplicate signals.
   3. *session finished* — delivered when the session goroutine's done channel fires.
 - **Output alphabet** — a three-value decision: `Start(RoomInfo)` / `Stop` / `None`. Resume is **not** a distinct decision: to the Monitor it is the same action as start (launch a session with the freshest known RoomInfo). `Start` carries the RoomInfo to use, so the Monitor never chooses between RoomInfo copies.
-- **Complete decision table.** This table was derived line-by-line from current behaviour during the grilling session and is the acceptance criterion — every cell is a required test case:
+- **Complete decision table.** Derived line-by-line from current behaviour during the grilling session; the acceptance criterion then was that every cell is a required test case. The table below reflects the **post-issue-02 level-triggered design** (ADR-0002): one `shouldRecord` criterion (enabled gate open and latest info says live) evaluated against the phase on every input, with resume derived from which phase the session ended from instead of a flag. Exactly one observable behaviour differs from the original extraction (marked †): a live event arriving during a natural-stop finish now resumes after the finish completes instead of waiting up to a fallback-poll interval.
 
 | Event | Condition | Decision | State change |
 |---|---|---|---|
 | room info arrived | live · enabled · idle | **Start(info)** | phase → running |
-| room info arrived | live · enabled · finishing | None | — |
-| room info arrived | live · disabled (any phase) | None | — |
+| room info arrived | live · enabled · running | None | latest ← arrived info |
+| room info arrived | live · enabled · finishing | None (resume after finish if the world still says record) | latest ← arrived info |
+| room info arrived | live · disabled (any phase) | None | latest ← arrived info |
 | room info arrived | not live · running | **Stop** | phase → finishing |
-| room info arrived | not live · finishing | None (today: redundant idempotent cancel) | — |
-| room info arrived | not live · idle | None | — |
-| room info arrived | (all rows) | | latest ← arrived info |
-| enabled flipped on | was off · idle · latest says live | **Start(latest)** | phase → running |
-| enabled flipped on | was off · finishing | None | resume-on-finish ← true |
-| enabled flipped on | was already on | None | — |
-| enabled flipped off | was on · running | **Stop** | phase → finishing, resume-on-finish ← false |
-| enabled flipped off | was on · finishing or idle | None (today: redundant idempotent cancel) | resume-on-finish ← false |
-| session finished | resume-on-finish · latest says live | **Start(latest)** | phase → running, flag cleared |
-| session finished | otherwise (incl. natural end — flag necessarily false) | None | phase → idle |
+| room info arrived | not live · finishing or idle | None | latest ← arrived info |
+| enabled flipped on | idle · latest says live | **Start(latest)** | phase → running |
+| enabled flipped on | running | None | — |
+| enabled flipped on | finishing | None (resume after finish if the world still says record) | — |
+| enabled flipped on | idle · no info yet or latest offline | None | — |
+| enabled flipped off | running | **Stop** | phase → finishing |
+| enabled flipped off | finishing or idle | None | — |
+| enabled flipped | to the same value (coalesced/repeated signal) | None — the recompute is idempotent | — |
+| session finished | stopped (finish completes) · world says record | **Start(latest)** | phase → running |
+| session finished | stopped (finish completes) · world says don't record | None | phase → idle |
+| session finished † | natural end (finish without a prior Stop) | None — the ended session is the freshest evidence against recording; stale live state never restarts it | phase → idle |
 
 - **`watchRoom` becomes a dispatcher.** Arms keep only: input collection (including applying room info to the registry, noting poll errors on the registry, resetting the jittered poll timer), decision execution (`Start` → launch the session goroutine; `Stop` → cancel it), and non-policy plumbing (context cancellation, dropping danmaku events while idle). Its four policy locals (enabled cache, latest RoomInfo, resume flag, and active-session semantics) disappear.
 - **Strict behaviour preservation.** Quirks that must survive verbatim, even where they look like bugs:
@@ -97,3 +99,4 @@ Collapse the four copies into one stateful **session policy** module. The Monito
 ## Comments
 
 - 2026-08-18 — Produced by a `/grill-with-docs` session (grilling + domain-modeling) on the architecture review's top recommendation (C1). Design tree fully traversed; all decisions settled by the maintainer; behaviour-preservation contract confirmed. See ADR-0001 and CONTEXT.md.
+- 2026-08-22 — Issue 02 reworked the module to level-triggered recomputation (ADR-0002): one `shouldRecord` criterion shared by all inputs; the resume-on-finish flag dissolved — resume now falls out of *which phase the session ended from* (a stopped session resumes iff the world says record at end time; a naturally ended session never resumes on stale state). The decision table above is updated to the post-02 truth. Exactly one behaviour changed (row †: a live event during a natural-stop finish now resumes after the finish). An intermediate attempt at pure recompute-on-finish failed the matrix tests: it restarted sessions from stale live state after natural ends (record loop giving up), which would flap start/finish until the next fresh room info.

@@ -1,33 +1,38 @@
 package biz
 
-// sessionPolicy 是会话启停策略的唯一归属：依据房间 enabled 门控、最新
-// 直播信息与会话阶段（idle / running / finishing）决定会话何时开始、停止
-// 与恢复（含"启用到达时会话正在收尾"的恢复规则）。监控协程（watchRoom）
-// 的 select 分支只负责投递输入（房间信息到达、enabled 翻转、会话结束）并
-// 执行返回的决策，自身不再包含任何启停判断。
+// sessionPolicy 是会话启停策略的唯一归属。策略是电平触发的：每个输入
+// （房间信息到达、enabled 翻转、会话结束）先更新策略所知的世界状态，
+// 然后由同一个 decide 按唯一判据 shouldRecord（启用门控开着且最新信息
+// 在播）对照会话阶段裁决——该录而没有会话 → Start，在录而不该录 →
+// Stop，收尾中不产生新决策。监控协程（watchRoom）的 select 分支只负
+// 责投递输入并执行返回的决策，自身不含任何启停判断。
 //
-// 模块只做决策：不接触 RoomRegistry、存储或 goroutine，由单个监控协程独占，
-// 无需互斥锁。决策矩阵见 .scratch/session-policy/spec.md，矩阵每一行都有
-// 对应测试；另见 ADR-0001 与 CONTEXT.md 的"Session policy"词条。
+// 停止是异步的（取消之后还有转封装收尾），"收尾完成后恢复录制"因此
+// 不是立即执行的动作，而是由会话结束时点推导：被停止的会话经过收尾阶
+// 段，收尾完成时若世界状态已变回"该录"则立即恢复；自然结束的会话
+// （未经停止）自身就是"此刻录不下去"的最新证据，不凭陈旧的在播信息
+// 重启，等新到的世界状态再裁决。
+//
+// 模块只做决策：不接触 RoomRegistry、存储或 goroutine，由单个监控协程
+// 独占，无需互斥锁。决策矩阵见 .scratch/session-policy/spec.md，矩阵
+// 每一行都有对应测试；另见 ADR-0001、ADR-0002 与 CONTEXT.md 的
+// "Session policy" 词条。
 type sessionPolicy struct {
 	// enabled 是房间的录制启用门控。
 	enabled bool
-	// latestRoomInfo 是最近一次到达的房间信息。
-	latestRoomInfo *RoomInfo
+	// latest 是最近一次到达的房间信息。
+	latest *RoomInfo
 	// phase 是会话阶段：空闲、录制中、收尾中（已发送停止、尚未结束）。
 	phase sessionPhase
-	// resumeOnFinish 在"启用到达时会话正在收尾"置位：收尾完成后若最新
-	// 信息仍显示在播则恢复录制。
-	resumeOnFinish bool
 }
 
 // sessionPhase 是会话的三个阶段。
 type sessionPhase int
 
 const (
-	phaseIdle sessionPhase = iota
-	phaseRunning
-	phaseFinishing
+	phaseIdle      sessionPhase = iota // 空闲：无录制会话
+	phaseRunning                       // 录制中：有录制会话
+	phaseFinishing                     // 收尾中：已发送停止、尚未结束
 )
 
 // policyDecision 是会话策略对单个事件的裁决。输出字母表为
@@ -53,15 +58,20 @@ func newSessionPolicy(enabled bool) *sessionPolicy {
 	return &sessionPolicy{enabled: enabled}
 }
 
-// RoomInfoArrived 处理到达的房间信息——弹幕房间状态事件与回退轮询的共享
-// 入口。无论决策如何，最新房间信息总是更新。
-func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) policyDecision {
-	p.latestRoomInfo = info
+// shouldRecord 是策略的唯一判据：启用门控开着，且最新信息显示在播。
+func (p *sessionPolicy) shouldRecord() bool {
+	return p.enabled && p.latest != nil && p.latest.Live
+}
+
+// decide 按当前世界状态对照会话阶段做差额裁决，是房间信息到达与启用
+// 翻转两个入口共享的唯一决策逻辑。收尾阶段不产生决策：停止是异步的，
+// 收尾期间到达的输入只更新世界状态，恢复与否留待会话结束时裁决。
+func (p *sessionPolicy) decide() policyDecision {
 	switch {
-	case info.Live && p.enabled && p.phase == phaseIdle:
+	case p.phase == phaseIdle && p.shouldRecord():
 		p.phase = phaseRunning
-		return policyDecision{kind: decisionStart, info: info}
-	case !info.Live && p.phase == phaseRunning:
+		return policyDecision{kind: decisionStart, info: p.latest}
+	case p.phase == phaseRunning && !p.shouldRecord():
 		p.phase = phaseFinishing
 		return policyDecision{kind: decisionStop}
 	default:
@@ -69,47 +79,31 @@ func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) policyDecision {
 	}
 }
 
-// EnabledFlipped 处理房间启用状态的重评估信号（由监控的 roomChanged 分支
-// 从注册表读取后投递）。值与当前状态一致时为无操作决策，从而吸收合并或
-// 重复的信号。
-func (p *sessionPolicy) EnabledFlipped(enabled bool) policyDecision {
-	if enabled == p.enabled {
-		return policyDecision{}
-	}
-	p.enabled = enabled
-
-	// 启用到达时会话空闲：若最新信息显示在播则立即开始录制。
-	if enabled {
-		switch p.phase {
-		case phaseIdle:
-			if p.latestRoomInfo != nil && p.latestRoomInfo.Live {
-				p.phase = phaseRunning
-				return policyDecision{kind: decisionStart, info: p.latestRoomInfo}
-			}
-		case phaseFinishing:
-			// 启用到达时会话正在收尾：收尾完成后若仍在播则恢复录制。
-			p.resumeOnFinish = true
-		}
-		return policyDecision{}
-	}
-
-	// 禁用到达时会话正在录制或收尾：立即停止。
-	p.resumeOnFinish = false
-	if p.phase == phaseRunning {
-		p.phase = phaseFinishing
-		return policyDecision{kind: decisionStop}
-	}
-	return policyDecision{}
+// RoomInfoArrived 处理到达的房间信息——弹幕房间状态事件与回退轮询的共享
+// 入口。最新房间信息总是更新，然后重算裁决。
+func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) policyDecision {
+	p.latest = info
+	return p.decide()
 }
 
-// SessionFinished 处理会话协程结束：若恢复标志置位且最新信息仍显示在播
-// 则立即恢复录制（标志随之清除），否则回到空闲。
+// EnabledFlipped 处理房间启用状态的重评估信号（由监控的 roomChanged 分支
+// 从注册表读取后投递）。值与当前状态一致时重算结果不变，从而吸收合并或
+// 重复的信号。
+func (p *sessionPolicy) EnabledFlipped(enabled bool) policyDecision {
+	p.enabled = enabled
+	return p.decide()
+}
+
+// SessionFinished 处理会话协程结束。被停止的会话（经过收尾阶段）结束
+// 时，若世界状态已变回"该录"则立即恢复；自然结束的会话（录制中直接
+// 完成，未经停止）只回到空闲——会话自身的结束就是"此刻录不下去"的
+// 最新证据，是否再录等新到的世界状态说了算。
 func (p *sessionPolicy) SessionFinished() policyDecision {
-	if p.resumeOnFinish && p.latestRoomInfo != nil && p.latestRoomInfo.Live {
-		p.resumeOnFinish = false
-		p.phase = phaseRunning
-		return policyDecision{kind: decisionStart, info: p.latestRoomInfo}
-	}
+	stopped := p.phase == phaseFinishing
 	p.phase = phaseIdle
+	if stopped && p.shouldRecord() {
+		p.phase = phaseRunning
+		return policyDecision{kind: decisionStart, info: p.latest}
+	}
 	return policyDecision{}
 }
