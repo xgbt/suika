@@ -9,10 +9,9 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// remuxWithRetry remuxes an FLV segment to MP4 (stream copy, no
-// re-encode), injecting title/artist/date container metadata. On failure
-// it retries once with -fflags +discardcorrupt. The source file is never
-// touched here; deletion happens only after a verified output.
+// remuxWithRetry 将 FLV 分段转封装为 MP4（流拷贝，不重编码），并注入
+// title/artist/date 容器元数据。失败时附加 -fflags +discardcorrupt
+// 重试一次。此处绝不改动源文件；只有输出验证通过后才会删除源文件。
 func remuxWithRetry(ctx context.Context, ffmpegPath, src, dst, title, artist string, liveStart int64) error {
 	date := time.Unix(liveStart, 0).Format(time.DateTime)
 	if err := runFFmpeg(ctx, ffmpegPath, src, dst, title, artist, date, false); err == nil {

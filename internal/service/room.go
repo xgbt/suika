@@ -16,12 +16,12 @@ const (
 	defaultPageSize = 20
 )
 
-// updatableRoomFields are the only field paths accepted by UpdateRoom;
-// room_id is immutable and the runtime fields are server-populated.
+// updatableRoomFields 是 UpdateRoom 接受的全部字段路径；room_id 不可变，
+// 运行时字段由服务端填充。
 var updatableRoomFields = map[string]bool{
-	"streamer_name": true,
-	"room_title":    true,
-	"enabled":       true,
+	"streamer_name":  true,
+	"room_title":     true,
+	"record_enabled": true,
 }
 
 type RoomService struct {
@@ -35,11 +35,11 @@ func NewRoomService(uc *biz.RoomUsecase) *RoomService {
 }
 
 func (s *RoomService) CreateRoom(ctx context.Context, req *v1.CreateRoomRequest) (*v1.CreateRoomResponse, error) {
-	rt, err := s.uc.CreateRoom(ctx, convertRoom(req.GetRoom()))
+	rt, err := s.uc.CreateRoom(ctx, toRoomDO(req.GetRoom()))
 	if err != nil {
 		return nil, err
 	}
-	return &v1.CreateRoomResponse{Room: convertRoomReply(rt)}, nil
+	return &v1.CreateRoomResponse{Room: toRoomDTO(rt)}, nil
 }
 
 func (s *RoomService) GetRoom(ctx context.Context, req *v1.GetRoomRequest) (*v1.GetRoomResponse, error) {
@@ -47,7 +47,7 @@ func (s *RoomService) GetRoom(ctx context.Context, req *v1.GetRoomRequest) (*v1.
 	if err != nil {
 		return nil, err
 	}
-	return &v1.GetRoomResponse{Room: convertRoomReply(roomRuntime)}, nil
+	return &v1.GetRoomResponse{Room: toRoomDTO(roomRuntime)}, nil
 }
 
 func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (*v1.ListRoomsResponse, error) {
@@ -77,9 +77,9 @@ func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (
 		roomTitle := req.GetRoomTitle()
 		query.RoomTitle = &roomTitle
 	}
-	if req.Enabled != nil {
-		enabled := req.GetEnabled()
-		query.Enabled = &enabled
+	if req.RecordEnabled != nil {
+		recordEnabled := req.GetRecordEnabled()
+		query.RecordEnabled = &recordEnabled
 	}
 
 	roomRuntimes, err := s.uc.ListRoomRuntimes(ctx, query)
@@ -94,7 +94,7 @@ func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (
 		response.NextPageToken = pageToken.Next(req).String()
 	}
 	for _, rt := range roomRuntimes {
-		response.Rooms = append(response.Rooms, convertRoomReply(rt))
+		response.Rooms = append(response.Rooms, toRoomDTO(rt))
 	}
 
 	return response, nil
@@ -115,11 +115,11 @@ func (s *RoomService) UpdateRoom(ctx context.Context, req *v1.UpdateRoomRequest)
 	}
 	curRoom := curResp.GetRoom()
 	fieldmask.Update(req.GetUpdateMask(), curRoom, req.GetRoom())
-	rt, err := s.uc.UpdateRoom(ctx, convertRoom(curRoom))
+	rt, err := s.uc.UpdateRoom(ctx, toRoomDO(curRoom))
 	if err != nil {
 		return nil, err
 	}
-	return &v1.UpdateRoomResponse{Room: convertRoomReply(rt)}, nil
+	return &v1.UpdateRoomResponse{Room: toRoomDTO(rt)}, nil
 }
 
 func (s *RoomService) DeleteRoom(ctx context.Context, req *v1.DeleteRoomRequest) (*v1.DeleteRoomResponse, error) {
@@ -129,55 +129,56 @@ func (s *RoomService) DeleteRoom(ctx context.Context, req *v1.DeleteRoomRequest)
 	return &v1.DeleteRoomResponse{Empty: &emptypb.Empty{}}, nil
 }
 
-func convertRoom(in *v1.Room) *biz.Room {
+func toRoomDO(in *v1.Room) *biz.Room {
 	if in == nil {
 		return nil
 	}
 	return &biz.Room{
-		RoomID:       in.GetRoomId(),
-		StreamerName: in.GetStreamerName(),
-		RoomTitle:    in.GetRoomTitle(),
-		Enabled:      in.GetEnabled(),
+		RoomID:        in.GetRoomId(),
+		StreamerName:  in.GetStreamerName(),
+		RoomTitle:     in.GetRoomTitle(),
+		RecordEnabled: in.GetRecordEnabled(),
 	}
 }
 
-// convertRoomReply converts the merged runtime view back to a DTO.
-func convertRoomReply(rt *biz.RoomRuntime) *v1.Room {
+// toRoomDTO 把 RoomRuntime 转换回 DTO。
+func toRoomDTO(rt *biz.RoomRuntime) *v1.Room {
 	if rt == nil {
 		return nil
 	}
 
 	var liveStatus v1.LiveStatus
-	switch rt.Live {
-	case biz.LivePreparing:
+	switch rt.LiveStatus {
+	case biz.LiveStatusPreparing:
 		liveStatus = v1.LiveStatus_LIVE_STATUS_PREPARING
-	case biz.LiveOnAir:
+	case biz.LiveStatusOnAir:
 		liveStatus = v1.LiveStatus_LIVE_STATUS_LIVE
 	default:
 		liveStatus = v1.LiveStatus_LIVE_STATUS_UNSPECIFIED
 	}
 	var recordStatus v1.RecordStatus
-	switch rt.Record {
-	case biz.RecordRecording:
+	switch rt.RecordStatus {
+	case biz.RecordStatusRecording:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_RECORDING
-	case biz.RecordRemuxing:
+	case biz.RecordStatusRemuxing:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_REMUXING
-	case biz.RecordError:
+	case biz.RecordStatusError:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_ERROR
 	default:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_IDLE
 	}
 
 	room := &v1.Room{
-		RoomId:       rt.Room.RoomID,
-		StreamerName: rt.Room.StreamerName,
-		RoomTitle:    rt.Room.RoomTitle,
-		Enabled:      rt.Room.Enabled,
-		LiveStatus:   liveStatus,
-		RecordStatus: recordStatus,
-		CurrentFile:  rt.CurrentFile,
-		BytesWritten: rt.BytesWritten,
-		LastError:    rt.LastError,
+		RoomId:           rt.Room.RoomID,
+		StreamerName:     rt.Room.StreamerName,
+		RoomTitle:        rt.Room.RoomTitle,
+		RecordEnabled:    rt.Room.RecordEnabled,
+		LiveStatus:       liveStatus,
+		RecordStatus:     recordStatus,
+		CurrentFile:      rt.CurrentFile,
+		BytesWritten:     rt.BytesWritten,
+		DownloadSpeedBps: rt.DownloadSpeed,
+		LastError:        rt.LastError,
 	}
 	if !rt.Room.CreateTime.IsZero() {
 		room.CreateTime = timestamppb.New(rt.Room.CreateTime)

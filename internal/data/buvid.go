@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
-// buvidTTL is the cache lifetime for finger/spi fingerprints.
+// buvidTTL 是 finger/spi 指纹的缓存有效期。
 const buvidTTL = 24 * time.Hour
 
-// defaultBuvidSpiURL is the Bilibili device-fingerprint endpoint.
+// defaultBuvidSpiURL 是 B 站设备指纹端点。
 const defaultBuvidSpiURL = "https://api.bilibili.com/x/frontend/finger/spi"
 
 type cachedBuvid struct {
@@ -22,17 +23,16 @@ type cachedBuvid struct {
 	expiresAt time.Time
 }
 
-// buvidStore fetches and caches Bilibili device fingerprints
-// (buvid3/buvid4), injected into cookie headers to pass -352 risk
-// control. Ported from hikami-go/internal/biliutil/buvid.go.
+// buvidStore 获取并缓存 B 站设备指纹（buvid3/buvid4），注入 cookie
+// 头以通过 -352 风控。移植自 hikami-go/internal/biliutil/buvid.go。
 type buvidStore struct {
-	httpClient *http.Client
+	httpClient *resty.Client
 	spiURL     string
 	cache      map[string]cachedBuvid
 	mu         sync.Mutex
 }
 
-func newBuvidStore(httpc *http.Client) *buvidStore {
+func newBuvidStore(httpc *resty.Client) *buvidStore {
 	return &buvidStore{
 		httpClient: httpc,
 		spiURL:     defaultBuvidSpiURL,
@@ -40,7 +40,7 @@ func newBuvidStore(httpc *http.Client) *buvidStore {
 	}
 }
 
-// getBuvids returns the buvid3/buvid4 pair for cookieHeader, cached 24h.
+// getBuvids 返回 cookieHeader 对应的 buvid3/buvid4，缓存 24 小时。
 func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3, buvid4 string, err error) {
 	if s == nil {
 		return "", "", nil
@@ -53,24 +53,21 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 	}
 	s.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.spiURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("User-Agent", biliUserAgent)
-	req.Header.Set("Referer", "https://www.bilibili.com")
-	req.Header.Set("Origin", "https://www.bilibili.com")
+	req := s.httpClient.R().
+		SetContext(ctx).
+		SetHeader("User-Agent", biliUserAgent).
+		SetHeader("Referer", "https://www.bilibili.com").
+		SetHeader("Origin", "https://www.bilibili.com")
 	if cookieHeader != "" {
-		req.Header.Set("Cookie", cookieHeader)
+		req.SetHeader("Cookie", cookieHeader)
 	}
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := req.Get(s.spiURL)
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("get buvids http status %d", resp.StatusCode)
+	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
+		return "", "", fmt.Errorf("get buvids http status %d", resp.StatusCode())
 	}
 
 	var result struct {
@@ -81,7 +78,7 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 			B4 string `json:"b_4"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
 		return "", "", err
 	}
 	if result.Code != 0 {
@@ -101,8 +98,8 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 	return result.Data.B3, result.Data.B4, nil
 }
 
-// invalidate drops the cached fingerprints for cookieHeader so the next
-// getBuvids refetches (used before risk-control retries).
+// invalidate 丢弃 cookieHeader 的缓存指纹，使下次 getBuvids 重新获取
+// （风控重试前使用）。
 func (s *buvidStore) invalidate(cookieHeader string) {
 	if s == nil {
 		return
@@ -112,13 +109,12 @@ func (s *buvidStore) invalidate(cookieHeader string) {
 	s.mu.Unlock()
 }
 
-// injectBuvids appends buvid3/buvid4 to the cookie header with replace
-// semantics: existing buvid3=/buvid4= segments are dropped first so the
-// fresh fingerprint wins (Bilibili parses the first same-name cookie).
+// injectBuvids 以替换语义向 cookie 头追加 buvid3/buvid4：先剔除已有的
+// buvid3=/buvid4= 段，让新指纹生效（B 站解析同名 cookie 的第一个）。
 func injectBuvids(cookieHeader, buvid3, buvid4 string) string {
 	var kept []string
 	if cookieHeader != "" {
-		for _, part := range strings.Split(cookieHeader, ";") {
+		for part := range strings.SplitSeq(cookieHeader, ";") {
 			p := strings.TrimSpace(part)
 			if p == "" || strings.HasPrefix(p, "buvid3=") || strings.HasPrefix(p, "buvid4=") {
 				continue

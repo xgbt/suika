@@ -1,0 +1,21 @@
+.git
+.gitattributes
+.claude
+.vscode
+.idea
+
+# Build output
+bin/
+
+# Runtime data (never bake local state or secrets into the image)
+data/
+recordings/
+configs/credentials.yaml
+*.log
+
+# Frontend build artifacts and dependencies
+web/node_modules
+web/dist
+
+# Docs are not needed in the build context
+docs/

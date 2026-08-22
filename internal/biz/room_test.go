@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// fakeStatsRepo scripts SessionStatsRepo behavior for the room API tests.
+// fakeStatsRepo 为房间 API 测试模拟 SessionStatsRepo 行为。
 type fakeStatsRepo struct {
 	stats    map[int64]*SessionStats
 	failures map[int64]error
@@ -27,24 +27,15 @@ func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionS
 	return nil, nil
 }
 
-// fakeRoomRepo scripts RoomRepo behavior for registry and usecase tests.
+// fakeRoomRepo 为 RoomRegistry 和 usecase 测试模拟 RoomRepo 行为。
 type fakeRoomRepo struct {
-	rooms       map[int64]*Room
-	listErr     error
-	updateErr   error
-	backfillErr error
-	updates     []*Room
-	backfills   []backfillCall
+	rooms     map[int64]*Room
+	listErr   error
+	updateErr error
+	updates   []*Room
 }
 
-type backfillCall struct {
-	roomID       int64
-	streamerName string
-	roomTitle    string
-	updated      bool
-}
-
-func (r *fakeRoomRepo) FindByRoomID(_ context.Context, roomID int64) (*Room, error) {
+func (r *fakeRoomRepo) GetByRoomID(_ context.Context, roomID int64) (*Room, error) {
 	if room, ok := r.rooms[roomID]; ok {
 		return room, nil
 	}
@@ -85,26 +76,6 @@ func (r *fakeRoomRepo) UpdateRoom(_ context.Context, room *Room) (*Room, error) 
 	return room, nil
 }
 
-func (r *fakeRoomRepo) BackfillRoomIdentity(_ context.Context, roomID int64, streamerName string, roomTitle string) (bool, error) {
-	if r.backfillErr != nil {
-		r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: false})
-		return false, r.backfillErr
-	}
-	updated := false
-	if room, ok := r.rooms[roomID]; ok {
-		if room.StreamerName == "" && streamerName != "" {
-			room.StreamerName = streamerName
-			updated = true
-		}
-		if room.RoomTitle == "" && roomTitle != "" {
-			room.RoomTitle = roomTitle
-			updated = true
-		}
-	}
-	r.backfills = append(r.backfills, backfillCall{roomID: roomID, streamerName: streamerName, roomTitle: roomTitle, updated: updated})
-	return updated, nil
-}
-
 func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
 	if _, ok := r.rooms[roomID]; !ok {
 		return ErrRoomNotFound
@@ -116,7 +87,7 @@ func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
 func TestNewRoomRegistryLoadsRooms(t *testing.T) {
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{
 		2: {RoomID: 2, StreamerName: "b"},
-		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
 	}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
@@ -126,11 +97,16 @@ func TestNewRoomRegistryLoadsRooms(t *testing.T) {
 	if len(rooms) != 2 {
 		t.Fatalf("rooms = %d, want 2", len(rooms))
 	}
-	if rooms[0].RoomID != 1 || rooms[0].StreamerName != "a" || !rooms[0].Enabled {
-		t.Fatalf("room[0] = %+v", rooms[0])
+	// Rooms() 由 map 迭代产生，顺序不作保证：按 RoomID 索引后断言。
+	byID := make(map[int64]Room, len(rooms))
+	for _, room := range rooms {
+		byID[room.RoomID] = room
 	}
-	if rooms[1].RoomID != 2 || rooms[1].StreamerName != "b" || rooms[1].Enabled {
-		t.Fatalf("room[1] = %+v", rooms[1])
+	if got, ok := byID[1]; !ok || got.StreamerName != "a" || !got.RecordEnabled {
+		t.Fatalf("room 1 = %+v, present = %v", got, ok)
+	}
+	if got, ok := byID[2]; !ok || got.StreamerName != "b" || got.RecordEnabled {
+		t.Fatalf("room 2 = %+v, present = %v", got, ok)
 	}
 }
 
@@ -151,8 +127,105 @@ func TestNewRoomRegistryLoadError(t *testing.T) {
 	}
 }
 
-func TestApplyRoomInfoBackfillsIdentityThroughRepo(t *testing.T) {
-	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Enabled: true}}}
+func TestRoomRegistryAddUpdateRemove(t *testing.T) {
+	reg, err := NewRoomRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	changes, unsubscribe := reg.Subscribe()
+	defer unsubscribe()
+
+	// Add：立即可见。
+	reg.Add(Room{RoomID: 1, StreamerName: "a", RecordEnabled: true})
+	if len(reg.Rooms()) != 1 || !reg.Room(1).RecordEnabled {
+		t.Fatalf("registry after Add = %+v", reg.Rooms())
+	}
+
+	// Update：刷新房间字段，保留运行时状态。
+	reg.StartRecording(1)
+	reg.Update(Room{RoomID: 1, StreamerName: "b", RecordEnabled: false})
+	rt := reg.runtime(1)
+	if rt.Room.StreamerName != "b" || rt.Room.RecordEnabled {
+		t.Fatalf("room after Update = %+v", rt.Room)
+	}
+	if rt.RecordStatus != RecordStatusRecording {
+		t.Fatalf("record status after Update = %v, want recording preserved", rt.RecordStatus)
+	}
+
+	// Remove：立即不可见；迟到的状态写入静默忽略。
+	reg.Remove(1)
+	if len(reg.Rooms()) != 0 {
+		t.Fatalf("registry after Remove = %+v", reg.Rooms())
+	}
+	reg.NoteError(1, stderrors.New("late write"))
+	if got := reg.runtime(1).LastError; got != "" {
+		t.Fatalf("last error after Remove = %q, want empty", got)
+	}
+
+	// 通知合并：三次变更只积压一个唤醒信号。
+	select {
+	case <-changes:
+	case <-time.After(time.Second):
+		t.Fatal("no change signal after mutations")
+	}
+	select {
+	case <-changes:
+		t.Fatal("unexpected extra change signal")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// 退订后不再收到信号。
+	unsubscribe()
+	reg.Add(Room{RoomID: 2})
+	select {
+	case <-changes:
+		t.Fatal("change signal delivered after unsubscribe")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestRoomUsecaseCRUDSyncsRegistry(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, StreamerName: "a"}}}
+	reg, err := NewRoomRegistry(repo)
+	if err != nil {
+		t.Fatalf("NewRoomRegistry() error = %v", err)
+	}
+	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	ctx := context.Background()
+
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 2, StreamerName: "b", RecordEnabled: true}); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if got := reg.Room(2); got.StreamerName != "b" || !got.RecordEnabled {
+		t.Fatalf("registry after create = %+v", got)
+	}
+
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, StreamerName: "b2", RecordEnabled: false}); err != nil {
+		t.Fatalf("UpdateRoom: %v", err)
+	}
+	if got := reg.Room(2); got.StreamerName != "b2" || got.RecordEnabled {
+		t.Fatalf("registry after update = %+v", got)
+	}
+
+	if err := uc.DeleteRoom(ctx, 2); err != nil {
+		t.Fatalf("DeleteRoom: %v", err)
+	}
+	if len(reg.Rooms()) != 1 {
+		t.Fatalf("registry after delete has %d rooms, want 1", len(reg.Rooms()))
+	}
+
+	// 持久化失败时注册表保持不变。
+	repo.updateErr = stderrors.New("db locked")
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 1, StreamerName: "x"}); err == nil {
+		t.Fatal("UpdateRoom error = nil, want persist error")
+	}
+	if got := reg.Room(1); got.StreamerName != "a" {
+		t.Fatalf("registry changed despite persist failure: %+v", got)
+	}
+}
+
+func TestApplyRoomInfoUpdatesIdentityThroughRepo(t *testing.T) {
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, RecordEnabled: true}}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
@@ -161,24 +234,27 @@ func TestApplyRoomInfoBackfillsIdentityThroughRepo(t *testing.T) {
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
 
 	if got := reg.Room(1).StreamerName; got != "streamer" {
-		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
+		t.Fatalf("streamer_name = %q, want streamer", got)
 	}
 	if got := reg.Room(1).RoomTitle; got != "title-a" {
-		t.Fatalf("backfilled room_title = %q, want title-a", got)
+		t.Fatalf("room_title = %q, want title-a", got)
 	}
-	if len(repo.backfills) != 1 || !repo.backfills[0].updated || repo.backfills[0].roomID != 1 || repo.backfills[0].streamerName != "streamer" || repo.backfills[0].roomTitle != "title-a" {
-		t.Fatalf("repo backfills = %+v, want one successful backfill", repo.backfills)
+	if len(repo.updates) != 1 || repo.updates[0].RoomID != 1 || repo.updates[0].StreamerName != "streamer" || repo.updates[0].RoomTitle != "title-a" {
+		t.Fatalf("repo.updates = %+v, want one update", repo.updates)
 	}
 
-	// A second apply with metadata already set must not write again.
+	// 再次上报新值，内存和持久化都应更新。
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: false, StreamerName: "other", Title: "title-b"})
-	if len(repo.backfills) != 1 {
-		t.Fatalf("repo backfills = %d, want exactly 1", len(repo.backfills))
+	if got := reg.Room(1).StreamerName; got != "other" {
+		t.Fatalf("streamer_name after update = %q, want other", got)
+	}
+	if len(repo.updates) != 2 {
+		t.Fatalf("repo.updates = %d, want 2", len(repo.updates))
 	}
 }
 
 func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
-	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, backfillErr: stderrors.New("db locked")}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1}}, updateErr: stderrors.New("db locked")}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
@@ -186,7 +262,7 @@ func TestApplyRoomInfoSurvivesRepoFailure(t *testing.T) {
 
 	reg.ApplyRoomInfo(context.Background(), 1, &RoomInfo{RoomID: 1, Live: true, StreamerName: "streamer", Title: "title-a"})
 
-	// The in-memory backfill still lands when persistence fails.
+	// 持久化失败时，内存中的回填仍要生效。
 	if got := reg.Room(1).StreamerName; got != "streamer" {
 		t.Fatalf("backfilled streamer_name = %q, want streamer", got)
 	}
@@ -199,16 +275,15 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	stats := &fakeStatsRepo{
 		stats: map[int64]*SessionStats{
 			1: {CurrentFile: "/rec/1_part2.flv", BytesWritten: 4096},
-			// room 2 has stats available but is not recording: they must
-			// not be merged.
+			// 房间 2 有统计数据但未在录制：不得合并进度。
 			2: {CurrentFile: "/rec/2_part1.flv", BytesWritten: 1},
 		},
 		failures: map[int64]error{3: stderrors.New("stats unavailable")},
 	}
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{
-		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
 		2: {RoomID: 2, StreamerName: "b"},
-		3: {RoomID: 3, StreamerName: "c", Enabled: true},
+		3: {RoomID: 3, StreamerName: "c", RecordEnabled: true},
 	}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
@@ -216,7 +291,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	}
 	reg.ApplyRoomInfo(context.Background(), 1, liveInfo(1, true))
 	reg.setState(1, func(st *roomState) {
-		st.record = RecordRecording
+		st.recordStatus = RecordStatusRecording
 		st.sessionStartedAt = time.Unix(100, 0)
 	})
 	reg.NoteError(2, stderrors.New("boom"))
@@ -233,8 +308,8 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	if out[0].Room.RoomID != 1 || out[1].Room.RoomID != 2 || out[2].Room.RoomID != 3 {
 		t.Fatalf("room order not preserved: %+v", out)
 	}
-	if out[0].Live != LiveOnAir || out[0].Record != RecordRecording {
-		t.Fatalf("room 1 state = %v/%v", out[0].Live, out[0].Record)
+	if out[0].LiveStatus != LiveStatusOnAir || out[0].RecordStatus != RecordStatusRecording {
+		t.Fatalf("room 1 state = %v/%v", out[0].LiveStatus, out[0].RecordStatus)
 	}
 	if out[0].CurrentFile != "/rec/1_part2.flv" || out[0].BytesWritten != 4096 {
 		t.Fatalf("room 1 stats = %q/%d", out[0].CurrentFile, out[0].BytesWritten)
@@ -242,20 +317,20 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	if !out[0].SessionStartedAt.Equal(time.Unix(100, 0)) {
 		t.Fatalf("session start = %v", out[0].SessionStartedAt)
 	}
-	if out[1].LastError != "boom" || out[1].Room.Enabled {
+	if out[1].LastError != "boom" || out[1].Room.RecordEnabled {
 		t.Fatalf("room 2 = %+v", out[1])
 	}
 	if out[1].CurrentFile != "" || out[1].BytesWritten != 0 {
 		t.Fatalf("room 2 unexpectedly got stats: %q/%d", out[1].CurrentFile, out[1].BytesWritten)
 	}
-	// recording room whose stats call fails: skipped without an error.
-	if out[2].Record != RecordRecording {
-		t.Fatalf("room 3 state = %v", out[2].Record)
+	// 录制中但统计查询失败的房间：静默跳过，不报错。
+	if out[2].RecordStatus != RecordStatusRecording {
+		t.Fatalf("room 3 state = %v", out[2].RecordStatus)
 	}
 	if out[2].CurrentFile != "" || out[2].BytesWritten != 0 {
 		t.Fatalf("room 3 stats = %q/%d, want zero values after stats error", out[2].CurrentFile, out[2].BytesWritten)
 	}
-	// stats are only requested for RecordRecording rooms.
+	// 只有录制中的房间才会查询统计。
 	if len(stats.calls) != 2 || stats.calls[0] != 1 || stats.calls[1] != 3 {
 		t.Fatalf("stats calls = %v, want [1 3]", stats.calls)
 	}
@@ -285,7 +360,7 @@ func TestRoomUsecaseValidation(t *testing.T) {
 	if err := uc.DeleteRoom(ctx, -1); !stderrors.Is(err, ErrRoomInvalidArgument) {
 		t.Fatalf("DeleteRoom(negative id) error = %v, want invalid argument", err)
 	}
-	// Empty streamer metadata is allowed: the platform API backfills it later.
+	// 允许空的主播元数据：之后由平台 API 回填。
 	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 7}); err != nil {
 		t.Fatalf("CreateRoom(empty metadata) error = %v, want success", err)
 	}

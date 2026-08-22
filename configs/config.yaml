@@ -20,7 +20,7 @@ recorder:
   fallback_poll_interval: 600s
   # 10000 = 原画。需要登录 cookie 才能拿到原画,无 cookie 时会降级。
   quality_qn: 10000
-  max_concurrent: 2
+  max_concurrent: 10
   # 本机未安装 ffmpeg 时必须保持 false;装了 ffmpeg 后再改 true。
   # 程序会在启动时探测 ffmpeg,开启转封装但 ffmpeg 缺失会直接启动失败。
   remux_enabled: false

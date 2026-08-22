@@ -19,7 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// fakeSessionStatsRepo implements biz.SessionStatsRepo with no storage IO.
+// fakeSessionStatsRepo 实现 biz.SessionStatsRepo，不进行存储 IO。
 type fakeSessionStatsRepo struct {
 	stats map[int64]*biz.SessionStats
 	errs  map[int64]error
@@ -34,7 +34,7 @@ func (f *fakeSessionStatsRepo) SessionStats(_ context.Context, roomID int64) (*b
 	return f.stats[roomID], nil
 }
 
-// newTestData builds a real *data.Data backed by a fresh sqlite file.
+// newTestData 构建以全新 sqlite 文件为后端的真实 *data.Data。
 func newTestData(t *testing.T) *data.Data {
 	t.Helper()
 	confData := &conf.Data{
@@ -43,7 +43,7 @@ func newTestData(t *testing.T) *data.Data {
 			Source: filepath.Join(t.TempDir(), "test.db"),
 		},
 	}
-	// RemuxEnabled=false keeps NewData from probing for ffmpeg.
+	// RemuxEnabled=false 使 NewData 不去探测 ffmpeg。
 	d, cleanup, err := data.NewData(confData, &conf.Recorder{RemuxEnabled: proto.Bool(false)})
 	if err != nil {
 		t.Fatalf("NewData() error = %v", err)
@@ -52,9 +52,9 @@ func newTestData(t *testing.T) *data.Data {
 	return d
 }
 
-// roomEnv is the full service chain over one *data.Data, as wireApp builds
-// it. Building a second env over the same data simulates a restart: the
-// registry re-loads the persisted rooms once at construction.
+// roomEnv 是在同一个 *data.Data 上按 wireApp 的方式搭起的完整服务链。
+// 在同一个 data 上再建一个 env 即模拟一次重启：RoomRegistry 只在构造时
+// 重新加载持久化的 Room。
 type roomEnv struct {
 	svc   *RoomService
 	reg   *biz.RoomRegistry
@@ -78,19 +78,19 @@ func TestRoomServiceCRUD(t *testing.T) {
 	svc := newTestRoomEnv(t, newTestData(t)).svc
 
 	created, err := svc.CreateRoom(ctx, &v1.CreateRoomRequest{
-		Room: &v1.Room{RoomId: 1001, StreamerName: "streamer-a", Enabled: true},
+		Room: &v1.Room{RoomId: 1001, StreamerName: "streamer-a", RecordEnabled: true},
 	})
 	if err != nil {
 		t.Fatalf("CreateRoom() error = %v", err)
 	}
 	createdRoom := created.GetRoom()
-	if createdRoom.GetRoomId() != 1001 || createdRoom.GetStreamerName() != "streamer-a" || !createdRoom.GetEnabled() {
+	if createdRoom.GetRoomId() != 1001 || createdRoom.GetStreamerName() != "streamer-a" || !createdRoom.GetRecordEnabled() {
 		t.Fatalf("CreateRoom() = %+v, want created room", created)
 	}
 	if createdRoom.GetCreateTime() == nil || createdRoom.GetUpdateTime() == nil {
 		t.Fatal("CreateRoom() did not set timestamps")
 	}
-	// Runtime fields carry default values on create responses.
+	// 创建响应中的运行时字段携带默认值。
 	if createdRoom.GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED {
 		t.Fatalf("CreateRoom() live_status = %v, want LIVE_STATUS_UNSPECIFIED", createdRoom.GetLiveStatus())
 	}
@@ -106,7 +106,7 @@ func TestRoomServiceCRUD(t *testing.T) {
 		t.Fatalf("GetRoom() error = %v", err)
 	}
 	gotRoom := got.GetRoom()
-	if gotRoom.GetStreamerName() != "streamer-a" || !gotRoom.GetEnabled() {
+	if gotRoom.GetStreamerName() != "streamer-a" || !gotRoom.GetRecordEnabled() {
 		t.Fatalf("GetRoom() = %+v, want created room", got)
 	}
 
@@ -118,20 +118,20 @@ func TestRoomServiceCRUD(t *testing.T) {
 		t.Fatalf("UpdateRoom(streamer_name) error = %v", err)
 	}
 	updatedRoom := updated.GetRoom()
-	if updatedRoom.GetStreamerName() != "streamer-b" || !updatedRoom.GetEnabled() {
-		t.Fatalf("UpdateRoom(streamer_name) = %+v, want renamed room with enabled kept", updated)
+	if updatedRoom.GetStreamerName() != "streamer-b" || !updatedRoom.GetRecordEnabled() {
+		t.Fatalf("UpdateRoom(streamer_name) = %+v, want renamed room with record_enabled kept", updated)
 	}
 
-	disabled, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
-		Room:       &v1.Room{RoomId: 1001, Enabled: false},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"enabled"}},
+	recordOff, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
+		Room:       &v1.Room{RoomId: 1001, RecordEnabled: false},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"record_enabled"}},
 	})
 	if err != nil {
-		t.Fatalf("UpdateRoom(enabled) error = %v", err)
+		t.Fatalf("UpdateRoom(record_enabled) error = %v", err)
 	}
-	disabledRoom := disabled.GetRoom()
-	if disabledRoom.GetEnabled() || disabledRoom.GetStreamerName() != "streamer-b" {
-		t.Fatalf("UpdateRoom(enabled) = %+v, want disabled room with streamer_name kept", disabled)
+	recordOffRoom := recordOff.GetRoom()
+	if recordOffRoom.GetRecordEnabled() || recordOffRoom.GetStreamerName() != "streamer-b" {
+		t.Fatalf("UpdateRoom(record_enabled) = %+v, want room with recording off and streamer_name kept", recordOff)
 	}
 
 	if _, err := svc.DeleteRoom(ctx, &v1.DeleteRoomRequest{RoomId: 1001}); err != nil {
@@ -141,7 +141,7 @@ func TestRoomServiceCRUD(t *testing.T) {
 		t.Fatalf("GetRoom() after delete error = %v, want not found", err)
 	}
 
-	// Empty metadata is accepted on create (platform backfill later).
+	// 创建时允许空元数据（之后由平台回填）。
 	if _, err := svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: &v1.Room{RoomId: 2002}}); err != nil {
 		t.Fatalf("CreateRoom(empty metadata) error = %v", err)
 	}
@@ -196,24 +196,24 @@ func TestRoomServiceListRoomsOptionalQuery(t *testing.T) {
 	svc := newTestRoomEnv(t, newTestData(t)).svc
 
 	for _, room := range []*v1.Room{
-		{RoomId: 1, StreamerName: "alpha-streamer", Enabled: true},
-		{RoomId: 2, StreamerName: "beta-streamer", Enabled: false},
-		{RoomId: 3, StreamerName: "gamma", Enabled: true},
+		{RoomId: 1, StreamerName: "alpha-streamer", RecordEnabled: true},
+		{RoomId: 2, StreamerName: "beta-streamer", RecordEnabled: false},
+		{RoomId: 3, StreamerName: "gamma", RecordEnabled: true},
 	} {
 		if _, err := svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: room}); err != nil {
 			t.Fatalf("CreateRoom(%d) error = %v", room.GetRoomId(), err)
 		}
 	}
 
-	byEnabled, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
-		PageSize: 10,
-		Enabled:  proto.Bool(true),
+	byRecordEnabled, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
+		PageSize:      10,
+		RecordEnabled: proto.Bool(true),
 	})
 	if err != nil {
-		t.Fatalf("ListRooms(enabled=true) error = %v", err)
+		t.Fatalf("ListRooms(record_enabled=true) error = %v", err)
 	}
-	if len(byEnabled.GetRooms()) != 2 || byEnabled.GetRooms()[0].GetRoomId() != 1 || byEnabled.GetRooms()[1].GetRoomId() != 3 {
-		t.Fatalf("ListRooms(enabled=true) = %+v, want rooms 1 and 3", byEnabled.GetRooms())
+	if len(byRecordEnabled.GetRooms()) != 2 || byRecordEnabled.GetRooms()[0].GetRoomId() != 1 || byRecordEnabled.GetRooms()[1].GetRoomId() != 3 {
+		t.Fatalf("ListRooms(record_enabled=true) = %+v, want rooms 1 and 3", byRecordEnabled.GetRooms())
 	}
 
 	byRoomID, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
@@ -293,18 +293,18 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	env := newTestRoomEnv(t, d)
 
 	for _, room := range []*v1.Room{
-		{RoomId: 1001, StreamerName: "live-room", Enabled: true},
-		{RoomId: 2002, StreamerName: "disabled-room", Enabled: false},
-		{RoomId: 3003, StreamerName: "recording-room", Enabled: true},
-		{RoomId: 4004, StreamerName: "stats-error-room", Enabled: true},
-		{RoomId: 5005, StreamerName: "remuxing-room", Enabled: true},
+		{RoomId: 1001, StreamerName: "live-room", RecordEnabled: true},
+		{RoomId: 2002, StreamerName: "disabled-room", RecordEnabled: false},
+		{RoomId: 3003, StreamerName: "recording-room", RecordEnabled: true},
+		{RoomId: 4004, StreamerName: "stats-error-room", RecordEnabled: true},
+		{RoomId: 5005, StreamerName: "remuxing-room", RecordEnabled: true},
 	} {
 		if _, err := env.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: room}); err != nil {
 			t.Fatalf("CreateRoom(%d) error = %v", room.GetRoomId(), err)
 		}
 	}
 
-	// Restart: a fresh registry over the same database re-loads the rooms.
+	// 重启：在同一数据库上新建 RoomRegistry，重新加载房间。
 	env = newTestRoomEnv(t, d)
 	env.stats.stats = map[int64]*biz.SessionStats{
 		3003: {CurrentFile: "recordings/recording-room/part-0001.flv", BytesWritten: 123456789},
@@ -313,7 +313,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 		4004: stderrors.New("storage unavailable"),
 	}
 
-	// Simulate the daemon's state writes through the shared registry.
+	// 通过共享的 RoomRegistry 模拟守护进程的状态写入。
 	env.reg.ApplyRoomInfo(ctx, 3003, &biz.RoomInfo{RoomID: 3003, Live: true})
 	env.reg.StartRecording(3003)
 	env.reg.StartRecording(4004)
@@ -327,13 +327,13 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if len(rooms) != 5 {
 		t.Fatalf("ListRooms() rooms len = %d, want 5", len(rooms))
 	}
-	if rooms[0].GetRoomId() != 1001 || rooms[0].GetStreamerName() != "live-room" || !rooms[0].GetEnabled() {
+	if rooms[0].GetRoomId() != 1001 || rooms[0].GetStreamerName() != "live-room" || !rooms[0].GetRecordEnabled() {
 		t.Fatalf("ListRooms() first room = %+v, want room 1001 in room_id order", rooms[0])
 	}
-	if rooms[1].GetRoomId() != 2002 || rooms[1].GetStreamerName() != "disabled-room" || rooms[1].GetEnabled() {
-		t.Fatalf("ListRooms() second room = %+v, want disabled room 2002", rooms[1])
+	if rooms[1].GetRoomId() != 2002 || rooms[1].GetStreamerName() != "disabled-room" || rooms[1].GetRecordEnabled() {
+		t.Fatalf("ListRooms() second room = %+v, want room 2002 with recording off", rooms[1])
 	}
-	// Fresh rooms start unknown/idle with no session in flight.
+	// 新房间以 unknown/idle 起步，没有进行中的会话。
 	if rooms[0].GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED {
 		t.Fatalf("ListRooms() live_status = %v, want LIVE_STATUS_UNSPECIFIED", rooms[0].GetLiveStatus())
 	}
@@ -343,7 +343,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if rooms[0].GetSessionStartedAt() != nil {
 		t.Fatalf("ListRooms() session_started_at = %v, want nil for idle room", rooms[0].GetSessionStartedAt())
 	}
-	// Recording rooms get the live state mapped and session stats merged in.
+	// 录制中的房间会映射直播状态并合并会话统计。
 	if rooms[2].GetRoomId() != 3003 || rooms[2].GetStreamerName() != "recording-room" {
 		t.Fatalf("ListRooms() third room = %+v, want recording room 3003", rooms[2])
 	}
@@ -359,26 +359,26 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if rooms[2].GetSessionStartedAt() == nil {
 		t.Fatalf("ListRooms() recording room session_started_at = %v, want set", rooms[2].GetSessionStartedAt())
 	}
-	// A recording room whose stats lookup fails is still listed, without progress.
+	// 统计查询失败的录制中房间仍会列出，只是没有进度。
 	if rooms[3].GetRoomId() != 4004 || rooms[3].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_RECORDING {
 		t.Fatalf("ListRooms() fourth room = %+v, want recording room 4004", rooms[3])
 	}
 	if rooms[3].GetCurrentFile() != "" || rooms[3].GetBytesWritten() != 0 {
 		t.Fatalf("ListRooms() stats-error room progress = %+v, want zero values on stats error", rooms[3])
 	}
-	// Remuxing rooms stay listed without a stats lookup.
+	// 转封装中的房间正常列出，但不查询统计。
 	if rooms[4].GetRoomId() != 5005 || rooms[4].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_REMUXING {
 		t.Fatalf("ListRooms() fifth room = %+v, want remuxing room 5005", rooms[4])
 	}
-	// Session stats are only queried for recording rooms.
+	// 会话统计只查询录制中的房间。
 	if len(env.stats.calls) != 2 || env.stats.calls[0] != 3003 || env.stats.calls[1] != 4004 {
 		t.Fatalf("SessionStats() calls = %v, want exactly [3003 4004]", env.stats.calls)
 	}
 
-	// Rooms created after startup are served from the database with default
-	// runtime values: CRUD does not hot-load the recorder registry.
+	// 启动后创建的房间直接从数据库返回，运行时字段取默认值：
+	// CRUD 不会热加载 RoomRegistry。
 	if _, err := env.svc.CreateRoom(ctx, &v1.CreateRoomRequest{
-		Room: &v1.Room{RoomId: 6006, StreamerName: "late-room", Enabled: true},
+		Room: &v1.Room{RoomId: 6006, StreamerName: "late-room", RecordEnabled: true},
 	}); err != nil {
 		t.Fatalf("CreateRoom(late) error = %v", err)
 	}
@@ -392,11 +392,11 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	}
 }
 
-func TestRoomServiceDoesNotBackfillOverUpdatedStreamerName(t *testing.T) {
+func TestRoomServicePlatformRefreshOverridesStreamerName(t *testing.T) {
 	ctx := context.Background()
 	d := newTestData(t)
 	seed := newTestRoomEnv(t, d)
-	if _, err := seed.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: &v1.Room{RoomId: 7007, Enabled: true}}); err != nil {
+	if _, err := seed.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: &v1.Room{RoomId: 7007, RecordEnabled: true}}); err != nil {
 		t.Fatalf("CreateRoom(seed) error = %v", err)
 	}
 	env := newTestRoomEnv(t, d)
@@ -414,8 +414,9 @@ func TestRoomServiceDoesNotBackfillOverUpdatedStreamerName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRoom() error = %v", err)
 	}
-	if got.GetRoom().GetStreamerName() != "user-name" {
-		t.Fatalf("GetRoom() streamer_name = %q, want user-name", got.GetRoom().GetStreamerName())
+	// 平台上报的非空身份直接覆盖用户经 UpdateRoom 设置的值（新语义）。
+	if got.GetRoom().GetStreamerName() != "streamer-name" {
+		t.Fatalf("GetRoom() streamer_name = %q, want streamer-name", got.GetRoom().GetStreamerName())
 	}
 	if got.GetRoom().GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_LIVE {
 		t.Fatalf("GetRoom() live_status = %v, want LIVE", got.GetRoom().GetLiveStatus())
@@ -434,21 +435,21 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "unknown and idle with zero time",
 			in: &biz.RoomRuntime{
-				Room: biz.Room{RoomID: 1, StreamerName: "room-one", Enabled: true},
+				Room: biz.Room{RoomID: 1, StreamerName: "room-one", RecordEnabled: true},
 			},
 			want: &v1.Room{
-				RoomId:       1,
-				StreamerName: "room-one",
-				Enabled:      true,
-				LiveStatus:   v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
-				RecordStatus: v1.RecordStatus_RECORD_STATUS_IDLE,
+				RoomId:        1,
+				StreamerName:  "room-one",
+				RecordEnabled: true,
+				LiveStatus:    v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
+				RecordStatus:  v1.RecordStatus_RECORD_STATUS_IDLE,
 			},
 		},
 		{
 			name: "preparing",
 			in: &biz.RoomRuntime{
-				Room: biz.Room{RoomID: 2, StreamerName: "room-two"},
-				Live: biz.LivePreparing,
+				Room:       biz.Room{RoomID: 2, StreamerName: "room-two"},
+				LiveStatus: biz.LiveStatusPreparing,
 			},
 			want: &v1.Room{
 				RoomId:       2,
@@ -460,9 +461,9 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "on air recording passes progress through",
 			in: &biz.RoomRuntime{
-				Room:             biz.Room{RoomID: 3, StreamerName: "room-three", Enabled: true, CreateTime: createdAt, UpdateTime: updatedAt},
-				Live:             biz.LiveOnAir,
-				Record:           biz.RecordRecording,
+				Room:             biz.Room{RoomID: 3, StreamerName: "room-three", RecordEnabled: true, CreateTime: createdAt, UpdateTime: updatedAt},
+				LiveStatus:       biz.LiveStatusOnAir,
+				RecordStatus:     biz.RecordStatusRecording,
 				CurrentFile:      "recordings/room-three/part-0001.flv",
 				BytesWritten:     123456789,
 				SessionStartedAt: startedAt,
@@ -470,7 +471,7 @@ func TestConvertRoomReply(t *testing.T) {
 			want: &v1.Room{
 				RoomId:           3,
 				StreamerName:     "room-three",
-				Enabled:          true,
+				RecordEnabled:    true,
 				LiveStatus:       v1.LiveStatus_LIVE_STATUS_LIVE,
 				RecordStatus:     v1.RecordStatus_RECORD_STATUS_RECORDING,
 				CurrentFile:      "recordings/room-three/part-0001.flv",
@@ -483,8 +484,8 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "remuxing",
 			in: &biz.RoomRuntime{
-				Room:   biz.Room{RoomID: 4, StreamerName: "room-four"},
-				Record: biz.RecordRemuxing,
+				Room:         biz.Room{RoomID: 4, StreamerName: "room-four"},
+				RecordStatus: biz.RecordStatusRemuxing,
 			},
 			want: &v1.Room{
 				RoomId:       4,
@@ -496,31 +497,31 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "error passes last_error through",
 			in: &biz.RoomRuntime{
-				Room:      biz.Room{RoomID: 5, StreamerName: "room-five", Enabled: true},
-				Live:      biz.LivePreparing,
-				Record:    biz.RecordError,
-				LastError: "prepare session failed: disk full",
+				Room:         biz.Room{RoomID: 5, StreamerName: "room-five", RecordEnabled: true},
+				LiveStatus:   biz.LiveStatusPreparing,
+				RecordStatus: biz.RecordStatusError,
+				LastError:    "prepare session failed: disk full",
 			},
 			want: &v1.Room{
-				RoomId:       5,
-				StreamerName: "room-five",
-				Enabled:      true,
-				LiveStatus:   v1.LiveStatus_LIVE_STATUS_PREPARING,
-				RecordStatus: v1.RecordStatus_RECORD_STATUS_ERROR,
-				LastError:    "prepare session failed: disk full",
+				RoomId:        5,
+				StreamerName:  "room-five",
+				RecordEnabled: true,
+				LiveStatus:    v1.LiveStatus_LIVE_STATUS_PREPARING,
+				RecordStatus:  v1.RecordStatus_RECORD_STATUS_ERROR,
+				LastError:     "prepare session failed: disk full",
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := convertRoomReply(tt.in)
+			got := toRoomDTO(tt.in)
 			if !proto.Equal(got, tt.want) {
 				t.Fatalf("convertRoomReply() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
 
-	if got := convertRoomReply(nil); got != nil {
+	if got := toRoomDTO(nil); got != nil {
 		t.Fatalf("convertRoomReply(nil) = %+v, want nil", got)
 	}
 }

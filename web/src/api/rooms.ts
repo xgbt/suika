@@ -22,11 +22,12 @@ export interface Room {
   room_id: number;
   streamer_name: string;
   room_title: string;
-  enabled: boolean;
+  record_enabled: boolean;
   live_status: LiveStatus;
   record_status: RecordStatus;
   current_file: string;
   bytes_written: number;
+  download_speed_bps: number;
   session_started_at?: string;
   last_error: string;
   create_time?: string;
@@ -52,7 +53,7 @@ export interface ListRoomsParams {
   room_id?: number;
   streamer_name?: string;
   room_title?: string;
-  enabled?: boolean;
+  record_enabled?: boolean;
 }
 
 export interface ListRoomsResponse {
@@ -69,12 +70,12 @@ export const roomsApi = {
     return request('/v1/rooms/get', { room_id });
   },
 
-  create(room: Pick<Room, 'room_id' | 'streamer_name' | 'room_title' | 'enabled'>): Promise<{ room: Room }> {
+  create(room: Pick<Room, 'room_id' | 'streamer_name' | 'room_title' | 'record_enabled'>): Promise<{ room: Room }> {
     return request('/v1/rooms/create', { room });
   },
 
   update(
-    room: Pick<Room, 'room_id'> & Partial<Pick<Room, 'streamer_name' | 'room_title' | 'enabled'>>,
+    room: Pick<Room, 'room_id'> & Partial<Pick<Room, 'streamer_name' | 'room_title' | 'record_enabled'>>,
     paths: string[],
   ): Promise<{ room: Room }> {
     return request('/v1/rooms/update', {

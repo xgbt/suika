@@ -1,0 +1,3 @@
+# Session start/stop policy lives in one stateful module
+
+The session start/stop/resume policy was written four times across watchRoom's select arms, and the untested copy was the fallback-poll branch. We extracted it into a single stateful `sessionPolicy` module: arms deliver inputs (room info, enabled flips, session finished) and execute the returned decision (Start/Stop/None); the resume-after-finish rule and the idle/running/finishing phase live inside the module. "Reconcile" stays reserved for the supervisor loop's monitor-set reconciliation; the session level is "policy". watchRoom remains the only place that owns goroutines, contexts, and the danmaku connection.

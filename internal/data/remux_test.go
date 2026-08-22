@@ -11,11 +11,10 @@ import (
 	"time"
 )
 
-// writeFakeFFmpeg installs an executable shell script standing in for the
-// ffmpeg binary so remux tests run without ffmpeg installed. The script
-// appends each invocation's arguments to argsFile, counts invocations in
-// countFile, exits 1 for the first failTimes calls, then writes a non-empty
-// payload to its final argument (the remux output path).
+// writeFakeFFmpeg 安装一个可执行的 shell 脚本顶替 ffmpeg 二进制，
+// 使转封装测试无需真正安装 ffmpeg。脚本会把每次调用的参数追加到
+// argsFile，在 countFile 中累计调用次数，前 failTimes 次调用以 1 退出，
+// 之后向最后一个参数（转封装输出路径）写入非空内容。
 func writeFakeFFmpeg(t *testing.T, dir string, failTimes int) (ffmpeg, argsFile, countFile string) {
 	t.Helper()
 	argsFile = filepath.Join(dir, "args.txt")
@@ -93,7 +92,7 @@ func TestRemuxWithRetrySuccessFirstAttempt(t *testing.T) {
 
 func TestRemuxWithRetryRetriesOnceWithDiscardCorrupt(t *testing.T) {
 	dir := t.TempDir()
-	ffmpeg, argsFile, countFile := writeFakeFFmpeg(t, dir, 1) // first call fails
+	ffmpeg, argsFile, countFile := writeFakeFFmpeg(t, dir, 1) // 首次调用失败
 	src := filepath.Join(dir, "in.flv")
 	dst := filepath.Join(dir, "out.mp4")
 	if err := os.WriteFile(src, []byte("fake flv"), 0o644); err != nil {
@@ -120,7 +119,7 @@ func TestRemuxWithRetryRetriesOnceWithDiscardCorrupt(t *testing.T) {
 
 func TestRemuxWithRetryGivesUpAfterOneRetry(t *testing.T) {
 	dir := t.TempDir()
-	ffmpeg, _, countFile := writeFakeFFmpeg(t, dir, 999) // always fails
+	ffmpeg, _, countFile := writeFakeFFmpeg(t, dir, 999) // 恒定失败
 	src := filepath.Join(dir, "in.flv")
 	dst := filepath.Join(dir, "out.mp4")
 	if err := os.WriteFile(src, []byte("fake flv"), 0o644); err != nil {
@@ -140,7 +139,7 @@ func TestRemuxWithRetryGivesUpAfterOneRetry(t *testing.T) {
 	if _, serr := os.Stat(dst); !os.IsNotExist(serr) {
 		t.Fatalf("dst must not exist after total failure (stat err = %v)", serr)
 	}
-	// the source is never touched by remux
+	// 转封装绝不改动源文件
 	if _, serr := os.Stat(src); serr != nil {
 		t.Fatalf("src must survive: %v", serr)
 	}

@@ -44,7 +44,7 @@ func TestReadTagStream(t *testing.T) {
 	buf.Write(buildTag(TagVideo, 1000, key))
 	buf.Write(buildTag(TagVideo, 1040, inter))
 	buf.Write(buildTag(TagAudio, 7199840, audio))
-	// extension-byte timestamp: 0x01_000005
+	// 时间戳扩展字节：0x01_000005
 	buf.Write(buildTag(TagVideo, 16777221, key))
 
 	r := bytes.NewReader(buf.Bytes())
@@ -87,7 +87,7 @@ func TestReadTagStream(t *testing.T) {
 
 func TestReadTagTruncated(t *testing.T) {
 	full := buildTag(TagVideo, 10, []byte{0x17, 0x01, 0, 0, 0})
-	// cut mid-payload: must surface an error, not a clean EOF
+	// 在载荷中间截断：必须报错，而不是干净的 EOF
 	if _, err := ReadTag(bytes.NewReader(full[:len(full)-3])); err == nil {
 		t.Fatal("want error for truncated tag")
 	}

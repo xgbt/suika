@@ -10,9 +10,9 @@ import (
 	"github.com/go-kratos/kratos/v3/transport"
 )
 
-// stopWaitTimeout bounds how long Stop waits for the recorder main loop
-// to drain after cancelling it. It covers the biz finishGracePeriod (the
-// detached FinishSession/remux work triggered by cancellation) plus slack.
+// stopWaitTimeout 限定取消录制主循环后，Stop 等待其自然排空的最长
+// 时间。它覆盖 biz.finishGracePeriod（取消触发的脱离式
+// FinishSession/转封装工作），并留有余量。
 const stopWaitTimeout = 45 * time.Second
 
 var _ transport.Server = (*Daemon)(nil)

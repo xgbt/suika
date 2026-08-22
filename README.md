@@ -1,128 +1,150 @@
-# Kratos Project Template
+# Suika
 
-A project template for creating new Kratos services with HTTP and gRPC
-transports, protobuf-first APIs, Wire dependency injection, OpenAPI generation,
-and a small CRUD example.
+A Bilibili live-stream recording service built on
+[Kratos](https://github.com/go-kratos/kratos) (go-kratos/v3). Suika
+monitors a set of live rooms and, the moment a streamer goes live,
+records the original-quality FLV stream plus every danmaku event to
+disk, splits long streams into segments, and remuxes the result to MP4
+with container metadata. Rooms are managed through a CRUD API and a web
+dashboard.
 
-Use this repository as a starting point for a new service. The included sample
-resource is only reference code for API shape, layering, code generation, and
-testing. Replace it with your own domain model when creating a real project.
+## Features
 
-## Create a New Project
+- **Live detection**: resident danmaku WebSocket per room (reconnect +
+  room-state re-probe built in), with a jittered polling fallback.
+- **Recording**: FLV pulled and parsed in pure Go — no ffmpeg involved
+  while recording, so files stay valid even if the process dies.
+- **Segmentation**: time-based splits on video keyframes (default
+  120 min/part); every part gets the stream headers re-injected and is
+  independently playable.
+- **Danmaku**: per-part JSONL covering danmaku, gifts, SuperChat,
+  guard purchases, and entry effects (raw payload kept).
+- **Resilience**: auto-reconnect on stream drops (separate
+  CDN-transient budget), health watchdog, crash-safe `meta.json`,
+  startup recovery for interrupted remuxes.
+- **Remux**: FLV → MP4 via ffmpeg stream copy, with
+  title/artist/date container metadata (optional; requires ffmpeg).
+- **Room management**: sqlite-backed room CRUD API (HTTP + gRPC) and a
+  React + Ant Design dashboard.
+- **Risk-control handling**: WBI signing, buvid fingerprints, one-shot
+  refresh-and-retry, legacy API fallback, per-room cooldown ladder.
 
-1. Copy or generate a repository from this template.
-2. Update the Go module path:
+## Requirements
 
-```bash
-go mod edit -module github.com/your-org/your-service
-```
+- Go 1.25+ with **cgo** (the sqlite driver is `mattn/go-sqlite3`).
+- `ffmpeg` on `PATH` if you enable remux — with `remux_enabled: true`
+  and no ffmpeg, startup fails by design. The checked-in
+  `configs/config.yaml` ships with it `false`.
+- Node.js only if you want to run the web dashboard.
 
-3. Replace existing import paths that reference this template module.
-4. Rename the command, service metadata, and sample API package to match your
-   service.
-5. Replace the sample CRUD resource with your own resource.
-6. Regenerate code and verify the project:
-
-```bash
-make all
-go test ./...
-```
-
-## What Is Included
-
-- Kratos HTTP and gRPC server setup.
-- Protobuf API definitions and generated Go code.
-- OpenAPI generation.
-- Wire-based dependency injection.
-- Layered `service`, `biz`, and `data` packages.
-- A lightweight in-memory repository for the sample resource.
-- Unit tests for the service layer.
-- Server-streaming and bidirectional-streaming examples.
-
-## Project Layout
-
-```text
-api/                  Protobuf APIs and generated bindings
-cmd/                  Application entrypoints
-configs/              Local configuration
-internal/server/      HTTP and gRPC server construction
-internal/service/     Transport-facing service methods
-internal/biz/         Usecases, entities, errors, repository interfaces
-internal/data/        Repository implementations
-third_party/          Protobuf dependencies
-openapi.yaml          Generated OpenAPI document
-```
-
-## API Template Practices
-
-The sample CRUD API demonstrates common conventions for Kratos projects:
-
-- Resource-oriented methods: create, get, list, update, delete.
-- HTTP annotations with `google.api.http`.
-- Required fields with `google.api.field_behavior`.
-- List requests with `page_size`, `page_token`, `filter`, and `order_by`.
-- Pagination with `go.einride.tech/aip/pagination`.
-- Partial updates with `google.protobuf.FieldMask` and `fieldmask.Update`.
-- Streaming RPC definitions for one-way and bidirectional streams.
-
-The in-memory data layer intentionally stays simple. It demonstrates flow across
-layers, but does not implement a full query engine. Real repositories can apply
-parsed filters and ordering in SQL, Ent, or another storage layer.
-
-## Development Commands
-
-Install generators:
+## Quick start
 
 ```bash
-make init
+make init        # once: installs wire + buf
+
+cp configs/credentials.example.yaml configs/credentials.yaml
+# put your real Bilibili cookie (must include SESSDATA) into
+# configs/credentials.yaml — it is gitignored and auto-merged at startup.
+# Optional: set remux_enabled: true in configs/config.yaml if ffmpeg is installed.
+
+go run ./cmd/suika -conf ./configs     # HTTP :8000, gRPC :9000
 ```
 
-Regenerate API bindings and OpenAPI:
+Add a room to monitor (the recorder picks new rooms up on the next
+restart):
 
 ```bash
-make api
+curl -X POST localhost:8000/v1/rooms/create \
+     -d '{"room":{"room_id":123456,"record_enabled":true}}'
 ```
 
-Regenerate config protobufs:
+Recordings land under `./recordings/<room_id>_<streamer>/<date>/`;
+each session's `meta.json` is the history source of truth.
+
+## API
+
+All five RPCs are exposed on both HTTP and gRPC; HTTP routes are all
+`POST` with a JSON body:
+
+| RPC | HTTP route | Purpose |
+|---|---|---|
+| CreateRoom | `POST /v1/rooms/create` | Register a room by its platform `room_id` |
+| ListRooms | `POST /v1/rooms/list` | Paginated list; optional exact-match filters (`room_id` / `streamer_name` / `room_title` / `record_enabled`) |
+| GetRoom | `POST /v1/rooms/get` | One room plus its live runtime state |
+| UpdateRoom | `POST /v1/rooms/update` | Partial update (`streamer_name` / `room_title` / `record_enabled` via update_mask) |
+| DeleteRoom | `POST /v1/rooms/delete` | Delete a room |
+
+The generated `openapi.yaml` at the repo root is regenerated by
+`make api`.
+
+## Configuration
+
+`-conf` points at a directory; every yaml inside is merged into one
+config (`config.yaml` + `credentials.yaml`). Key settings live under
+`recorder:` — `record_root`, `quality_qn` (10000 = source),
+`max_concurrent`, `segment_minutes`, `remux_enabled`,
+`fallback_poll_interval`, and reconnect/health tuning. See
+`docs/design/bili-recorder.md` §7 for the full field list and
+defaults.
+
+## Development
 
 ```bash
-make config
+make api       # regenerate api/ proto stubs + openapi.yaml
+make config    # regenerate internal/conf from conf.proto
+make all       # api + config + wire + go mod tidy
+make build     # build all packages into ./bin/
+
+go test -mod=mod ./...     # all tests (sqlite via t.TempDir(), scripted fake ffmpeg)
 ```
 
-Run all generation steps, Wire, and module cleanup:
+### Web dashboard
 
 ```bash
-make all
+cd web
+npm install
+npm run dev    # vite dev server, proxies /v1 -> http://localhost:8000
 ```
-
-Build:
-
-```bash
-make build
-```
-
-Test:
-
-```bash
-go test ./...
-```
-
-## Run Locally
-
-```bash
-go run ./cmd/server -conf ./configs
-```
-
-Default local ports are configured in `configs/config.yaml`:
-
-- HTTP: `0.0.0.0:8000`
-- gRPC: `0.0.0.0:9000`
 
 ## Docker
 
 ```bash
-docker build -t <your-image-name> .
-docker run --rm -p 8000:8000 -p 9000:9000 \
-  -v </path/to/your/configs>:/data/conf \
-  <your-image-name>
+docker build -t suika .
+docker run --rm \
+  -p 8000:8000 -p 9000:9000 \
+  -v /path/to/configs:/data/conf \
+  -v /path/to/db:/app/data \
+  -v /path/to/recordings:/app/recordings \
+  suika
+```
+
+The image includes ffmpeg, so `remux_enabled: true` works out of the
+box. Mount your config directory at `/data/conf` (it must contain
+`config.yaml` and, optionally, `credentials.yaml`); `/app/data`
+(sqlite) and `/app/recordings` are the runtime data directories.
+
+## Documentation
+
+- [`docs/design/bili-recorder.md`](docs/design/bili-recorder.md) —
+  deep-dive technical doc (Chinese): runtime model, core flows, risk
+  control, on-disk layout, config, failure handling.
+- [`docs/design/ddd-domain-model.md`](docs/design/ddd-domain-model.md) —
+  domain model: subdomains, class diagram, seam relationships.
+- [`CLAUDE.md`](CLAUDE.md) — repo conventions: layering, naming,
+  build commands, the add-a-resource checklist.
+
+## Project layout
+
+```text
+api/room/v1/          RoomService proto (DTO) + generated bindings
+cmd/suika/            Entrypoint + Wire wiring
+configs/              config.yaml + credentials template
+docs/design/          Technical design docs
+internal/server/      HTTP / gRPC servers + recorder Daemon
+internal/service/     DTO <-> DO conversion, request validation
+internal/biz/         Domain objects, usecases, repo/client interfaces
+internal/data/        sqlite repos, Bilibili API client, danmaku WS,
+                      FLV pump, remux
+web/                  React + Ant Design dashboard
+openapi.yaml          Generated OpenAPI document
 ```

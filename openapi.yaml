@@ -142,7 +142,7 @@ components:
                     type: string
                 roomId:
                     type: string
-                enabled:
+                recordEnabled:
                     type: boolean
                 streamerName:
                     type: string
@@ -162,7 +162,7 @@ components:
             properties:
                 roomId:
                     type: string
-                enabled:
+                recordEnabled:
                     type: boolean
                 liveStatus:
                     readOnly: true
@@ -196,6 +196,9 @@ components:
                 streamerName:
                     type: string
                 roomTitle:
+                    type: string
+                downloadSpeedBps:
+                    readOnly: true
                     type: string
         room.v1.UpdateRoomRequest:
             required:

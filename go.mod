@@ -4,9 +4,11 @@ go 1.25.12
 
 require (
 	github.com/andybalholm/brotli v1.2.2
+	github.com/go-resty/resty/v2 v2.17.2
 	github.com/google/wire v0.7.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.22
+	github.com/samber/lo v1.53.0
 	go.einride.tech/aip v0.86.3
 	go.uber.org/automaxprocs v1.6.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260810153831-ec0a7760b754
