@@ -107,6 +107,7 @@ func saveMeta(path string, meta *sessionMeta) error {
 	return os.Rename(tmp, path)
 }
 
+// updateMeta 加载 meta.json，执行修改函数 fn，然后保存回 meta.json
 func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -121,6 +122,7 @@ func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	}
 }
 
+// persistMeta 保存 meta.json，使用原子写入方式，避免写入中断导致文件损坏。
 func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -157,12 +159,14 @@ func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *segmentFile) {
 	})
 }
 
+// appendMetaError 将错误信息追加到 meta.json 中
 func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
 	})
 }
 
+// hasRetryableSegments 检查 meta.json 中是否有可重试的分段
 func hasRetryableSegments(meta *sessionMeta) bool {
 	for _, seg := range meta.Segments {
 		if seg.RemuxStatus == remuxStatusFailed && seg.FLVKept {
