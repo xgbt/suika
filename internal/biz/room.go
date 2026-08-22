@@ -88,13 +88,13 @@ type SessionStatsRepo interface {
 }
 
 type RoomUsecase struct {
-	repo  RoomRepo
-	reg   *RoomRegistry
-	stats SessionStatsRepo
+	repo             RoomRepo
+	registry         *RoomRegistry
+	sessionStatsRepo SessionStatsRepo
 }
 
 func NewRoomUsecase(repo RoomRepo, reg *RoomRegistry, stats SessionStatsRepo) *RoomUsecase {
-	return &RoomUsecase{repo: repo, reg: reg, stats: stats}
+	return &RoomUsecase{repo: repo, registry: reg, sessionStatsRepo: stats}
 }
 
 func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime, error) {
@@ -129,7 +129,7 @@ func (uc *RoomUsecase) CreateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	if err != nil {
 		return nil, err
 	}
-	uc.reg.Add(*created)
+	uc.registry.Add(*created)
 	return &RoomRuntime{Room: *created}, nil
 }
 
@@ -141,7 +141,7 @@ func (uc *RoomUsecase) UpdateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	if err != nil {
 		return nil, err
 	}
-	uc.reg.Update(*updated)
+	uc.registry.Update(*updated)
 	return &RoomRuntime{Room: *updated}, nil
 }
 
@@ -152,16 +152,18 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	if err := uc.repo.DeleteRoom(ctx, roomID); err != nil {
 		return err
 	}
-	uc.reg.Remove(roomID)
+	uc.registry.Remove(roomID)
 	return nil
 }
 
 // withRuntime 将持久化字段 Room 与 RoomRegistry 中的运行时状态合并后返回 RoomRuntime。
 func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime {
-	runtime := uc.reg.runtime(room.RoomID)
+	runtime := uc.registry.runtime(room.RoomID)
 	runtime.Room = *room
+
+	// 如果房间正在录制中，尝试获取当前录制 session 的写入进度
 	if runtime.RecordStatus == RecordStatusRecording {
-		stats, err := uc.stats.SessionStats(ctx, room.RoomID)
+		stats, err := uc.sessionStatsRepo.SessionStats(ctx, room.RoomID)
 		if err == nil && stats != nil {
 			runtime.CurrentFile = stats.CurrentFile
 			runtime.BytesWritten = stats.BytesWritten
