@@ -62,16 +62,6 @@ type RoomRepo interface {
 	DeleteRoom(context.Context, int64) error
 }
 
-// ListQuery 房间列表查询条件, 用于 RoomRepo.ListRooms 查询
-type ListQuery struct {
-	RoomID        *int64
-	StreamerName  *string
-	RoomTitle     *string
-	RecordEnabled *bool
-	Offset        int
-	Limit         int
-}
-
 // SessionStats 是当前录制会话的写入进度快照。
 type SessionStats struct {
 	CurrentFile   string // 当前正在写入的分段文件名，可能为空
@@ -83,6 +73,16 @@ type SessionStats struct {
 type SessionStatsRepo interface {
 	// SessionStats 返回房间当前录制会话的写入进度。房间未录制或会话已结束时返回 nil。
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
+}
+
+// ListQuery 房间列表查询条件, 用于 RoomRepo.ListRooms 查询
+type ListQuery struct {
+	RoomID        *int64
+	StreamerName  *string
+	RoomTitle     *string
+	RecordEnabled *bool
+	Offset        int
+	Limit         int
 }
 
 type RoomUsecase struct {
