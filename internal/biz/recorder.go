@@ -67,9 +67,9 @@ type StreamQuality struct {
 // Stream 是 LiveClient.OpenStream 打开的一路直播流。
 // 由 LiveClient 产生、被 RecorderRepo 消费
 type Stream struct {
-	URL     string
-	Quality StreamQuality
-	Body    io.ReadCloser
+	URL     string        // 流地址
+	Quality StreamQuality // 清晰度信息
+	Body    io.ReadCloser // 流读取器，调用方负责关闭
 }
 
 // DanmakuEvent 是一条过滤后的弹幕房间事件。各字段的相关性取决于
