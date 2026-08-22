@@ -18,18 +18,18 @@ var (
 type LiveStatus int
 
 const (
-	LiveStatusUnknown LiveStatus = iota
-	LiveStatusPreparing
-	LiveStatusOnAir
+	LiveStatusUnknown   LiveStatus = iota // 未知状态
+	LiveStatusPreparing                   // 准备中
+	LiveStatusOnAir                       // 直播中
 )
 
 type RecordStatus int
 
 const (
-	RecordStatusIdle RecordStatus = iota
-	RecordStatusRecording
-	RecordStatusRemuxing
-	RecordStatusError
+	RecordStatusIdle      RecordStatus = iota // 空闲
+	RecordStatusRecording                     // 正在录制
+	RecordStatusRemuxing                      // 正在转封装
+	RecordStatusError                         // 出错
 )
 
 // Room 是房间的领域对象，包含持久化的房间信息和审计时间。

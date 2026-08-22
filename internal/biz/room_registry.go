@@ -229,7 +229,6 @@ func (reg *RoomRegistry) FinishRecording(roomID int64) {
 	})
 }
 
-// NoteError 记录监控/会话错误，不改变录制状态。
 func (reg *RoomRegistry) NoteError(roomID int64, err error) {
 	reg.setState(roomID, func(st *roomState) { st.lastError = err.Error() })
 }
