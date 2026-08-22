@@ -100,6 +100,11 @@ type RecordingSession struct {
 	Quality       StreamQuality
 }
 
+type sessionHandle struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 // RecordingResult 一次录制会话的最终结果
 type RecordingResult struct {
 	BytesWritten int64 // 总字节数
@@ -153,26 +158,15 @@ type ReconnectPolicy struct {
 // 决策：所有平台 IO 由 LiveClient 执行，所有存储 IO 由 RecorderRepo
 // 执行。房间配置与直播/录制状态存放在共享的 RoomRegistry 中。
 type RecorderUsecase struct {
-	registry   *RoomRegistry
-	repo       RecorderRepo
-	liveClient LiveClient
-
-	pollInterval  time.Duration
-	maxConcurrent int
-	rec           ReconnectPolicy
-
-	// cdnBackoffBase 是 CDN 瞬时故障首次重试的延迟；测试中会调小。
-	cdnBackoffBase time.Duration
-	// redialDelay 是监控重拨的停顿；测试中会调小。
-	redialDelay time.Duration
-
-	// slots 是录制槽位的有界缓冲通道，容量为 maxConcurrent。若为 nil，则不限制并发。
-	slots chan struct{}
-}
-
-type sessionHandle struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	registry       *RoomRegistry
+	repo           RecorderRepo
+	liveClient     LiveClient
+	pollInterval   time.Duration   // 拉取房间状态的兜底轮询间隔
+	rec            ReconnectPolicy // 断流决策树使用的重连配置
+	cdnBackoffBase time.Duration   // CDN 瞬时故障首次重试的延迟；测试中会调小。
+	redialDelay    time.Duration   // 监控重拨的停顿；测试中会调小。
+	maxConcurrent  int             // 最大并发录制会话数，若 <= 0 则表示不限制录制会话并发
+	slots          chan struct{}   // 录制槽位，若 maxConcurrent <= 0 则不限制并发
 }
 
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
@@ -197,7 +191,6 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 	if c.GetFallbackPollInterval() != nil {
 		uc.pollInterval = c.GetFallbackPollInterval().AsDuration()
 	}
-	uc.maxConcurrent = int(c.GetMaxConcurrent())
 	if rc := c.GetReconnect(); rc != nil {
 		if rc.AutoReconnect != nil {
 			uc.rec.AutoReconnect = rc.GetAutoReconnect()
@@ -212,6 +205,7 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 			uc.rec.CDNTransientBudget = int(rc.GetCdnTransientBudget())
 		}
 	}
+	uc.maxConcurrent = int(c.GetMaxConcurrent())
 	if uc.maxConcurrent > 0 {
 		uc.slots = make(chan struct{}, uc.maxConcurrent)
 	}
@@ -253,6 +247,7 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 	if len(monitors) == 0 {
 		log.Warn("recorder has no configured rooms, idling")
 	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -263,17 +258,16 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 	}
 }
 
-// monitorHandle 是监督循环管理的一个房间监控协程句柄。roomChanged 是
-// 合并式重评估信号（如 record_enabled 翻转），由监督循环送达 watchRoom。
+// monitorHandle 是监督循环管理的一个房间监控协程句柄
+// roomChanged 表示合并式重评估信号（如 record_enabled 翻转），由监督循环送达 watchRoom。
 type monitorHandle struct {
-	// recordEnabled 记录最近一次 reconcile 时，房间是否配置了录制。用于监督循环向监控协程投递重评估信号。
-	recordEnabled bool
-	roomChanged   chan struct{}
+	recordEnabled bool          // 当前房间的录制开关状态，监督循环维护；watchRoom 只读。
+	roomChanged   chan struct{} // 重评估信号 channel, 当管理后台操作 record_enabled 时发送信号，watchRoom 监听并执行决策。
 	cancel        context.CancelFunc
 	done          chan struct{}
 }
 
-// signal 向 roomChanged 投递一个重评估信号，若通道已满则丢弃。
+// signal 向 roomChanged 投递一个重评估信号，若通道已满则丢弃
 func (h *monitorHandle) signal() {
 	select {
 	case h.roomChanged <- struct{}{}:
@@ -286,7 +280,7 @@ func (h *monitorHandle) signal() {
 // record_enabled 翻转的房间投递重评估信号。
 func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*monitorHandle, retired *[]*monitorHandle) {
 
-	// 回收已完成收尾的被移除监控。
+	// 回收 retired 中已完成收尾的被移除监控。
 	alive := (*retired)[:0]
 	for _, h := range *retired {
 		select {
@@ -297,11 +291,10 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 	}
 	*retired = alive
 
-	rooms := uc.registry.Rooms()
-	// want 是当前注册表快照的房间集合，按 roomID 索引。
-	want := lo.KeyBy(rooms, func(r Room) int64 { return r.RoomID })
+	// 获取当前Room注册表快照，按 room_id 建立索引
+	want := lo.KeyBy(uc.registry.Rooms(), func(r Room) int64 { return r.RoomID })
 
-	// 1. 停止并移除已删除房间的监控。
+	// 1. 如果 monitors 中存在的房间不在 want 中，则说明该房间已被删除，取消其监控协程并移入 retired。
 	for roomID, h := range monitors {
 		if _, ok := want[roomID]; !ok {
 			h.cancel()
@@ -311,20 +304,22 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 	}
 
 	for roomID, room := range want {
-		handle, ok := monitors[roomID]
+		monitor, ok := monitors[roomID]
 
-		//  初次启动，或中途新增房间，启动监控协程并登记到 monitors。
+		// case 1 初次启动
+		// case 2 中途新增房间
+		// 启动监控协程并登记到 monitors
 		if !ok {
-			handle = uc.startMonitor(ctx, roomID)
-			handle.recordEnabled = room.RecordEnabled
-			monitors[roomID] = handle
+			monitor = uc.startMonitor(ctx, roomID)
+			monitor.recordEnabled = room.RecordEnabled
+			monitors[roomID] = monitor
 			continue
 		}
 
-		// 已存在房间监控状态变动，发送重评估信号
-		if handle.recordEnabled != room.RecordEnabled {
-			handle.recordEnabled = room.RecordEnabled
-			handle.signal()
+		// 已存在房间监控状态变动，通过发送信号的方式, 让监控协程重新评估是否需要启动/停止录制会话。
+		if monitor.recordEnabled != room.RecordEnabled {
+			monitor.recordEnabled = room.RecordEnabled
+			monitor.signal()
 		}
 	}
 }
