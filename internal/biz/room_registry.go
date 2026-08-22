@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-kratos/kratos/v3/log"
+	"github.com/samber/lo"
 )
 
 // roomState 是 RoomRegistry 内部维护的房间条目，包含房间基础信息和可变运行状态。
@@ -36,8 +37,6 @@ type RoomRegistry struct {
 	subscribers []chan struct{}
 }
 
-// NewRoomRegistry 从仓储加载 Room 列表构建 RoomRegistry。允许 repo 为
-// nil（得到空 RoomRegistry）；加载失败则启动失败。
 func NewRoomRegistry(repo RoomRepo) (*RoomRegistry, error) {
 	reg := &RoomRegistry{
 		repo:   repo,
@@ -61,10 +60,9 @@ func (reg *RoomRegistry) Rooms() []Room {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 
-	out := make([]Room, 0, len(reg.states))
-	for _, st := range reg.states {
-		out = append(out, st.room)
-	}
+	out := lo.MapToSlice(reg.states, func(roomID int64, st *roomState) Room {
+		return st.room
+	})
 	return out
 }
 
