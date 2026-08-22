@@ -329,6 +329,24 @@ func TestRecordLoopOpenTransientProbeFailureEndsSession(t *testing.T) {
 	}
 }
 
+func TestProbeLiveContextCanceledEndsQuietly(t *testing.T) {
+	// 下播竞态：监控因下播事件取消会话的同时复查房态在途，
+	// 取消引发的探测失败属正常结束路径，不记错误。
+	repo := &fakeRepo{}
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{{err: context.Canceled}}}
+	uc := newTestUsecase(t, repo, lc, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	live, ok := uc.probeLive(ctx, 42)
+	if live || ok {
+		t.Fatalf("probeLive = (%v, %v), want (false, false)", live, ok)
+	}
+	if got := uc.registry.runtime(42).LastError; got != "" {
+		t.Fatalf("LastError = %q, want empty for a ctx-canceled probe", got)
+	}
+}
+
 func TestRecordLoopProbeFailureEndsSession(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: stderrors.New("reset")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{err: stderrors.New("probe down")}}}

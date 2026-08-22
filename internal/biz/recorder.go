@@ -412,18 +412,17 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 		// 弹幕连接推送了房间状态变化
 		case roomInfo := <-danmakuConn.RoomStateUpdates():
 			roomInfoArrived(roomInfo)
-		// 回退轮询到期：主动请求房间信息
+		// 轮询: 主动请求房间信息
 		case <-poll.C:
 			roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
-			if err != nil {
+			if err != nil && ctx.Err() == nil {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
 				uc.registry.NoteError(roomID, err)
-			} else {
+			} else if err == nil {
 				roomInfoArrived(roomInfo)
 			}
 			poll.Reset(uc.nextPollDelay())
-		// CRUD 变更了房间记录：重读最新录制开关投递给策略；值未变时
-		// 策略吸收为无操作决策。
+		// 管理后台变更了房间记录：重读最新录制开关投递给策略
 		case <-roomChanged:
 			room := uc.registry.Room(roomID)
 			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
@@ -587,10 +586,14 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 }
 
 // probeLive 复查房间的直播状态并应用到注册表。探测失败时记 lastError 并
-// 返回 ok=false，调用方应结束场次。
+// 返回 ok=false，调用方应结束场次；若失败由 ctx 取消引起（如监控已因下播
+// 事件取消了本场次），属正常结束路径，静默返回、不记错误。
 func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, ok bool) {
 	roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return false, false
+		}
 		log.Error("probe live status failed, ending session", "room", roomID, "err", err)
 		uc.registry.NoteError(roomID, err)
 		return false, false
