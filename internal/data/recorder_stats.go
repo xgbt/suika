@@ -26,9 +26,9 @@ func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.Sessi
 	}
 	file, _ := ps.file.Load().(string)
 	return &biz.SessionStats{
-		CurrentFile:      file,
-		BytesWritten:     ps.bytes.Load(),
-		DownloadSpeedBPS: ps.speed.Load(),
+		CurrentFile:   file,
+		BytesWritten:  ps.bytes.Load(),
+		DownloadSpeed: ps.speed.Load(),
 	}, nil
 }
 

@@ -177,7 +177,7 @@ func toRoomDTO(rt *biz.RoomRuntime) *v1.Room {
 		RecordStatus:     recordStatus,
 		CurrentFile:      rt.CurrentFile,
 		BytesWritten:     rt.BytesWritten,
-		DownloadSpeedBps: rt.DownloadSpeedBPS,
+		DownloadSpeedBps: rt.DownloadSpeed,
 		LastError:        rt.LastError,
 	}
 	if !rt.Room.CreateTime.IsZero() {
