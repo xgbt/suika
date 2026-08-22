@@ -246,12 +246,12 @@ sequenceDiagram
     RR->>FS: mkdir 会话目录；写 meta.json（status=recording）
 
     loop recordLoop 断流决策树（每轮一路新分段）
-        Sess->>LC: OpenStream(roomID)
+        Sess->>LC: OpenLiveStream(roomID)
         LC->>CDN: getRoomPlayInfo 选流 → GET FLV 长连接
-        LC-->>Sess: StreamHandle{URL, Quality, Body}
+        LC-->>Sess: LiveStream{URL, Quality, Body}
         Sess->>RR: RecordSession(session, stream, events)
         RR->>FS: 开分段写 FLV（按关键帧切分，默认 120min）<br/>弹幕事件写 JSONL；健康检查（30s × 3 轮无新数据即失败）<br/>速度采样（1s）更新 pumpStats
-        RR-->>Sess: SessionResult{BytesWritten, Parts}, err
+        RR-->>Sess: RecordingResult{BytesWritten, Parts}, err
         Sess->>LC: GetRoomInfo(roomID)　探测是否仍在播
         LC-->>Sess: RoomInfo
         alt 未在播 / 探测失败 / ctx 取消

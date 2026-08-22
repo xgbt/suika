@@ -64,9 +64,9 @@ type StreamQuality struct {
 	Desc string
 }
 
-// Stream 是 LiveClient.OpenStream 打开的一路直播流。
-// 由 LiveClient 产生、被 RecorderRepo 消费
-type Stream struct {
+// LiveStream 是 LiveClient.OpenLiveStream 打开的一路直播流。
+// 由 LiveClient 产生、被 RecorderRepo 消费。
+type LiveStream struct {
 	URL     string        // 流地址
 	Quality StreamQuality // 清晰度信息
 	Body    io.ReadCloser // 流读取器，调用方负责关闭
@@ -91,8 +91,8 @@ type DanmakuEvent struct {
 	Raw      []byte // 原始 JSON Payload
 }
 
-// Session 是一次录制会话（同一房间的一次开播）。
-type Session struct {
+// RecordingSession 是一次录制会话（同一房间的一次开播）。
+type RecordingSession struct {
 	RoomID        int64
 	RoomName      string
 	Title         string
@@ -100,8 +100,8 @@ type Session struct {
 	Quality       StreamQuality
 }
 
-// SessionResult 一次录制会话的最终结果
-type SessionResult struct {
+// RecordingResult 一次录制会话的最终结果
+type RecordingResult struct {
 	BytesWritten int64 // 总字节数
 	Parts        int   // 分段数
 }
@@ -123,8 +123,8 @@ type DanmakuConn interface {
 type LiveClient interface {
 	// GetRoomInfo 获取房间的直播状态和元数据
 	GetRoomInfo(ctx context.Context, roomID int64) (*RoomInfo, error)
-	// OpenStream 打开房间的直播流，返回一个 StreamHandle。若房间未开播则返回错误。
-	OpenStream(ctx context.Context, roomID int64) (*Stream, error)
+	// OpenLiveStream 打开房间的直播流，返回一个 LiveStream。若房间未开播则返回错误。
+	OpenLiveStream(ctx context.Context, roomID int64) (*LiveStream, error)
 	// DanmakuConn 打开房间的弹幕 websocket 连接，返回一个 DanmakuConn。若房间不存在则返回错误。
 	DanmakuConn(ctx context.Context, roomID int64) (DanmakuConn, error)
 }
@@ -132,11 +132,11 @@ type LiveClient interface {
 // RecorderRepo 是录制器的存储接口。负责磁盘 IO
 type RecorderRepo interface {
 	// PrepareSession 按"房间 + 开播时间" 创建/定位 目录和 meta.json。
-	PrepareSession(ctx context.Context, session *Session) error
+	PrepareSession(ctx context.Context, session *RecordingSession) error
 	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入对应的 JSONL 文件，直到流结束或 ctx 被取消。
-	RecordSession(ctx context.Context, session *Session, stream *Stream, events <-chan *DanmakuEvent) (*SessionResult, error)
+	RecordSession(ctx context.Context, session *RecordingSession, stream *LiveStream, events <-chan *DanmakuEvent) (*RecordingResult, error)
 	// FinishSession 收尾 meta.json 并对已录分段执行转封装。
-	FinishSession(ctx context.Context, session *Session) error
+	FinishSession(ctx context.Context, session *RecordingSession) error
 	// RecoverPending 完成上次运行遗留的转封装工作。
 	RecoverPending(ctx context.Context) error
 }
@@ -459,7 +459,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	defer uc.releaseSlot()
 
 	room := uc.registry.Room(roomID)
-	session := &Session{
+	session := &RecordingSession{
 		RoomID:        roomID,
 		RoomName:      firstNonEmpty(room.StreamerName, info.StreamerName, fmt.Sprintf("%d", roomID)),
 		Title:         info.Title,
@@ -491,13 +491,13 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 }
 
 // recordLoop 断流决策树：持续拉流直到连接结束，然后重新探测直播状态，要么重连（新分段），要么结束会话并保留已录内容。
-func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session *Session, events <-chan *DanmakuEvent) {
+func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session *RecordingSession, events <-chan *DanmakuEvent) {
 	reconnects := 0
 	cdnBudget := uc.rec.CDNTransientBudget
 	cdnAttempt := 0
 	for {
 		// 1. 拉流
-		stream, err := uc.liveClient.OpenStream(ctx, roomID)
+		stream, err := uc.liveClient.OpenLiveStream(ctx, roomID)
 		if err != nil {
 			log.Error("open stream failed", "room", roomID, "err", err)
 			uc.registry.NoteError(roomID, err)

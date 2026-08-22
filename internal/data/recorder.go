@@ -81,7 +81,7 @@ func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
 }
 
 // PrepareSession 创建（或在重启后重新定位）会话目录和 meta.json。
-func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session) error {
+func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.RecordingSession) error {
 
 	// 获取目录和文件名前缀
 	dir, base, err := r.sessionPaths(session)
@@ -132,7 +132,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 }
 
 // RecordSession 将直播流写入磁盘（按配置切分分段）并把弹幕事件写入对应的 JSONL 文件。
-func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, stream *biz.Stream, events <-chan *biz.DanmakuEvent) (*biz.SessionResult, error) {
+func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.RecordingSession, stream *biz.LiveStream, events <-chan *biz.DanmakuEvent) (*biz.RecordingResult, error) {
 	if stream == nil || stream.Body == nil {
 		return nil, biz.ErrRoomInternal
 	}
@@ -181,7 +181,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, 
 	var (
 		cache        headerCache
 		seg          *segmentFile
-		result       biz.SessionResult
+		result       biz.RecordingResult
 		sessionBytes int64
 		lastGrowth   int64
 		lastSampleAt = time.Now()
@@ -315,7 +315,7 @@ func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
 }
 
 // FinishSession 收尾 meta.json 并对所有已录分段执行转封装。
-func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Session) error {
+func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.RecordingSession) error {
 	dir, base, err := r.sessionPaths(session)
 	if err != nil {
 		return err
@@ -359,7 +359,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Session) 
 // 返回值：
 //   - dir  : recordings/12345_主播名/2024-06-01
 //   - base : 20240601_1504_直播标题
-func (r *recorderRepo) sessionPaths(session *biz.Session) (dir string, base string, err error) {
+func (r *recorderRepo) sessionPaths(session *biz.RecordingSession) (dir string, base string, err error) {
 	if session == nil || session.RoomID <= 0 {
 		return "", "", biz.ErrRoomInternal
 	}

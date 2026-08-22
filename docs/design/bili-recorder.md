@@ -75,8 +75,8 @@ internal/biz/
                          daemon 写状态，room API 读快照；ApplyRoomInfo
                          更新房态、用平台非空值覆盖 streamer_name /
                          room_title，并经 UpdateRoom 持久化写回 sqlite
-  recorder.go            DO：RoomInfo / StreamQuality / StreamHandle(opaque)
-                         DanmakuEvent / Session / SessionResult / SessionStats
+  recorder.go            DO：RoomInfo / StreamQuality / LiveStream
+                         DanmakuEvent / RecordingSession / RecordingResult / SessionStats
                          事件类型常量、默认值常量
                          类型化错误：ErrRoomInternal（errors.InternalServer + reason 枚举）
                          哨兵错误：ErrStreamTransient / ErrRiskControl（供决策树分类）
@@ -102,7 +102,7 @@ internal/data/
                          ListRooms / CreateRoom / UpdateRoom / DeleteRoom）、
                          ListQuery → SQL 等值过滤（固定 room_id ASC 排序）、
                          重复 room_id → ErrRoomAlreadyExists（sqlite 主键约束）
-  bili_api.go            liveClient 实现 biz.LiveClient：GetRoomInfo / OpenStream /
+  bili_api.go            liveClient 实现 biz.LiveClient：GetRoomInfo / OpenLiveStream /
                          DanmakuConn 构造；getRoomPlayInfo 候选排序与降档
                          （pickFLVStream 纯函数）；风控编排统一委托 riskGuard
   risk.go                riskGuard：全部 B 站 API 流量的风控编排深模块——
@@ -191,7 +191,7 @@ DDD 领域模型已独立到文档：`docs/design/ddd-domain-model.md`。
 
 控制流/IO 分工：**biz 只做决定**（何时开录、是否重连、何时收尾），
 **data 做全部 IO**（HTTP、WS、FLV 解析、文件、ffmpeg）。
-`StreamHandle` 是 biz 层的 opaque 类型：由 `LiveClient.OpenStream` 产出、
+`LiveStream` 是 biz 层表示外部直播输入的类型：由 `LiveClient.OpenLiveStream` 产出、
 原样交给 `RecorderRepo.RecordSession` 消费，biz 不解其内部
 （`Body io.ReadCloser` + URL + Quality，同 `*sql.Rows` 穿过业务层的经典形态）。
 `DanmakuConn` 同理：biz 只消费 `Events()`（弹幕事件）与
@@ -241,7 +241,7 @@ App.Run
                  └─ 开播且 record_enabled 时 → launchSession goroutine（sessionHandle：cancel + done）
                      ├─ acquireSlot（max_concurrent 并发槽）
                      ├─ registry.StartRecording + repo.PrepareSession
-                     ├─ recordLoop：OpenStream → repo.RecordSession 泵送 → 断流决策树
+                     ├─ recordLoop：OpenLiveStream → repo.RecordSession 泵送 → 断流决策树
                      │    └─ RecordSession 内部：tag 读取 goroutine（chan 缓冲 512）
                      └─ SetRemuxing → repo.FinishSession（30s grace，脱离运行 ctx）→ remux
 ```
@@ -312,7 +312,7 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
 
 1. **acquireSlot**：`max_concurrent > 0` 时占并发槽；槽满则排队等待
    （记日志），ctx 取消则放弃。`max_concurrent = 0` 表示不限。
-2. **组装 Session**：`registry.Room(roomID)` 取库存快照，
+2. **组装 RecordingSession**：`registry.Room(roomID)` 取库存快照，
    `RoomName = firstNonEmpty(库存 streamer_name, API 主播名, roomID)`，
    `Title`、`LiveStartTime` 取触发开播的房态快照（场次中途标题变化
    不改名；`LiveStartTime` 决定目录，重连续录落回同一场次）。
@@ -448,7 +448,7 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
 ### 4.5 断流决策树（biz.recordLoop）
 
 ```
-每轮开始：lc.OpenStream（重取 URL，可能换 CDN 节点）
+每轮开始：lc.OpenLiveStream（重取 URL，可能换 CDN 节点）
   ├─ 失败 → 记 lastError，结束场次（不重试）
   └─ 成功 → session.Quality = 实际档位 → repo.RecordSession 泵送
 泵送返回（EOF / 读错误 / 巡检中止 / 写失败 / ctx 取消）
@@ -530,7 +530,7 @@ img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；�
    可选 fallback 钩子）。
 3. 仍失败 → 该房间进**阶梯冷却** 5min → 10min → 20min（按连续失败次数
    进阶，封顶 20min）；冷却期内 guard 直接拒绝该房间的
-   GetRoomInfo/OpenStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
+  GetRoomInfo/OpenLiveStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
 4. 任一 API 成功 → `noteSuccess` 清零该房间冷却。
 
 cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并记录 meta
@@ -872,7 +872,7 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
-| biz | `recorder_test.go`（15） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenStream/复查失败终止、ctx 取消即停、nil/覆盖配置、抖动区间；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`redialDelay` 字段供测试压缩时延 |
+| biz | `recorder_test.go`（15） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、ctx 取消即停、nil/覆盖配置、抖动区间；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`redialDelay` 字段供测试压缩时延 |
 | biz | `room_test.go`（10） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；**registry Add/Update/Remove 实时同步与合并式变更通知（含退订）**、**RoomUsecase CRUD 落库后同步 registry（持久化失败不回写）**；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
 | service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（RemuxEnabled=false 免 ffmpeg 探测），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/改名/关闭录制/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、空/越权 update_mask、不存在 404、坏 page_token）、**平台刷新覆盖已更新的 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
 | data | `recorder_test.go`（25） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾（无 meta noop / remux 关保 FLV / 成功替换 / 失败保留 / 空 ffmpegPath）、缺源恢复、RecoverPending |

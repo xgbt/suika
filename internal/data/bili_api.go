@@ -153,10 +153,10 @@ func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomI
 	}, nil
 }
 
-// OpenStream 选择最优 FLV 流地址并打开读取。打开/读取失败若看似 CDN
+// OpenLiveStream 选择最优 FLV 流地址并打开读取。打开/读取失败若看似 CDN
 // 侧，则包装为 biz.ErrStreamTransient，供决策树重新选择流地址。
 // API 侧的冷却与风控重试在 selectStreamURL 内经 riskGuard 完成。
-func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream, error) {
+func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.LiveStream, error) {
 	streamURL, quality, err := lc.selectStreamURL(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -185,7 +185,7 @@ func (lc *liveClient) OpenStream(ctx context.Context, roomID int64) (*biz.Stream
 		return nil, fmt.Errorf("%w: stream response body is empty", biz.ErrStreamTransient)
 	}
 	log.Info("stream opened", "room", roomID, "qn", quality.Qn, "desc", quality.Desc)
-	return &biz.Stream{URL: streamURL, Quality: quality, Body: body}, nil
+	return &biz.LiveStream{URL: streamURL, Quality: quality, Body: body}, nil
 }
 
 // selectStreamURL 调用 B 站接口获取房间的播放信息，并选择最优 FLV 流地址。

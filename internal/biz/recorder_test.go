@@ -20,24 +20,24 @@ type fakeRepo struct {
 	prepareErr  error
 	recordQueue []recordOutcome // 每次调用弹出一个；最后一项固定复用
 	recordCalls int
-	finished    []*Session
+	finished    []*RecordingSession
 	finishErr   error
 }
 
 type recordOutcome struct {
-	result *SessionResult
+	result *RecordingResult
 	err    error
 }
 
-func (r *fakeRepo) PrepareSession(_ context.Context, _ *Session) error { return r.prepareErr }
+func (r *fakeRepo) PrepareSession(_ context.Context, _ *RecordingSession) error { return r.prepareErr }
 
-func (r *fakeRepo) RecordSession(_ context.Context, session *Session, stream *Stream, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+func (r *fakeRepo) RecordSession(_ context.Context, session *RecordingSession, stream *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
 	if stream != nil && stream.Body != nil {
 		stream.Body.Close()
 	}
 	r.recordCalls++
 	if len(r.recordQueue) == 0 {
-		return &SessionResult{}, nil
+		return &RecordingResult{}, nil
 	}
 	out := r.recordQueue[0]
 	if len(r.recordQueue) > 1 {
@@ -47,7 +47,7 @@ func (r *fakeRepo) RecordSession(_ context.Context, session *Session, stream *St
 	return out.result, out.err
 }
 
-func (r *fakeRepo) FinishSession(_ context.Context, session *Session) error {
+func (r *fakeRepo) FinishSession(_ context.Context, session *RecordingSession) error {
 	r.finished = append(r.finished, session)
 	return r.finishErr
 }
@@ -58,7 +58,7 @@ func (r *fakeRepo) RecoverPending(context.Context) error { return nil }
 type fakeLiveClient struct {
 	statusQueue []statusOutcome // 每次调用弹出一个；最后一项固定复用
 	statusCalls int
-	openErrs    []error // 每次 OpenStream 调用弹出一个
+	openErrs    []error // 每次 OpenLiveStream 调用弹出一个
 	openCalls   int
 }
 
@@ -79,7 +79,7 @@ func (c *fakeLiveClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo
 	return out.info, out.err
 }
 
-func (c *fakeLiveClient) OpenStream(_ context.Context, roomID int64) (*Stream, error) {
+func (c *fakeLiveClient) OpenLiveStream(_ context.Context, roomID int64) (*LiveStream, error) {
 	c.openCalls++
 	if len(c.openErrs) > 0 {
 		err := c.openErrs[0]
@@ -90,7 +90,7 @@ func (c *fakeLiveClient) OpenStream(_ context.Context, roomID int64) (*Stream, e
 			return nil, err
 		}
 	}
-	return &Stream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+	return &LiveStream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
 }
 
 func (c *fakeLiveClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
@@ -161,11 +161,11 @@ func liveInfo(roomID int64, live bool) *RoomInfo {
 }
 
 func TestRecordLoopStopsWhenOffline(t *testing.T) {
-	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &SessionResult{BytesWritten: 10}, err: stderrors.New("eof")}}}
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{BytesWritten: 10}, err: stderrors.New("eof")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, false)}}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
@@ -177,8 +177,8 @@ func TestRecordLoopStopsWhenOffline(t *testing.T) {
 
 func TestRecordLoopReconnectsWhileLive(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{
-		{result: &SessionResult{}, err: stderrors.New("reset")},
-		{result: &SessionResult{}, err: stderrors.New("eof")},
+		{result: &RecordingResult{}, err: stderrors.New("reset")},
+		{result: &RecordingResult{}, err: stderrors.New("eof")},
 	}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{
 		{info: liveInfo(42, true)},
@@ -186,7 +186,7 @@ func TestRecordLoopReconnectsWhileLive(t *testing.T) {
 	}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 2 {
 		t.Fatalf("recordCalls = %d, want 2", repo.recordCalls)
@@ -194,13 +194,13 @@ func TestRecordLoopReconnectsWhileLive(t *testing.T) {
 }
 
 func TestRecordLoopBudgetExhaustedKeepsContent(t *testing.T) {
-	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &SessionResult{BytesWritten: 1}, err: stderrors.New("reset")}}}
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{BytesWritten: 1}, err: stderrors.New("reset")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
 		u.rec.MaxReconnect = 1
 	})
 
-	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	// 首次尝试 + 1 次重连，随后放弃并保留已录内容。
 	if repo.recordCalls != 2 {
@@ -209,13 +209,13 @@ func TestRecordLoopBudgetExhaustedKeepsContent(t *testing.T) {
 }
 
 func TestRecordLoopAutoReconnectDisabled(t *testing.T) {
-	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &SessionResult{}, err: stderrors.New("reset")}}}
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: stderrors.New("reset")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
 		u.rec.AutoReconnect = false
 	})
 
-	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
@@ -224,14 +224,14 @@ func TestRecordLoopAutoReconnectDisabled(t *testing.T) {
 
 func TestRecordLoopCDNTransientUsesSeparateBudget(t *testing.T) {
 	transient := fmt.Errorf("cdn 404: %w", ErrStreamTransient)
-	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &SessionResult{}, err: transient}}}
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: transient}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
 		u.rec.MaxReconnect = 0 // 常规重连预算置空：只有 CDN 预算生效
 		u.rec.CDNTransientBudget = 2
 	})
 
-	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	// 首次尝试 + 2 次 CDN 预算内重试。
 	if repo.recordCalls != 3 {
@@ -239,12 +239,12 @@ func TestRecordLoopCDNTransientUsesSeparateBudget(t *testing.T) {
 	}
 }
 
-func TestRecordLoopOpenStreamFailureEndsSession(t *testing.T) {
+func TestRecordLoopOpenLiveStreamFailureEndsSession(t *testing.T) {
 	repo := &fakeRepo{}
 	lc := &fakeLiveClient{openErrs: []error{fmt.Errorf("risk: %w", ErrRiskControl)}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 0 {
 		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
@@ -252,11 +252,11 @@ func TestRecordLoopOpenStreamFailureEndsSession(t *testing.T) {
 }
 
 func TestRecordLoopProbeFailureEndsSession(t *testing.T) {
-	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &SessionResult{}, err: stderrors.New("reset")}}}
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: stderrors.New("reset")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{err: stderrors.New("probe down")}}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
@@ -264,13 +264,13 @@ func TestRecordLoopProbeFailureEndsSession(t *testing.T) {
 }
 
 func TestRecordLoopContextCancelStopsImmediately(t *testing.T) {
-	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &SessionResult{}, err: context.Canceled}}}
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: context.Canceled}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	uc.recordLoop(ctx, 42, &Session{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.recordLoop(ctx, 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
@@ -386,8 +386,8 @@ func (c *watchClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, e
 	return &RoomInfo{RoomID: roomID}, nil
 }
 
-func (c *watchClient) OpenStream(_ context.Context, roomID int64) (*Stream, error) {
-	return &Stream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+func (c *watchClient) OpenLiveStream(_ context.Context, roomID int64) (*LiveStream, error) {
+	return &LiveStream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
 }
 
 func (c *watchClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
@@ -397,17 +397,17 @@ func (c *watchClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
 // pumpBlockRepo 使 RecordSession 阻塞到 context 取消，模拟一路永不
 // 断开的直播流。
 type pumpBlockRepo struct {
-	finished []*Session
+	finished []*RecordingSession
 }
 
-func (r *pumpBlockRepo) PrepareSession(context.Context, *Session) error { return nil }
+func (r *pumpBlockRepo) PrepareSession(context.Context, *RecordingSession) error { return nil }
 
-func (r *pumpBlockRepo) RecordSession(ctx context.Context, _ *Session, _ *Stream, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+func (r *pumpBlockRepo) RecordSession(ctx context.Context, _ *RecordingSession, _ *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (r *pumpBlockRepo) FinishSession(_ context.Context, session *Session) error {
+func (r *pumpBlockRepo) FinishSession(_ context.Context, session *RecordingSession) error {
 	r.finished = append(r.finished, session)
 	return nil
 }
@@ -553,17 +553,17 @@ type gatedFinishRepo struct {
 	prepares atomic.Int64
 }
 
-func (r *gatedFinishRepo) PrepareSession(context.Context, *Session) error {
+func (r *gatedFinishRepo) PrepareSession(context.Context, *RecordingSession) error {
 	r.prepares.Add(1)
 	return nil
 }
 
-func (r *gatedFinishRepo) RecordSession(ctx context.Context, _ *Session, _ *Stream, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+func (r *gatedFinishRepo) RecordSession(ctx context.Context, _ *RecordingSession, _ *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (r *gatedFinishRepo) FinishSession(ctx context.Context, _ *Session) error {
+func (r *gatedFinishRepo) FinishSession(ctx context.Context, _ *RecordingSession) error {
 	select {
 	case <-r.gate:
 		return nil
@@ -636,8 +636,8 @@ func (c *connSignalingClient) GetRoomInfo(_ context.Context, roomID int64) (*Roo
 	return &RoomInfo{RoomID: roomID}, nil
 }
 
-func (c *connSignalingClient) OpenStream(_ context.Context, roomID int64) (*Stream, error) {
-	return &Stream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+func (c *connSignalingClient) OpenLiveStream(_ context.Context, roomID int64) (*LiveStream, error) {
+	return &LiveStream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
 }
 
 func (c *connSignalingClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
