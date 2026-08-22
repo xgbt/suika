@@ -249,6 +249,84 @@ func TestRecordLoopOpenLiveStreamFailureEndsSession(t *testing.T) {
 	if repo.recordCalls != 0 {
 		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
 	}
+	if lc.statusCalls != 0 {
+		t.Fatalf("statusCalls = %d, want 0 (no probe on non-transient open error)", lc.statusCalls)
+	}
+	if got := uc.registry.runtime(42).LastError; got == "" {
+		t.Fatalf("LastError is empty, want the open error recorded")
+	}
+}
+
+func TestRecordLoopOpenTransientOfflineEndsSessionQuietly(t *testing.T) {
+	// 主播刚下播、CDN 已撤流：瞬时拉流失败 + 复查已下播 → 正常收尾，不记错误。
+	transient := fmt.Errorf("stream http status 404: %w", ErrStreamTransient)
+	repo := &fakeRepo{}
+	lc := &fakeLiveClient{
+		openErrs:    []error{transient},
+		statusQueue: []statusOutcome{{info: liveInfo(42, false)}},
+	}
+	uc := newTestUsecase(t, repo, lc, nil)
+
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+
+	if repo.recordCalls != 0 {
+		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
+	}
+	if lc.openCalls != 1 {
+		t.Fatalf("openCalls = %d, want 1 (no retry after offline probe)", lc.openCalls)
+	}
+	if got := uc.registry.runtime(42).LastError; got != "" {
+		t.Fatalf("LastError = %q, want empty for a normal stream end", got)
+	}
+}
+
+func TestRecordLoopOpenTransientLiveRetriesWithinBudget(t *testing.T) {
+	// 瞬时拉流失败但仍在播：按 CDN 瞬时预算退避重试，耗尽后保内容收尾。
+	transient := fmt.Errorf("stream http status 404: %w", ErrStreamTransient)
+	repo := &fakeRepo{}
+	lc := &fakeLiveClient{
+		openErrs:    []error{transient},
+		statusQueue: []statusOutcome{{info: liveInfo(42, true)}},
+	}
+	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
+		u.rec.CDNTransientBudget = 2
+	})
+
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+
+	// 首次尝试 + 2 次预算内重试，每次失败后都复查房态。
+	if repo.recordCalls != 0 {
+		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
+	}
+	if lc.openCalls != 3 {
+		t.Fatalf("openCalls = %d, want 3", lc.openCalls)
+	}
+	if lc.statusCalls != 3 {
+		t.Fatalf("statusCalls = %d, want 3 (probe after every transient open failure)", lc.statusCalls)
+	}
+}
+
+func TestRecordLoopOpenTransientProbeFailureEndsSession(t *testing.T) {
+	// 瞬时拉流失败且复查也失败：记错误并结束场次。
+	transient := fmt.Errorf("stream http status 404: %w", ErrStreamTransient)
+	repo := &fakeRepo{}
+	lc := &fakeLiveClient{
+		openErrs:    []error{transient},
+		statusQueue: []statusOutcome{{err: stderrors.New("probe down")}},
+	}
+	uc := newTestUsecase(t, repo, lc, nil)
+
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+
+	if repo.recordCalls != 0 {
+		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
+	}
+	if lc.openCalls != 1 {
+		t.Fatalf("openCalls = %d, want 1", lc.openCalls)
+	}
+	if got := uc.registry.runtime(42).LastError; got == "" {
+		t.Fatalf("LastError is empty, want the probe error recorded")
+	}
 }
 
 func TestRecordLoopProbeFailureEndsSession(t *testing.T) {
@@ -326,13 +404,14 @@ func TestNewRecorderUsecaseConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestJitterDurationWithinBand(t *testing.T) {
+func TestNextPollDelayWithinBand(t *testing.T) {
 	base := 600 * time.Second
+	uc := &RecorderUsecase{pollInterval: base}
 	for range 100 {
-		got := jitterDuration(base, pollJitterFraction)
+		got := uc.nextPollDelay()
 		lo, hi := base-base/10, base+base/10
 		if got < lo || got > hi {
-			t.Fatalf("jitterDuration(%s) = %s outside [%s, %s]", base, got, lo, hi)
+			t.Fatalf("nextPollDelay() = %s outside [%s, %s]", got, lo, hi)
 		}
 	}
 }

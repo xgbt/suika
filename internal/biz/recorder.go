@@ -341,7 +341,9 @@ func (uc *RecorderUsecase) startMonitor(ctx context.Context, roomID int64) *moni
 
 // monitorRoom 维持房间的弹幕连接，断开即重拨，直到 ctx 被取消。
 func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) {
+	// 当 ctx 被取消时，monitorRoom 会立即返回，监控协程结束
 	for ctx.Err() == nil {
+		// 通过弹幕链接监控房间，若弹幕连接错误，则重拨连接
 		if err := uc.watchRoom(ctx, roomChanged, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.registry.NoteError(roomID, err)
@@ -353,67 +355,76 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan s
 }
 
 // watchRoom 是单个房间的监控分发器：持有弹幕连接、回退轮询定时器和会话
-// 协程的上下文，本身不含任何会话启停判断。启停策略集中在 sessionPolicy：
+// 句柄，本身不含任何会话启停判断。启停策略集中在 sessionPolicy：
 // 各 select 分支把输入投递给策略（房间信息到达前先应用到注册表），并执
 // 行返回的决策——Start 启动会话协程，Stop 取消活跃会话。会话是否启动受
 // 房间 record_enabled 门控；roomChanged 信号只承担重评估的投递，监控本身
-// 不受影响。无活跃会话时弹幕事件被直接丢弃；活跃会话的 RecordSession 直接
-// 消费事件。
+// 不受影响。无活跃会话时弹幕事件由 watchRoom 排空丢弃；有活跃会话时
+// RecordSession 独占消费事件通道。
 func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
-
-	// 1. 弹幕连接
+	// 弹幕连接：开播检测主通道，录制期间同时提供弹幕事件。
 	danmakuConn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
 		return fmt.Errorf("open danmaku conn: %w", err)
 	}
 	defer danmakuConn.Close()
 
-	// 2. 带抖动的轮询
-	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
+	// 回退轮询：开播检测备用通道；抖动避免多房间同时发请求。
+	poll := time.NewTimer(uc.nextPollDelay())
 	defer poll.Stop()
 
 	policy := newSessionPolicy(uc.registry.Room(roomID).RecordEnabled)
 	var active *sessionHandle
+
+	// roomInfoArrived 是弹幕推送与回退轮询两路房间信息的共同动作：
+	// 先应用到注册表，再投递给策略决策。
+	roomInfoArrived := func(roomInfo *RoomInfo) {
+		uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+		active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
+	}
+
 	for {
-		// 3. 事件分发
+		// events / done 借助 nil 通道互斥启用：无活跃会话时 watchRoom
+		// 排空弹幕事件通道；有活跃会话时录制协程独占消费事件，
+		// watchRoom 只监听其结束信号。
 		var events <-chan *DanmakuEvent
 		var done chan struct{}
 		if active == nil {
-			// 当前无录制会话，持续消费弹幕事件以维持监控
 			events = danmakuConn.Events()
 		} else {
-			// 当前有录制会话，事件由录制会话协程直接消费；watchRoom 只监听其结束信号
 			done = active.done
 		}
 
 		select {
+		// ctx 取消：优雅结束监控；若有活跃会话，先取消并等待其自然
+		// 结束，避免中途取消导致转封装失败。
 		case <-ctx.Done():
 			if active != nil {
 				active.cancel()
-				<-active.done // 等待录制会话协程自然结束，避免中途取消导致转封装失败
+				<-active.done
 			}
 			return nil
+		// 无活跃会话：丢弃弹幕事件，防止陈旧事件积压混入下一个会话的录制
 		case <-events:
-			// 无LIVE 事件：丢弃
+		// 录制会话已结束
 		case <-done:
-			// 录制会话结束
 			active = uc.executeDecision(ctx, roomID, danmakuConn, nil, policy.SessionFinished())
+		// 弹幕连接推送了房间状态变化
 		case roomInfo := <-danmakuConn.RoomStateUpdates():
-			uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
+			roomInfoArrived(roomInfo)
+		// 回退轮询到期：主动请求房间信息
 		case <-poll.C:
 			roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
 			if err != nil {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
 				uc.registry.NoteError(roomID, err)
 			} else {
-				uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-				active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
+				roomInfoArrived(roomInfo)
 			}
-			poll.Reset(jitterDuration(uc.pollInterval, pollJitterFraction))
+			poll.Reset(uc.nextPollDelay())
+		// CRUD 变更了房间记录：重读最新录制开关投递给策略；值未变时
+		// 策略吸收为无操作决策。
 		case <-roomChanged:
-			// 取得注册表中最新的录制开关状态后投递给策略；值未变时策略自
-			// 行吸收为无操作决策。
 			room := uc.registry.Room(roomID)
 			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
 		}
@@ -492,11 +503,40 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 	cdnAttempt := 0
 	for {
 		// 1. 拉流
-		stream, err := uc.liveClient.OpenLiveStream(ctx, roomID)
-		if err != nil {
-			log.Error("open stream failed", "room", roomID, "err", err)
-			uc.registry.NoteError(roomID, err)
-			return
+		stream, openErr := uc.liveClient.OpenLiveStream(ctx, roomID)
+		if openErr != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			// 非瞬时故障（风控拒绝等）无法靠重试恢复：记 lastError 并结束场次。
+			if !stderrors.Is(openErr, ErrStreamTransient) {
+				log.Error("open stream failed", "room", roomID, "err", openErr)
+				uc.registry.NoteError(roomID, openErr)
+				return
+			}
+			// 瞬时故障（CDN 404 等）最常见的原因是主播刚下播、流已被撤：
+			// 先复查房态，已下播则属正常结束，不记错误；仍在播则按 CDN
+			// 瞬时预算退避重试。
+			live, ok := uc.probeLive(ctx, roomID)
+			if !ok {
+				return
+			}
+			if !live {
+				log.Info("stream gone, room offline; ending session", "room", roomID, "err", openErr)
+				return
+			}
+			if cdnBudget <= 0 {
+				log.Warn("cdn transient budget exhausted, finishing session with recorded content", "room", roomID)
+				return
+			}
+			cdnBudget--
+			delay := uc.cdnBackoff(cdnAttempt)
+			cdnAttempt++
+			log.Warn("open stream failed, retrying", "room", roomID, "err", openErr, "delay", delay)
+			if sleepCtx(ctx, delay) != nil {
+				return
+			}
+			continue
 		}
 
 		// 2. 录制
@@ -510,14 +550,8 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 		}
 
 		// 3. 探测直播状态
-		roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
-		if err != nil {
-			log.Error("probe live status failed, ending session", "room", roomID, "err", err)
-			uc.registry.NoteError(roomID, err)
-			return
-		}
-		uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-		if !roomInfo.Live {
+		live, ok := uc.probeLive(ctx, roomID)
+		if !ok || !live {
 			return
 		}
 
@@ -550,6 +584,19 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			return
 		}
 	}
+}
+
+// probeLive 复查房间的直播状态并应用到注册表。探测失败时记 lastError 并
+// 返回 ok=false，调用方应结束场次。
+func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, ok bool) {
+	roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
+	if err != nil {
+		log.Error("probe live status failed, ending session", "room", roomID, "err", err)
+		uc.registry.NoteError(roomID, err)
+		return false, false
+	}
+	uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+	return roomInfo.Live, true
 }
 
 // acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消
@@ -603,11 +650,15 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func jitterDuration(d time.Duration, div int) time.Duration {
-	if d <= 0 || div <= 0 {
+// nextPollDelay 返回下一次回退轮询的延迟：pollInterval 加均匀抖动
+// （± 1/pollJitterFraction 的一半），避免多房间的轮询在同一时刻打到
+// 平台接口。
+func (uc *RecorderUsecase) nextPollDelay() time.Duration {
+	d := uc.pollInterval
+	if d <= 0 {
 		return d
 	}
-	span := int64(d) / int64(div)
+	span := int64(d) / pollJitterFraction
 	if span <= 0 {
 		return d
 	}

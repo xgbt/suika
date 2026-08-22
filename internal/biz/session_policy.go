@@ -94,10 +94,8 @@ func (p *sessionPolicy) RecordEnabledFlipped(recordEnabled bool) policyDecision 
 	return p.decide()
 }
 
-// SessionFinished 处理会话协程结束。被停止的会话（经过收尾阶段）结束
-// 时，若世界状态已变回"该录"则立即恢复；自然结束的会话（录制中直接
-// 完成，未经停止）只回到空闲——会话自身的结束就是"此刻录不下去"的
-// 最新证据，是否再录等新到的世界状态说了算。
+// SessionFinished 处理会话结束事件。
+// 收尾阶段的会话结束时，若世界状态已变回"该录"则立即恢复。
 func (p *sessionPolicy) SessionFinished() policyDecision {
 	stopped := p.phase == phaseFinishing
 	p.phase = phaseIdle
