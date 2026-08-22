@@ -10,13 +10,13 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// roomState 表示单个 Room 的内部运行状态
+// roomState 是 RoomRegistry 内部维护的房间条目，包含房间基础信息和可变运行状态。
 type roomState struct {
-	room             Room
-	liveStatus       LiveStatus
-	recordStatus     RecordStatus
-	sessionStartedAt time.Time
-	lastError        string
+	room             Room         // 房间基础信息
+	liveStatus       LiveStatus   // 当前直播状态
+	recordStatus     RecordStatus // 当前录制状态
+	sessionStartedAt time.Time    // 当前录制会话开始时间
+	lastError        string       // 最近一次监控或录制错误
 }
 
 // RoomRegistry 持有房间列表及其运行时状态，是房间配置的唯一事实源：

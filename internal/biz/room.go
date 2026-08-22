@@ -32,27 +32,26 @@ const (
 	RecordStatusError
 )
 
-// Room 领域对象 DO
+// Room 是房间的领域对象，包含持久化的房间信息和审计时间。
 type Room struct {
 	RoomID        int64     // 房间 ID
 	StreamerName  string    // 主播名称
 	RoomTitle     string    // 房间标题
-	RecordEnabled bool      // 是否录制该房间
+	RecordEnabled bool      // 是否启用录制
 	CreateTime    time.Time // 创建时间
 	UpdateTime    time.Time // 更新时间
 }
 
-// RoomRuntime 表示 Room 的运行时状态, 包含持久化字段 Room、运行时状态(开播状态/录制状态)、录制会话进度(当前录制文件/已写入字节数/会话开始时间/最后错误信息)
-// 服务于 RoomUsecase 的 GetRoom、ListRoomRuntimes, 返回给 API 层 DTO 转换使用。
+// RoomRuntime 是面向读取的房间运行时快照，由房间信息、运行状态和当前录制会话进度组成。
 type RoomRuntime struct {
-	Room             Room         // 持久化 Room DO
-	LiveStatus       LiveStatus   // 运行时状态: 开播状态
-	RecordStatus     RecordStatus // 运行时状态: 录制状态
-	CurrentFile      string       // 录制会话进度: 当前录制文件
-	BytesWritten     int64        // 录制会话进度: 已写入字节数
-	DownloadSpeed    int64        // 录制会话进度: 当前下载速度（字节/秒）
-	SessionStartedAt time.Time    // 录制会话进度: 会话开始时间
-	LastError        string       // 录制会话进度: 最后错误信息
+	Room             Room         // 房间基础信息
+	LiveStatus       LiveStatus   // 当前直播状态
+	RecordStatus     RecordStatus // 当前录制状态
+	SessionStartedAt time.Time    // 当前录制会话开始时间
+	LastError        string       // 最近一次监控或录制错误
+	CurrentFile      string       // 当前录制会话正在写入的分段文件
+	BytesWritten     int64        // 当前分段已写入的字节数
+	DownloadSpeed    int64        // 当前下载速度（字节/秒）
 }
 
 type RoomRepo interface {
@@ -73,17 +72,16 @@ type ListQuery struct {
 	Limit         int
 }
 
-// SessionStats 一次录制会话的当前统计信息
+// SessionStats 是当前录制会话的写入进度快照。
 type SessionStats struct {
-	CurrentFile   string // 当前正在写入的分段文件名（可能为空）
+	CurrentFile   string // 当前正在写入的分段文件名，可能为空
 	BytesWritten  int64  // 当前分段已写入的字节数
 	DownloadSpeed int64  // 当前下载速度（字节/秒）
 }
 
-// SessionStatsRepo 用于获取房间当前录制会话的相关统计信息
-// 实际由 RecorderRepo 实现
+// SessionStatsRepo 提供房间当前录制会话的写入进度，实际由 RecorderRepo 实现。
 type SessionStatsRepo interface {
-	// SessionStats 返回房间当前录制 session 的写入进度。若房间未在录制中或已结束，则返回 nil
+	// SessionStats 返回房间当前录制会话的写入进度。房间未录制或会话已结束时返回 nil。
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
 }
 
