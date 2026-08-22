@@ -32,7 +32,7 @@ type sessionMeta struct {
 	Quality       qualityMeta   `json:"quality"`
 	Status        string        `json:"status"`
 	Segments      []segmentMeta `json:"segments"`
-	Errors        []metaError   `json:"errors"`
+	Errors        []errorMeta   `json:"errors"`
 	UpdatedAt     int64         `json:"updated_at"`
 }
 
@@ -57,7 +57,7 @@ type segmentMeta struct {
 	RemuxError  string `json:"remux_error,omitempty"`
 }
 
-type metaError struct {
+type errorMeta struct {
 	Time  int64  `json:"time"`
 	Stage string `json:"stage"`
 	Msg   string `json:"msg"`
@@ -159,7 +159,7 @@ func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *segmentFile) {
 
 func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
-		meta.Errors = append(meta.Errors, metaError{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
+		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
 	})
 }
 

@@ -143,7 +143,7 @@ func TestMetaJSONRoundTrip(t *testing.T) {
 				RemuxStatus: remuxStatusFailed, RemuxError: "ffmpeg exploded",
 			},
 		},
-		Errors: []metaError{{Time: 55, Stage: "record", Msg: "write failed"}},
+		Errors: []errorMeta{{Time: 55, Stage: "record", Msg: "write failed"}},
 	}
 
 	before := time.Now().Unix()

@@ -457,12 +457,13 @@ func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info
 // runSession 端到端负责一次会话：槽位、准备、录制循环、收尾/转封装。
 func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) {
 
-	// acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消。
+	// 0. 尝试获取录制槽位
 	if err := uc.acquireSlot(ctx, roomID); err != nil {
 		return
 	}
 	defer uc.releaseSlot()
 
+	// 1. 准备会话目录和 meta.json
 	room := uc.registry.Room(roomID)
 	session := &RecordingSession{
 		RoomID:        roomID,
@@ -471,17 +472,16 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 		LiveStartTime: info.LiveStartTime,
 	}
 	uc.registry.StartRecording(roomID)
-
 	if err := uc.repo.PrepareSession(ctx, session); err != nil {
 		log.Error("prepare session failed", "room", roomID, "err", err)
 		uc.registry.FailRecording(roomID, err)
 		return
 	}
 
-	// * 录制循环：持续拉流直到连接结束，然后重新探测直播状态，要么重连（新分段），要么结束会话并保留已录内容。
+	// *2. 录制循环：持续拉流直到连接结束，然后重新探测直播状态，要么重连（新分段），要么结束会话并保留已录内容。
 	uc.recordLoop(ctx, roomID, session, events)
 
-	// 收尾脱离（可能已取消的）运行 context，保证关停期间转封装标记
+	// 3. 收尾脱离（可能已取消的）运行 context，保证关停期间转封装标记
 	// 仍能落盘；遗留部分由下次启动时的 RecoverPending 接管。
 	uc.registry.SetRemuxing(roomID)
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishGracePeriod)
@@ -639,6 +639,7 @@ func (uc *RecorderUsecase) cdnBackoff(attempt int) time.Duration {
 	return min(uc.cdnBackoffBase<<attempt, defaultCDNBackoffMax)
 }
 
+// sleepCtx 在 ctx 被取消前阻塞 d 时长，若 ctx 被取消则返回 ctx.Err()。
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()
