@@ -44,17 +44,17 @@ type qualityMeta struct {
 
 // segmentMeta 记录每个分段的元数据，存储在 meta.json 中
 type segmentMeta struct {
-	Part        int    `json:"part"`
-	Video       string `json:"video"`
-	FLVKept     bool   `json:"flv_kept"`
+	Part        int    `json:"part"`     // 分段编号
+	Video       string `json:"video"`    // 视频文件名
+	FLVKept     bool   `json:"flv_kept"` // 标记 FLV 文件是否保留
 	Danmaku     string `json:"danmaku"`
 	WallStart   int64  `json:"wall_start"`
 	WallEnd     int64  `json:"wall_end"`
 	TsStart     int64  `json:"ts_start"`
 	TsEnd       int64  `json:"ts_end"`
-	Bytes       int64  `json:"bytes"`
-	RemuxStatus string `json:"remux_status"`
-	RemuxError  string `json:"remux_error,omitempty"`
+	Bytes       int64  `json:"bytes"`                 // 分段文件大小
+	RemuxStatus string `json:"remux_status"`          // 转封装状态：pending, ok, failed
+	RemuxError  string `json:"remux_error,omitempty"` // 转封装错误信息，仅在 RemuxStatus 为 failed 时存在
 }
 
 type errorMeta struct {
