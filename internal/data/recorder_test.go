@@ -469,7 +469,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 	}
 	pump := func(session *biz.Session) {
 		t.Helper()
-		stream := &biz.StreamHandle{
+		stream := &biz.Stream{
 			Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 			Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 		}
@@ -604,7 +604,7 @@ func TestRecordSessionRejectsNilStream(t *testing.T) {
 	if _, err := repo.RecordSession(context.Background(), testSession(), nil, nil); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("err = %v, want ErrRoomInternal", err)
 	}
-	if _, err := repo.RecordSession(context.Background(), testSession(), &biz.StreamHandle{}, nil); !errors.Is(err, biz.ErrRoomInternal) {
+	if _, err := repo.RecordSession(context.Background(), testSession(), &biz.Stream{}, nil); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("err = %v, want ErrRoomInternal", err)
 	}
 }
@@ -629,7 +629,7 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 
-	stream := &biz.StreamHandle{
+	stream := &biz.Stream{
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
@@ -709,7 +709,7 @@ func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 
-	stream := &biz.StreamHandle{
+	stream := &biz.Stream{
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
@@ -766,7 +766,7 @@ func TestRecordSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, audio20, inter40}
 
-	stream := &biz.StreamHandle{
+	stream := &biz.Stream{
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
@@ -817,7 +817,7 @@ func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
 	inter120 := &flv.Tag{Type: flv.TagVideo, Timestamp: 120, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40, key100, audio110, inter120}
 
-	stream := &biz.StreamHandle{
+	stream := &biz.Stream{
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}

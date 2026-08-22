@@ -31,7 +31,7 @@ type recordOutcome struct {
 
 func (r *fakeRepo) PrepareSession(_ context.Context, _ *Session) error { return r.prepareErr }
 
-func (r *fakeRepo) RecordSession(_ context.Context, session *Session, stream *StreamHandle, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+func (r *fakeRepo) RecordSession(_ context.Context, session *Session, stream *Stream, _ <-chan *DanmakuEvent) (*SessionResult, error) {
 	if stream != nil && stream.Body != nil {
 		stream.Body.Close()
 	}
@@ -79,7 +79,7 @@ func (c *fakeLiveClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo
 	return out.info, out.err
 }
 
-func (c *fakeLiveClient) OpenStream(_ context.Context, roomID int64) (*StreamHandle, error) {
+func (c *fakeLiveClient) OpenStream(_ context.Context, roomID int64) (*Stream, error) {
 	c.openCalls++
 	if len(c.openErrs) > 0 {
 		err := c.openErrs[0]
@@ -90,7 +90,7 @@ func (c *fakeLiveClient) OpenStream(_ context.Context, roomID int64) (*StreamHan
 			return nil, err
 		}
 	}
-	return &StreamHandle{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+	return &Stream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
 }
 
 func (c *fakeLiveClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
@@ -386,8 +386,8 @@ func (c *watchClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, e
 	return &RoomInfo{RoomID: roomID}, nil
 }
 
-func (c *watchClient) OpenStream(_ context.Context, roomID int64) (*StreamHandle, error) {
-	return &StreamHandle{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+func (c *watchClient) OpenStream(_ context.Context, roomID int64) (*Stream, error) {
+	return &Stream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
 }
 
 func (c *watchClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
@@ -402,7 +402,7 @@ type pumpBlockRepo struct {
 
 func (r *pumpBlockRepo) PrepareSession(context.Context, *Session) error { return nil }
 
-func (r *pumpBlockRepo) RecordSession(ctx context.Context, _ *Session, _ *StreamHandle, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+func (r *pumpBlockRepo) RecordSession(ctx context.Context, _ *Session, _ *Stream, _ <-chan *DanmakuEvent) (*SessionResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -558,7 +558,7 @@ func (r *gatedFinishRepo) PrepareSession(context.Context, *Session) error {
 	return nil
 }
 
-func (r *gatedFinishRepo) RecordSession(ctx context.Context, _ *Session, _ *StreamHandle, _ <-chan *DanmakuEvent) (*SessionResult, error) {
+func (r *gatedFinishRepo) RecordSession(ctx context.Context, _ *Session, _ *Stream, _ <-chan *DanmakuEvent) (*SessionResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -636,8 +636,8 @@ func (c *connSignalingClient) GetRoomInfo(_ context.Context, roomID int64) (*Roo
 	return &RoomInfo{RoomID: roomID}, nil
 }
 
-func (c *connSignalingClient) OpenStream(_ context.Context, roomID int64) (*StreamHandle, error) {
-	return &StreamHandle{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
+func (c *connSignalingClient) OpenStream(_ context.Context, roomID int64) (*Stream, error) {
+	return &Stream{URL: fmt.Sprintf("http://cdn/%d", roomID)}, nil
 }
 
 func (c *connSignalingClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {

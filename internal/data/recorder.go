@@ -132,7 +132,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Session)
 }
 
 // RecordSession 将直播流写入磁盘（按配置切分分段）并把弹幕事件写入对应的 JSONL 文件。
-func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, stream *biz.StreamHandle, events <-chan *biz.DanmakuEvent) (*biz.SessionResult, error) {
+func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Session, stream *biz.Stream, events <-chan *biz.DanmakuEvent) (*biz.SessionResult, error) {
 	if stream == nil || stream.Body == nil {
 		return nil, biz.ErrRoomInternal
 	}

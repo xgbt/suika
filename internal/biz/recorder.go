@@ -33,7 +33,7 @@ const (
 	defaultReconnectDelay       = 10 * time.Second  // 断流决策树重连延迟
 	defaultCDNTransientBudget   = 5                 // CDN 瞬时故障的重试预算，超过预算则不再重连
 	defaultCDNBackoffBase       = 2 * time.Second   // CDN 瞬时故障首次重试的延迟，随尝试次数指数增长
-	cdnBackoffMax               = 60 * time.Second  // CDN 瞬时故障的重试延迟上限
+	defaultCDNBackoffMax        = 60 * time.Second  // CDN 瞬时故障的重试延迟上限
 	monitorRedialDelay          = 10 * time.Second  // 弹幕连接重拨前的停顿
 	finishGracePeriod           = 30 * time.Second  // 限定关停期间 FinishSession 脱离已取消运行 context 后仍可用的工作时长
 	pollJitterFraction          = 5                 // 回退轮询间隔的相对抖动幅度（间隔 +/- fraction/2）
@@ -64,9 +64,9 @@ type StreamQuality struct {
 	Desc string
 }
 
-// StreamHandle 是 LiveClient.OpenStream 打开的一路直播流。
+// Stream 是 LiveClient.OpenStream 打开的一路直播流。
 // 由 LiveClient 产生、被 RecorderRepo 消费
-type StreamHandle struct {
+type Stream struct {
 	URL     string
 	Quality StreamQuality
 	Body    io.ReadCloser
@@ -124,7 +124,7 @@ type LiveClient interface {
 	// GetRoomInfo 获取房间的直播状态和元数据
 	GetRoomInfo(ctx context.Context, roomID int64) (*RoomInfo, error)
 	// OpenStream 打开房间的直播流，返回一个 StreamHandle。若房间未开播则返回错误。
-	OpenStream(ctx context.Context, roomID int64) (*StreamHandle, error)
+	OpenStream(ctx context.Context, roomID int64) (*Stream, error)
 	// DanmakuConn 打开房间的弹幕 websocket 连接，返回一个 DanmakuConn。若房间不存在则返回错误。
 	DanmakuConn(ctx context.Context, roomID int64) (DanmakuConn, error)
 }
@@ -134,7 +134,7 @@ type RecorderRepo interface {
 	// PrepareSession 按"房间 + 开播时间" 创建/定位 目录和 meta.json。
 	PrepareSession(ctx context.Context, session *Session) error
 	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入对应的 JSONL 文件，直到流结束或 ctx 被取消。
-	RecordSession(ctx context.Context, session *Session, stream *StreamHandle, events <-chan *DanmakuEvent) (*SessionResult, error)
+	RecordSession(ctx context.Context, session *Session, stream *Stream, events <-chan *DanmakuEvent) (*SessionResult, error)
 	// FinishSession 收尾 meta.json 并对已录分段执行转封装。
 	FinishSession(ctx context.Context, session *Session) error
 	// RecoverPending 完成上次运行遗留的转封装工作。
@@ -591,7 +591,7 @@ func (uc *RecorderUsecase) releaseSlot() {
 
 // cdnBackoff 返回 CDN 瞬时故障的重试延迟，随尝试次数指数增长，最大不超过 cdnBackoffMax。
 func (uc *RecorderUsecase) cdnBackoff(attempt int) time.Duration {
-	return min(uc.cdnBackoffBase<<attempt, cdnBackoffMax)
+	return min(uc.cdnBackoffBase<<attempt, defaultCDNBackoffMax)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
