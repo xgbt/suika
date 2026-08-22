@@ -106,13 +106,6 @@ type SessionResult struct {
 	Parts        int   // 分段数
 }
 
-// SessionStats 一次录制会话的当前统计信息
-type SessionStats struct {
-	CurrentFile   string // 当前正在写入的分段文件名（可能为空）
-	BytesWritten  int64  // 当前分段已写入的字节数
-	DownloadSpeed int64  // 当前下载速度（字节/秒）
-}
-
 // DanmakuConn 是一个房间的常驻弹幕 websocket，同时服务于开播检测
 // （RoomStateUpdates）和弹幕录制（Events）。实现内部自行重连；每次
 // 重连成功后重新探测并重新推送房间状态，以补上断连期间错过的

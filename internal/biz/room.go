@@ -73,7 +73,15 @@ type ListQuery struct {
 	Limit         int
 }
 
-// SessionStatsRepo 用于获取房间当前录制会话 session 的相关统计信息
+// SessionStats 一次录制会话的当前统计信息
+type SessionStats struct {
+	CurrentFile   string // 当前正在写入的分段文件名（可能为空）
+	BytesWritten  int64  // 当前分段已写入的字节数
+	DownloadSpeed int64  // 当前下载速度（字节/秒）
+}
+
+// SessionStatsRepo 用于获取房间当前录制会话的相关统计信息
+// 实际由 RecorderRepo 实现
 type SessionStatsRepo interface {
 	// SessionStats 返回房间当前录制 session 的写入进度。若房间未在录制中或已结束，则返回 nil
 	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
