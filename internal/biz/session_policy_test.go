@@ -18,8 +18,8 @@ func roomInfoArrived(info *RoomInfo) func(*sessionPolicy) policyDecision {
 	return func(p *sessionPolicy) policyDecision { return p.RoomInfoArrived(info) }
 }
 
-func enabledFlipped(enabled bool) func(*sessionPolicy) policyDecision {
-	return func(p *sessionPolicy) policyDecision { return p.EnabledFlipped(enabled) }
+func recordEnabledFlipped(recordEnabled bool) func(*sessionPolicy) policyDecision {
+	return func(p *sessionPolicy) policyDecision { return p.RecordEnabledFlipped(recordEnabled) }
 }
 
 func sessionFinished() func(*sessionPolicy) policyDecision {
@@ -30,9 +30,9 @@ func wantStart(info *RoomInfo) policyDecision { return policyDecision{kind: deci
 func wantStop() policyDecision                { return policyDecision{kind: decisionStop} }
 func wantNone() policyDecision                { return policyDecision{} }
 
-func runPolicySteps(t *testing.T, initialEnabled bool, steps []policyStep) {
+func runPolicySteps(t *testing.T, initialRecordEnabled bool, steps []policyStep) {
 	t.Helper()
-	p := newSessionPolicy(initialEnabled)
+	p := newSessionPolicy(initialRecordEnabled)
 	for i, step := range steps {
 		if got := step.send(p); got != step.want {
 			t.Fatalf("step %d: decision = %+v, want %+v", i, got, step.want)
@@ -48,51 +48,51 @@ func TestSessionPolicyRoomInfoArrived(t *testing.T) {
 	offline := &RoomInfo{RoomID: 42, Title: "preparing"}
 
 	cases := []struct {
-		name           string
-		initialEnabled bool
-		steps          []policyStep
+		name                 string
+		initialRecordEnabled bool
+		steps                []policyStep
 	}{
 		{
-			name:           "live enabled idle starts",
-			initialEnabled: true,
+			name:                 "live record_enabled idle starts",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 			},
 		},
 		{
-			name:           "live enabled running does not start again",
-			initialEnabled: true,
+			name:                 "live record_enabled running does not start again",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: roomInfoArrived(liveAgain), want: wantNone()},
 			},
 		},
 		{
-			name:           "live enabled finishing resumes after finish",
-			initialEnabled: true,
+			name:                 "live record_enabled finishing resumes after finish",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: roomInfoArrived(offline), want: wantStop()},
 				// 收尾期间到达的开播信息只更新 latest，不立即启动。
 				{send: roomInfoArrived(liveAgain), want: wantNone()},
-				// 收尾完成：重算发现仍该录（启用且在播），立即恢复。
+				// 收尾完成：重算发现仍该录（配置录制且在播），立即恢复。
 				{send: sessionFinished(), want: wantStart(liveAgain)},
 			},
 		},
 		{
-			name:           "live disabled does not start",
-			initialEnabled: false,
+			name:                 "live record_enabled off does not start",
+			initialRecordEnabled: false,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantNone()},
 			},
 		},
 		{
-			name:           "live disabled finishing does not start",
-			initialEnabled: true,
+			name:                 "live record_enabled off finishing does not start",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				{send: enabledFlipped(false), want: wantStop()},
-				// live · disabled · finishing：收尾期间到达的开播信息
+				{send: recordEnabledFlipped(false), want: wantStop()},
+				// live · record_enabled off · finishing：收尾期间到达的开播信息
 				// 只更新 latest，不启动会话。
 				{send: roomInfoArrived(liveAgain), want: wantNone()},
 				// 收尾完成：门控仍关着，即便最新信息说在播也不恢复。
@@ -100,16 +100,16 @@ func TestSessionPolicyRoomInfoArrived(t *testing.T) {
 			},
 		},
 		{
-			name:           "not live running stops",
-			initialEnabled: true,
+			name:                 "not live running stops",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: roomInfoArrived(offline), want: wantStop()},
 			},
 		},
 		{
-			name:           "not live finishing gives no redundant stop",
-			initialEnabled: true,
+			name:                 "not live finishing gives no redundant stop",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: roomInfoArrived(offline), want: wantStop()},
@@ -117,8 +117,8 @@ func TestSessionPolicyRoomInfoArrived(t *testing.T) {
 			},
 		},
 		{
-			name:           "not live idle does nothing",
-			initialEnabled: true,
+			name:                 "not live idle does nothing",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(offline), want: wantNone()},
 			},
@@ -126,93 +126,93 @@ func TestSessionPolicyRoomInfoArrived(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runPolicySteps(t, tc.initialEnabled, tc.steps)
+			runPolicySteps(t, tc.initialRecordEnabled, tc.steps)
 		})
 	}
 }
 
-// TestSessionPolicyEnabledFlipped 覆盖决策矩阵中"enabled flipped"的全部
+// TestSessionPolicyRecordEnabledFlipped 覆盖决策矩阵中"record_enabled flipped"的全部
 // 行；收尾后续录由 TestSessionPolicySessionFinished 与
 // TestSessionPolicyPreservedQuirks 验证。
-func TestSessionPolicyEnabledFlipped(t *testing.T) {
+func TestSessionPolicyRecordEnabledFlipped(t *testing.T) {
 	live := &RoomInfo{RoomID: 42, Live: true}
 	offline := &RoomInfo{RoomID: 42}
 
 	cases := []struct {
-		name           string
-		initialEnabled bool
-		steps          []policyStep
+		name                 string
+		initialRecordEnabled bool
+		steps                []policyStep
 	}{
 		{
-			name:           "flip on idle with live latest starts with latest",
-			initialEnabled: false,
+			name:                 "flip on idle with live latest starts with latest",
+			initialRecordEnabled: false,
 			steps: []policyStep{
-				// 禁用期间到达的信息只更新 latest，不启动会话。
+				// 未配置录制期间到达的信息只更新 latest，不启动会话。
 				{send: roomInfoArrived(live), want: wantNone()},
-				{send: enabledFlipped(true), want: wantStart(live)},
+				{send: recordEnabledFlipped(true), want: wantStart(live)},
 			},
 		},
 		{
-			name:           "flip on idle without any info does nothing",
-			initialEnabled: false,
+			name:                 "flip on idle without any info does nothing",
+			initialRecordEnabled: false,
 			steps: []policyStep{
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 			},
 		},
 		{
-			name:           "flip on idle with offline latest does nothing",
-			initialEnabled: false,
+			name:                 "flip on idle with offline latest does nothing",
+			initialRecordEnabled: false,
 			steps: []policyStep{
 				{send: roomInfoArrived(offline), want: wantNone()},
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 			},
 		},
 		{
-			name:           "flip on while already on is absorbed",
-			initialEnabled: true,
+			name:                 "flip on while already on is absorbed",
+			initialRecordEnabled: true,
 			steps: []policyStep{
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 			},
 		},
 		{
-			name:           "flip off running stops",
-			initialEnabled: true,
+			name:                 "flip off running stops",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				{send: enabledFlipped(false), want: wantStop()},
+				{send: recordEnabledFlipped(false), want: wantStop()},
 			},
 		},
 		{
-			name:           "flip off finishing gives no redundant stop",
-			initialEnabled: true,
+			name:                 "flip off finishing gives no redundant stop",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: roomInfoArrived(offline), want: wantStop()},
-				{send: enabledFlipped(false), want: wantNone()},
+				{send: recordEnabledFlipped(false), want: wantNone()},
 			},
 		},
 		{
-			name:           "flip off idle does nothing",
-			initialEnabled: true,
+			name:                 "flip off idle does nothing",
+			initialRecordEnabled: true,
 			steps: []policyStep{
-				{send: enabledFlipped(false), want: wantNone()},
+				{send: recordEnabledFlipped(false), want: wantNone()},
 			},
 		},
 		{
-			name:           "coalesced disable-enable nets out during running",
-			initialEnabled: true,
+			name:                 "coalesced off-on flip nets out during running",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				// 禁用→启用在一次信号内合并：值未变，决策为无操作，
+				// 关闭→开启录制在一次信号内合并：值未变，决策为无操作，
 				// 会话继续录制（阶段仍为 running，下播仍会停止）。
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 				{send: roomInfoArrived(offline), want: wantStop()},
 			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runPolicySteps(t, tc.initialEnabled, tc.steps)
+			runPolicySteps(t, tc.initialRecordEnabled, tc.steps)
 		})
 	}
 }
@@ -223,13 +223,13 @@ func TestSessionPolicySessionFinished(t *testing.T) {
 	offline := &RoomInfo{RoomID: 42}
 
 	cases := []struct {
-		name           string
-		initialEnabled bool
-		steps          []policyStep
+		name                 string
+		initialRecordEnabled bool
+		steps                []policyStep
 	}{
 		{
-			name:           "natural end goes idle",
-			initialEnabled: true,
+			name:                 "natural end goes idle",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				// 自然结束（未经停止）：无决策，阶段回到空闲，
@@ -239,8 +239,8 @@ func TestSessionPolicySessionFinished(t *testing.T) {
 			},
 		},
 		{
-			name:           "stopped session finishes to idle without resume",
-			initialEnabled: true,
+			name:                 "stopped session finishes to idle without resume",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
 				{send: roomInfoArrived(offline), want: wantStop()},
@@ -248,22 +248,22 @@ func TestSessionPolicySessionFinished(t *testing.T) {
 			},
 		},
 		{
-			name:           "enable during finishing resumes after finish",
-			initialEnabled: true,
+			name:                 "flip on during finishing resumes after finish",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				{send: enabledFlipped(false), want: wantStop()},
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(false), want: wantStop()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 				{send: sessionFinished(), want: wantStart(live)},
 			},
 		},
 		{
-			name:           "resume is one-shot: second finish goes idle",
-			initialEnabled: true,
+			name:                 "resume is one-shot: second finish goes idle",
+			initialRecordEnabled: true,
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				{send: enabledFlipped(false), want: wantStop()},
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(false), want: wantStop()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 				{send: sessionFinished(), want: wantStart(live)},
 				{send: sessionFinished(), want: wantNone()},
 			},
@@ -271,7 +271,7 @@ func TestSessionPolicySessionFinished(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runPolicySteps(t, tc.initialEnabled, tc.steps)
+			runPolicySteps(t, tc.initialRecordEnabled, tc.steps)
 		})
 	}
 }
@@ -289,11 +289,11 @@ func TestSessionPolicyPreservedQuirks(t *testing.T) {
 		steps []policyStep
 	}{
 		{
-			name: "stale-live resume: enable during finishing resumes even if stream died",
+			name: "stale-live resume: flip on during finishing resumes even if stream died",
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				{send: enabledFlipped(false), want: wantStop()},
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(false), want: wantStop()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 				// 收尾完成：尽管流可能已死，latest 仍说在播，照录。
 				// 新会话随后会在开流失败时优雅结束（由录制循环负责）。
 				{send: sessionFinished(), want: wantStart(live)},
@@ -306,20 +306,20 @@ func TestSessionPolicyPreservedQuirks(t *testing.T) {
 			name: "resume uses the freshest known room info",
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				{send: enabledFlipped(false), want: wantStop()},
+				{send: recordEnabledFlipped(false), want: wantStop()},
 				// 收尾期间到达的新信息更新 latest。
 				{send: roomInfoArrived(liveFresh), want: wantNone()},
-				{send: enabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
 				{send: sessionFinished(), want: wantStart(liveFresh)},
 			},
 		},
 		{
-			name: "disable during finishing suppresses the resume",
+			name: "flip off during finishing suppresses the resume",
 			steps: []policyStep{
 				{send: roomInfoArrived(live), want: wantStart(live)},
-				{send: enabledFlipped(false), want: wantStop()},
-				{send: enabledFlipped(true), want: wantNone()},
-				{send: enabledFlipped(false), want: wantNone()},
+				{send: recordEnabledFlipped(false), want: wantStop()},
+				{send: recordEnabledFlipped(true), want: wantNone()},
+				{send: recordEnabledFlipped(false), want: wantNone()},
 				// 门控最终是关的：收尾完成不恢复。
 				{send: sessionFinished(), want: wantNone()},
 			},

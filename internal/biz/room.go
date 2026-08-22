@@ -34,12 +34,12 @@ const (
 
 // Room 领域对象 DO
 type Room struct {
-	RoomID       int64     // 房间 ID
-	StreamerName string    // 主播名称
-	RoomTitle    string    // 房间标题
-	Enabled      bool      // 是否启用录制
-	CreateTime   time.Time // 创建时间
-	UpdateTime   time.Time // 更新时间
+	RoomID        int64     // 房间 ID
+	StreamerName  string    // 主播名称
+	RoomTitle     string    // 房间标题
+	RecordEnabled bool      // 是否录制该房间
+	CreateTime    time.Time // 创建时间
+	UpdateTime    time.Time // 更新时间
 }
 
 // RoomRuntime 表示 Room 的运行时状态, 包含持久化字段 Room、运行时状态(开播状态/录制状态)、录制会话进度(当前录制文件/已写入字节数/会话开始时间/最后错误信息)
@@ -65,12 +65,12 @@ type RoomRepo interface {
 
 // ListQuery 房间列表查询条件, 用于 RoomRepo.ListRooms 查询
 type ListQuery struct {
-	RoomID       *int64
-	StreamerName *string
-	RoomTitle    *string
-	Enabled      *bool
-	Offset       int
-	Limit        int
+	RoomID        *int64
+	StreamerName  *string
+	RoomTitle     *string
+	RecordEnabled *bool
+	Offset        int
+	Limit         int
 }
 
 // SessionStatsRepo 用于获取房间当前录制会话 session 的相关统计信息

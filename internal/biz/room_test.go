@@ -87,7 +87,7 @@ func (r *fakeRoomRepo) DeleteRoom(_ context.Context, roomID int64) error {
 func TestNewRoomRegistryLoadsRooms(t *testing.T) {
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{
 		2: {RoomID: 2, StreamerName: "b"},
-		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
 	}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
@@ -102,10 +102,10 @@ func TestNewRoomRegistryLoadsRooms(t *testing.T) {
 	for _, room := range rooms {
 		byID[room.RoomID] = room
 	}
-	if got, ok := byID[1]; !ok || got.StreamerName != "a" || !got.Enabled {
+	if got, ok := byID[1]; !ok || got.StreamerName != "a" || !got.RecordEnabled {
 		t.Fatalf("room 1 = %+v, present = %v", got, ok)
 	}
-	if got, ok := byID[2]; !ok || got.StreamerName != "b" || got.Enabled {
+	if got, ok := byID[2]; !ok || got.StreamerName != "b" || got.RecordEnabled {
 		t.Fatalf("room 2 = %+v, present = %v", got, ok)
 	}
 }
@@ -136,16 +136,16 @@ func TestRoomRegistryAddUpdateRemove(t *testing.T) {
 	defer unsubscribe()
 
 	// Add：立即可见。
-	reg.Add(Room{RoomID: 1, StreamerName: "a", Enabled: true})
-	if len(reg.Rooms()) != 1 || !reg.Room(1).Enabled {
+	reg.Add(Room{RoomID: 1, StreamerName: "a", RecordEnabled: true})
+	if len(reg.Rooms()) != 1 || !reg.Room(1).RecordEnabled {
 		t.Fatalf("registry after Add = %+v", reg.Rooms())
 	}
 
 	// Update：刷新房间字段，保留运行时状态。
 	reg.StartRecording(1)
-	reg.Update(Room{RoomID: 1, StreamerName: "b", Enabled: false})
+	reg.Update(Room{RoomID: 1, StreamerName: "b", RecordEnabled: false})
 	rt := reg.runtime(1)
-	if rt.Room.StreamerName != "b" || rt.Room.Enabled {
+	if rt.Room.StreamerName != "b" || rt.Room.RecordEnabled {
 		t.Fatalf("room after Update = %+v", rt.Room)
 	}
 	if rt.RecordStatus != RecordStatusRecording {
@@ -193,17 +193,17 @@ func TestRoomUsecaseCRUDSyncsRegistry(t *testing.T) {
 	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
 	ctx := context.Background()
 
-	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 2, StreamerName: "b", Enabled: true}); err != nil {
+	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 2, StreamerName: "b", RecordEnabled: true}); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
-	if got := reg.Room(2); got.StreamerName != "b" || !got.Enabled {
+	if got := reg.Room(2); got.StreamerName != "b" || !got.RecordEnabled {
 		t.Fatalf("registry after create = %+v", got)
 	}
 
-	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, StreamerName: "b2", Enabled: false}); err != nil {
+	if _, err := uc.UpdateRoom(ctx, &Room{RoomID: 2, StreamerName: "b2", RecordEnabled: false}); err != nil {
 		t.Fatalf("UpdateRoom: %v", err)
 	}
-	if got := reg.Room(2); got.StreamerName != "b2" || got.Enabled {
+	if got := reg.Room(2); got.StreamerName != "b2" || got.RecordEnabled {
 		t.Fatalf("registry after update = %+v", got)
 	}
 
@@ -225,7 +225,7 @@ func TestRoomUsecaseCRUDSyncsRegistry(t *testing.T) {
 }
 
 func TestApplyRoomInfoUpdatesIdentityThroughRepo(t *testing.T) {
-	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, Enabled: true}}}
+	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, RecordEnabled: true}}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
@@ -281,9 +281,9 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 		failures: map[int64]error{3: stderrors.New("stats unavailable")},
 	}
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{
-		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
 		2: {RoomID: 2, StreamerName: "b"},
-		3: {RoomID: 3, StreamerName: "c", Enabled: true},
+		3: {RoomID: 3, StreamerName: "c", RecordEnabled: true},
 	}}
 	reg, err := NewRoomRegistry(repo)
 	if err != nil {
@@ -317,7 +317,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	if !out[0].SessionStartedAt.Equal(time.Unix(100, 0)) {
 		t.Fatalf("session start = %v", out[0].SessionStartedAt)
 	}
-	if out[1].LastError != "boom" || out[1].Room.Enabled {
+	if out[1].LastError != "boom" || out[1].Room.RecordEnabled {
 		t.Fatalf("room 2 = %+v", out[1])
 	}
 	if out[1].CurrentFile != "" || out[1].BytesWritten != 0 {

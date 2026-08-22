@@ -1,8 +1,8 @@
 package biz
 
 // sessionPolicy 是会话启停策略的唯一归属。策略是电平触发的：每个输入
-// （房间信息到达、enabled 翻转、会话结束）先更新策略所知的世界状态，
-// 然后由同一个 decide 按唯一判据 shouldRecord（启用门控开着且最新信息
+// （房间信息到达、record_enabled 翻转、会话结束）先更新策略所知的世界状态，
+// 然后由同一个 decide 按唯一判据 shouldRecord（录制门控开着且最新信息
 // 在播）对照会话阶段裁决——该录而没有会话 → Start，在录而不该录 →
 // Stop，收尾中不产生新决策。监控协程（watchRoom）的 select 分支只负
 // 责投递输入并执行返回的决策，自身不含任何启停判断。
@@ -18,8 +18,8 @@ package biz
 // 每一行都有对应测试；另见 ADR-0001、ADR-0002 与 CONTEXT.md 的
 // "Session policy" 词条。
 type sessionPolicy struct {
-	// enabled 是房间的录制启用门控。
-	enabled bool
+	// recordEnabled 是房间的录制门控（配置是否录制该房间）。
+	recordEnabled bool
 	// latest 是最近一次到达的房间信息。
 	latest *RoomInfo
 	// phase 是会话阶段：空闲、录制中、收尾中（已发送停止、尚未结束）。
@@ -53,18 +53,18 @@ const (
 	decisionStop
 )
 
-// newSessionPolicy 创建会话策略，enabled 为房间的初始启用状态。
-func newSessionPolicy(enabled bool) *sessionPolicy {
-	return &sessionPolicy{enabled: enabled}
+// newSessionPolicy 创建会话策略，recordEnabled 为房间的初始录制开关状态。
+func newSessionPolicy(recordEnabled bool) *sessionPolicy {
+	return &sessionPolicy{recordEnabled: recordEnabled}
 }
 
-// shouldRecord 是策略的唯一判据：启用门控开着，且最新信息显示在播。
+// shouldRecord 是策略的唯一判据：录制门控开着，且最新信息显示在播。
 func (p *sessionPolicy) shouldRecord() bool {
-	return p.enabled && p.latest != nil && p.latest.Live
+	return p.recordEnabled && p.latest != nil && p.latest.Live
 }
 
-// decide 按当前世界状态对照会话阶段做差额裁决，是房间信息到达与启用
-// 翻转两个入口共享的唯一决策逻辑。收尾阶段不产生决策：停止是异步的，
+// decide 按当前世界状态对照会话阶段做差额裁决，是房间信息到达与录制
+// 开关翻转两个入口共享的唯一决策逻辑。收尾阶段不产生决策：停止是异步的，
 // 收尾期间到达的输入只更新世界状态，恢复与否留待会话结束时裁决。
 func (p *sessionPolicy) decide() policyDecision {
 	switch {
@@ -86,11 +86,11 @@ func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) policyDecision {
 	return p.decide()
 }
 
-// EnabledFlipped 处理房间启用状态的重评估信号（由监控的 roomChanged 分支
-// 从注册表读取后投递）。值与当前状态一致时重算结果不变，从而吸收合并或
-// 重复的信号。
-func (p *sessionPolicy) EnabledFlipped(enabled bool) policyDecision {
-	p.enabled = enabled
+// RecordEnabledFlipped 处理房间录制开关状态的重评估信号（由监控的
+// roomChanged 分支从注册表读取后投递）。值与当前状态一致时重算结果
+// 不变，从而吸收合并或重复的信号。
+func (p *sessionPolicy) RecordEnabledFlipped(recordEnabled bool) policyDecision {
+	p.recordEnabled = recordEnabled
 	return p.decide()
 }
 

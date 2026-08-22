@@ -111,7 +111,7 @@ design rather than add the import.
   plus the API error reason enum (`ErrRoomNotFound`,
   `v1.ErrorReason_ERROR_REASON_NOT_FOUND`).
 - Owns `ListQuery` — optional equality filters (`RoomID` /
-  `StreamerName` / `RoomTitle` / `Enabled`) plus `Offset` / `Limit` —
+  `StreamerName` / `RoomTitle` / `RecordEnabled`) plus `Offset` / `Limit` —
   so callers compose queries without leaking storage primitives.
 
 **data (DO ↔ PO)**
@@ -176,7 +176,7 @@ IO belongs to the seams.
 Session start/stop/resume decisions are NOT inline in the monitor: they
 live in one stateful module, `sessionPolicy` (biz/session_policy.go,
 ADR-0001). The monitor's (`watchRoom`) select arms only deliver inputs —
-room info arrived, `enabled` flipped, session finished — and execute the
+room info arrived, `record_enabled` flipped, session finished — and execute the
 returned decision (Start/Stop/None); phases (idle/running/finishing) and
 the resume-after-finish rule live inside the module. The decision matrix
 is `.scratch/session-policy/spec.md` and every matrix row has a test —
@@ -204,7 +204,7 @@ and gRPC transports:
 ### Room message
 
 Writable fields are `room_id`, `streamer_name`, `room_title`, and
-`enabled`. The following fields
+`record_enabled`. The following fields
 are `OUTPUT_ONLY` and must be populated by the service:
 
 - `live_status`: `LIVE_STATUS_UNSPECIFIED`, `LIVE_STATUS_PREPARING`, or
@@ -218,14 +218,14 @@ are `OUTPUT_ONLY` and must be populated by the service:
 `room_id` is the caller-provided unique platform room ID and is immutable.
 `CreateRoomRequest.room` and `UpdateRoomRequest.room` are required;
 `UpdateRoomRequest.update_mask` is also required. Updates currently allow
-only the `streamer_name`, `room_title`, and `enabled` paths. Invalid IDs or
+only the `streamer_name`, `room_title`, and `record_enabled` paths. Invalid IDs or
 unsupported update paths
 return `ERROR_REASON_INVALID_ARGUMENT`; duplicate IDs return
 `ERROR_REASON_ALREADY_EXISTS`; missing rooms return
 `ERROR_REASON_NOT_FOUND`.
 
 `ListRoomsRequest` uses AIP pagination plus four optional exact-match query
-fields: `room_id`, `streamer_name`, `room_title`, and `enabled` (unset
+fields: `room_id`, `streamer_name`, `room_title`, and `record_enabled` (unset
 fields don't filter; set fields combine with AND). There is no filter
 string and no ordering parameter — the repo orders by `room_id ASC`. The
 default page size is 20. The response uses `rooms` and
@@ -240,10 +240,10 @@ reads merge the registry snapshot with persisted fields. For an actively
 recording room, `SessionStatsRepo` best-effort supplies `current_file`,
 `bytes_written`, and `download_speed_bps`. CRUD changes take effect on the recorder in real time via
 its supervisor loop (no restart): created rooms are monitored immediately
-regardless of `enabled`, deleting a room stops its monitor immediately
+regardless of `record_enabled`, deleting a room stops its monitor immediately
 (gracefully stopping any active session, recorded files are kept), and
-`enabled` gates only recording — disabling stops an active recording,
-enabling starts recording when the room is live. Platform room-info
+`record_enabled` gates only recording — turning it off stops an active recording,
+turning it on starts recording when the room is live. Platform room-info
 refreshes (danmaku WS events or the fallback poll) flow through
 `RoomRegistry.ApplyRoomInfo`: they update the live status and overwrite
 the in-memory `streamer_name` / `room_title` with the platform's non-empty
@@ -255,7 +255,7 @@ and the in-memory snapshot keeps the new values.
 
 `web/` is a React + TypeScript + Vite + Ant Design SPA and the only
 graphical consumer of the HTTP API (`RoomList`: table with runtime
-status, create/edit, enable/disable confirmation, delete confirmation,
+status, create/edit, recording on/off confirmation, delete confirmation,
 5s auto-refresh). It is decoupled from the Go build — `npm install` /
 `npm run dev`, with vite proxying `/v1` to `http://localhost:8000`.
 Frontend types mirror `room.proto` by hand (`web/src/api/rooms.ts`),

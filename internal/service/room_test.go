@@ -78,13 +78,13 @@ func TestRoomServiceCRUD(t *testing.T) {
 	svc := newTestRoomEnv(t, newTestData(t)).svc
 
 	created, err := svc.CreateRoom(ctx, &v1.CreateRoomRequest{
-		Room: &v1.Room{RoomId: 1001, StreamerName: "streamer-a", Enabled: true},
+		Room: &v1.Room{RoomId: 1001, StreamerName: "streamer-a", RecordEnabled: true},
 	})
 	if err != nil {
 		t.Fatalf("CreateRoom() error = %v", err)
 	}
 	createdRoom := created.GetRoom()
-	if createdRoom.GetRoomId() != 1001 || createdRoom.GetStreamerName() != "streamer-a" || !createdRoom.GetEnabled() {
+	if createdRoom.GetRoomId() != 1001 || createdRoom.GetStreamerName() != "streamer-a" || !createdRoom.GetRecordEnabled() {
 		t.Fatalf("CreateRoom() = %+v, want created room", created)
 	}
 	if createdRoom.GetCreateTime() == nil || createdRoom.GetUpdateTime() == nil {
@@ -106,7 +106,7 @@ func TestRoomServiceCRUD(t *testing.T) {
 		t.Fatalf("GetRoom() error = %v", err)
 	}
 	gotRoom := got.GetRoom()
-	if gotRoom.GetStreamerName() != "streamer-a" || !gotRoom.GetEnabled() {
+	if gotRoom.GetStreamerName() != "streamer-a" || !gotRoom.GetRecordEnabled() {
 		t.Fatalf("GetRoom() = %+v, want created room", got)
 	}
 
@@ -118,20 +118,20 @@ func TestRoomServiceCRUD(t *testing.T) {
 		t.Fatalf("UpdateRoom(streamer_name) error = %v", err)
 	}
 	updatedRoom := updated.GetRoom()
-	if updatedRoom.GetStreamerName() != "streamer-b" || !updatedRoom.GetEnabled() {
-		t.Fatalf("UpdateRoom(streamer_name) = %+v, want renamed room with enabled kept", updated)
+	if updatedRoom.GetStreamerName() != "streamer-b" || !updatedRoom.GetRecordEnabled() {
+		t.Fatalf("UpdateRoom(streamer_name) = %+v, want renamed room with record_enabled kept", updated)
 	}
 
-	disabled, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
-		Room:       &v1.Room{RoomId: 1001, Enabled: false},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"enabled"}},
+	recordOff, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
+		Room:       &v1.Room{RoomId: 1001, RecordEnabled: false},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"record_enabled"}},
 	})
 	if err != nil {
-		t.Fatalf("UpdateRoom(enabled) error = %v", err)
+		t.Fatalf("UpdateRoom(record_enabled) error = %v", err)
 	}
-	disabledRoom := disabled.GetRoom()
-	if disabledRoom.GetEnabled() || disabledRoom.GetStreamerName() != "streamer-b" {
-		t.Fatalf("UpdateRoom(enabled) = %+v, want disabled room with streamer_name kept", disabled)
+	recordOffRoom := recordOff.GetRoom()
+	if recordOffRoom.GetRecordEnabled() || recordOffRoom.GetStreamerName() != "streamer-b" {
+		t.Fatalf("UpdateRoom(record_enabled) = %+v, want room with recording off and streamer_name kept", recordOff)
 	}
 
 	if _, err := svc.DeleteRoom(ctx, &v1.DeleteRoomRequest{RoomId: 1001}); err != nil {
@@ -196,24 +196,24 @@ func TestRoomServiceListRoomsOptionalQuery(t *testing.T) {
 	svc := newTestRoomEnv(t, newTestData(t)).svc
 
 	for _, room := range []*v1.Room{
-		{RoomId: 1, StreamerName: "alpha-streamer", Enabled: true},
-		{RoomId: 2, StreamerName: "beta-streamer", Enabled: false},
-		{RoomId: 3, StreamerName: "gamma", Enabled: true},
+		{RoomId: 1, StreamerName: "alpha-streamer", RecordEnabled: true},
+		{RoomId: 2, StreamerName: "beta-streamer", RecordEnabled: false},
+		{RoomId: 3, StreamerName: "gamma", RecordEnabled: true},
 	} {
 		if _, err := svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: room}); err != nil {
 			t.Fatalf("CreateRoom(%d) error = %v", room.GetRoomId(), err)
 		}
 	}
 
-	byEnabled, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
-		PageSize: 10,
-		Enabled:  proto.Bool(true),
+	byRecordEnabled, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
+		PageSize:      10,
+		RecordEnabled: proto.Bool(true),
 	})
 	if err != nil {
-		t.Fatalf("ListRooms(enabled=true) error = %v", err)
+		t.Fatalf("ListRooms(record_enabled=true) error = %v", err)
 	}
-	if len(byEnabled.GetRooms()) != 2 || byEnabled.GetRooms()[0].GetRoomId() != 1 || byEnabled.GetRooms()[1].GetRoomId() != 3 {
-		t.Fatalf("ListRooms(enabled=true) = %+v, want rooms 1 and 3", byEnabled.GetRooms())
+	if len(byRecordEnabled.GetRooms()) != 2 || byRecordEnabled.GetRooms()[0].GetRoomId() != 1 || byRecordEnabled.GetRooms()[1].GetRoomId() != 3 {
+		t.Fatalf("ListRooms(record_enabled=true) = %+v, want rooms 1 and 3", byRecordEnabled.GetRooms())
 	}
 
 	byRoomID, err := svc.ListRooms(ctx, &v1.ListRoomsRequest{
@@ -293,11 +293,11 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	env := newTestRoomEnv(t, d)
 
 	for _, room := range []*v1.Room{
-		{RoomId: 1001, StreamerName: "live-room", Enabled: true},
-		{RoomId: 2002, StreamerName: "disabled-room", Enabled: false},
-		{RoomId: 3003, StreamerName: "recording-room", Enabled: true},
-		{RoomId: 4004, StreamerName: "stats-error-room", Enabled: true},
-		{RoomId: 5005, StreamerName: "remuxing-room", Enabled: true},
+		{RoomId: 1001, StreamerName: "live-room", RecordEnabled: true},
+		{RoomId: 2002, StreamerName: "disabled-room", RecordEnabled: false},
+		{RoomId: 3003, StreamerName: "recording-room", RecordEnabled: true},
+		{RoomId: 4004, StreamerName: "stats-error-room", RecordEnabled: true},
+		{RoomId: 5005, StreamerName: "remuxing-room", RecordEnabled: true},
 	} {
 		if _, err := env.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: room}); err != nil {
 			t.Fatalf("CreateRoom(%d) error = %v", room.GetRoomId(), err)
@@ -327,11 +327,11 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if len(rooms) != 5 {
 		t.Fatalf("ListRooms() rooms len = %d, want 5", len(rooms))
 	}
-	if rooms[0].GetRoomId() != 1001 || rooms[0].GetStreamerName() != "live-room" || !rooms[0].GetEnabled() {
+	if rooms[0].GetRoomId() != 1001 || rooms[0].GetStreamerName() != "live-room" || !rooms[0].GetRecordEnabled() {
 		t.Fatalf("ListRooms() first room = %+v, want room 1001 in room_id order", rooms[0])
 	}
-	if rooms[1].GetRoomId() != 2002 || rooms[1].GetStreamerName() != "disabled-room" || rooms[1].GetEnabled() {
-		t.Fatalf("ListRooms() second room = %+v, want disabled room 2002", rooms[1])
+	if rooms[1].GetRoomId() != 2002 || rooms[1].GetStreamerName() != "disabled-room" || rooms[1].GetRecordEnabled() {
+		t.Fatalf("ListRooms() second room = %+v, want room 2002 with recording off", rooms[1])
 	}
 	// 新房间以 unknown/idle 起步，没有进行中的会话。
 	if rooms[0].GetLiveStatus() != v1.LiveStatus_LIVE_STATUS_UNSPECIFIED {
@@ -378,7 +378,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	// 启动后创建的房间直接从数据库返回，运行时字段取默认值：
 	// CRUD 不会热加载 RoomRegistry。
 	if _, err := env.svc.CreateRoom(ctx, &v1.CreateRoomRequest{
-		Room: &v1.Room{RoomId: 6006, StreamerName: "late-room", Enabled: true},
+		Room: &v1.Room{RoomId: 6006, StreamerName: "late-room", RecordEnabled: true},
 	}); err != nil {
 		t.Fatalf("CreateRoom(late) error = %v", err)
 	}
@@ -396,7 +396,7 @@ func TestRoomServicePlatformRefreshOverridesStreamerName(t *testing.T) {
 	ctx := context.Background()
 	d := newTestData(t)
 	seed := newTestRoomEnv(t, d)
-	if _, err := seed.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: &v1.Room{RoomId: 7007, Enabled: true}}); err != nil {
+	if _, err := seed.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: &v1.Room{RoomId: 7007, RecordEnabled: true}}); err != nil {
 		t.Fatalf("CreateRoom(seed) error = %v", err)
 	}
 	env := newTestRoomEnv(t, d)
@@ -435,14 +435,14 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "unknown and idle with zero time",
 			in: &biz.RoomRuntime{
-				Room: biz.Room{RoomID: 1, StreamerName: "room-one", Enabled: true},
+				Room: biz.Room{RoomID: 1, StreamerName: "room-one", RecordEnabled: true},
 			},
 			want: &v1.Room{
-				RoomId:       1,
-				StreamerName: "room-one",
-				Enabled:      true,
-				LiveStatus:   v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
-				RecordStatus: v1.RecordStatus_RECORD_STATUS_IDLE,
+				RoomId:        1,
+				StreamerName:  "room-one",
+				RecordEnabled: true,
+				LiveStatus:    v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
+				RecordStatus:  v1.RecordStatus_RECORD_STATUS_IDLE,
 			},
 		},
 		{
@@ -461,7 +461,7 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "on air recording passes progress through",
 			in: &biz.RoomRuntime{
-				Room:             biz.Room{RoomID: 3, StreamerName: "room-three", Enabled: true, CreateTime: createdAt, UpdateTime: updatedAt},
+				Room:             biz.Room{RoomID: 3, StreamerName: "room-three", RecordEnabled: true, CreateTime: createdAt, UpdateTime: updatedAt},
 				LiveStatus:       biz.LiveStatusOnAir,
 				RecordStatus:     biz.RecordStatusRecording,
 				CurrentFile:      "recordings/room-three/part-0001.flv",
@@ -471,7 +471,7 @@ func TestConvertRoomReply(t *testing.T) {
 			want: &v1.Room{
 				RoomId:           3,
 				StreamerName:     "room-three",
-				Enabled:          true,
+				RecordEnabled:    true,
 				LiveStatus:       v1.LiveStatus_LIVE_STATUS_LIVE,
 				RecordStatus:     v1.RecordStatus_RECORD_STATUS_RECORDING,
 				CurrentFile:      "recordings/room-three/part-0001.flv",
@@ -497,18 +497,18 @@ func TestConvertRoomReply(t *testing.T) {
 		{
 			name: "error passes last_error through",
 			in: &biz.RoomRuntime{
-				Room:         biz.Room{RoomID: 5, StreamerName: "room-five", Enabled: true},
+				Room:         biz.Room{RoomID: 5, StreamerName: "room-five", RecordEnabled: true},
 				LiveStatus:   biz.LiveStatusPreparing,
 				RecordStatus: biz.RecordStatusError,
 				LastError:    "prepare session failed: disk full",
 			},
 			want: &v1.Room{
-				RoomId:       5,
-				StreamerName: "room-five",
-				Enabled:      true,
-				LiveStatus:   v1.LiveStatus_LIVE_STATUS_PREPARING,
-				RecordStatus: v1.RecordStatus_RECORD_STATUS_ERROR,
-				LastError:    "prepare session failed: disk full",
+				RoomId:        5,
+				StreamerName:  "room-five",
+				RecordEnabled: true,
+				LiveStatus:    v1.LiveStatus_LIVE_STATUS_PREPARING,
+				RecordStatus:  v1.RecordStatus_RECORD_STATUS_ERROR,
+				LastError:     "prepare session failed: disk full",
 			},
 		},
 	}

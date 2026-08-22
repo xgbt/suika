@@ -172,7 +172,7 @@ sequenceDiagram
         R-->>-U: *Room（含 create_time / update_time）
         U->>G: Add(room)
         G--)D: 合并式唤醒信号（异步通道，最多积压一个）
-        Note over D: reconcile：为该房间启动 Monitor<br/>（无论 enabled，监控立即开始）
+        Note over D: reconcile：为该房间启动 Monitor<br/>（无论 record_enabled，监控立即开始）
         U-->>-S: *RoomRuntime
         Note over S: toRoomDTO：DO → DTO
         S-->>-H: CreateRoomResponse{room}
@@ -182,7 +182,7 @@ sequenceDiagram
 
 同构变体：
 
-- **UpdateRoom**：service 先 `GetRoom` 读当前值 → `fieldmask.Update` 合并（仅允许 `streamer_name` / `room_title` / `enabled` 路径）→ 落库 → `registry.Update`。`enabled` 翻转经监督循环以重评估信号送达 Monitor，实时启停录制。
+- **UpdateRoom**：service 先 `GetRoom` 读当前值 → `fieldmask.Update` 合并（仅允许 `streamer_name` / `room_title` / `record_enabled` 路径）→ 落库 → `registry.Update`。`record_enabled` 翻转经监督循环以重评估信号送达 Monitor，实时启停录制。
 - **DeleteRoom**：落库 → `registry.Remove` → reconcile 立即取消该房间 Monitor（活跃会话优雅停止，已录文件保留），返回 `DeleteRoomResponse{empty}`。
 
 ### 3.2 开播检测与会话启动（异步事件驱动）
@@ -210,7 +210,7 @@ sequenceDiagram
         M->>G: ApplyRoomInfo(roomID, info)
         G->>R: UpdateRoom 回写（失败仅 warn，内存保留新值）
         M->>P: RoomInfoArrived(info)
-        P-->>M: Start(info)　（enabled 且 phase=idle 时）
+        P-->>M: Start(info)　（record_enabled 且 phase=idle 时）
         M->>Sess: launchSession：启动会话协程
     and 兜底通道：轮询定时器到期
         M->>LC: GetRoomInfo(roomID)
@@ -218,10 +218,10 @@ sequenceDiagram
         M->>G: ApplyRoomInfo(roomID, info)
         M->>P: RoomInfoArrived(info)
         P-->>M: Start / Stop / None
-    and 重评估信号：enabled 翻转
+    and 重评估信号：record_enabled 翻转
         Note over M: 监督循环 reconcile 投递 roomChanged
-        M->>P: EnabledFlipped(enabled)
-        P-->>M: 启用且在播 → Start；禁用且在录 → Stop；其余 None
+        M->>P: RecordEnabledFlipped(record_enabled)
+        P-->>M: 开启录制且在播 → Start；关闭录制且在录 → Stop；其余 None
     end
 ```
 
@@ -287,7 +287,7 @@ sequenceDiagram
     participant G as RoomRegistry
     participant RR as RecorderRepo（pumpStats 原子计数）
 
-    C->>+S: ListRoomsRequest{page_size, page_token,<br/>可选 room_id / streamer_name / room_title / enabled}
+    C->>+S: ListRoomsRequest{page_size, page_token,<br/>可选 room_id / streamer_name / room_title / record_enabled}
     Note over S: 解析 AIP 分页；组装 biz.ListQuery<br/>（可选字段等值 AND，缺省不筛选）
     S->>+U: ListRoomRuntimes(ctx, query)
     U->>+R: ListRooms(query)　ORDER BY room_id ASC
@@ -328,13 +328,13 @@ stateDiagram-v2
 
 ### 4.2 会话策略阶段 sessionPolicy.phase（ADR-0001）
 
-每个 Monitor 独享一个策略实例；阶段 + `enabled` 门控 + 最新房间信息共同裁决。"收尾中重新启用"由 `resumeOnFinish` 标志承接。
+每个 Monitor 独享一个策略实例；阶段 + `record_enabled` 门控 + 最新房间信息共同裁决。"收尾中重新开启录制"由 `resumeOnFinish` 标志承接。
 
 ```mermaid
 stateDiagram-v2
-    [*] --> idle : newSessionPolicy(enabled)
-    idle --> running : RoomInfoArrived(在播) 且 enabled；或 EnabledFlipped(true) 且最新信息在播
-    running --> finishing : RoomInfoArrived(停播)；或 EnabledFlipped(false)
+    [*] --> idle : newSessionPolicy(record_enabled)
+    idle --> running : RoomInfoArrived(在播) 且 record_enabled；或 RecordEnabledFlipped(true) 且最新信息在播
+    running --> finishing : RoomInfoArrived(停播)；或 RecordEnabledFlipped(false)
     finishing --> running : SessionFinished 且 resumeOnFinish 且仍在播（恢复录制）
     finishing --> idle : SessionFinished（无恢复标志）
 ```
@@ -376,7 +376,7 @@ erDiagram
         int64 room_id PK "平台房间 ID，调用方提供，不可变"
         string streamer_name "主播名（可被平台回写覆盖）"
         string room_title "房间标题（可被平台回写覆盖）"
-        bool enabled "是否启用录制（仅门控录制，不影响监控）"
+        bool record_enabled "是否录制该房间（仅门控录制，不影响监控）"
         datetime create_time "GORM autoCreateTime"
         datetime update_time "GORM autoUpdateTime"
     }

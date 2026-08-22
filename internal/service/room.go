@@ -19,9 +19,9 @@ const (
 // updatableRoomFields 是 UpdateRoom 接受的全部字段路径；room_id 不可变，
 // 运行时字段由服务端填充。
 var updatableRoomFields = map[string]bool{
-	"streamer_name": true,
-	"room_title":    true,
-	"enabled":       true,
+	"streamer_name":  true,
+	"room_title":     true,
+	"record_enabled": true,
 }
 
 type RoomService struct {
@@ -77,9 +77,9 @@ func (s *RoomService) ListRooms(ctx context.Context, req *v1.ListRoomsRequest) (
 		roomTitle := req.GetRoomTitle()
 		query.RoomTitle = &roomTitle
 	}
-	if req.Enabled != nil {
-		enabled := req.GetEnabled()
-		query.Enabled = &enabled
+	if req.RecordEnabled != nil {
+		recordEnabled := req.GetRecordEnabled()
+		query.RecordEnabled = &recordEnabled
 	}
 
 	roomRuntimes, err := s.uc.ListRoomRuntimes(ctx, query)
@@ -134,10 +134,10 @@ func toRoomDO(in *v1.Room) *biz.Room {
 		return nil
 	}
 	return &biz.Room{
-		RoomID:       in.GetRoomId(),
-		StreamerName: in.GetStreamerName(),
-		RoomTitle:    in.GetRoomTitle(),
-		Enabled:      in.GetEnabled(),
+		RoomID:        in.GetRoomId(),
+		StreamerName:  in.GetStreamerName(),
+		RoomTitle:     in.GetRoomTitle(),
+		RecordEnabled: in.GetRecordEnabled(),
 	}
 }
 
@@ -172,7 +172,7 @@ func toRoomDTO(rt *biz.RoomRuntime) *v1.Room {
 		RoomId:           rt.Room.RoomID,
 		StreamerName:     rt.Room.StreamerName,
 		RoomTitle:        rt.Room.RoomTitle,
-		Enabled:          rt.Room.Enabled,
+		RecordEnabled:    rt.Room.RecordEnabled,
 		LiveStatus:       liveStatus,
 		RecordStatus:     recordStatus,
 		CurrentFile:      rt.CurrentFile,

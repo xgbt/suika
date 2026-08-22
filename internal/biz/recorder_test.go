@@ -99,7 +99,7 @@ func (c *fakeLiveClient) DanmakuConn(context.Context, int64) (DanmakuConn, error
 
 func newTestUsecase(t *testing.T, repo RecorderRepo, lc LiveClient, mutate func(*RecorderUsecase)) *RecorderUsecase {
 	t.Helper()
-	return newTestUsecaseWithRooms(t, map[int64]*Room{42: {RoomID: 42, StreamerName: "tester", Enabled: true}}, repo, lc, mutate)
+	return newTestUsecaseWithRooms(t, map[int64]*Room{42: {RoomID: 42, StreamerName: "tester", RecordEnabled: true}}, repo, lc, mutate)
 }
 
 func newTestUsecaseWithRooms(t *testing.T, rooms map[int64]*Room, repo RecorderRepo, lc LiveClient, mutate func(*RecorderUsecase)) *RecorderUsecase {
@@ -306,7 +306,7 @@ func TestNewRecorderUsecaseConfigOverrides(t *testing.T) {
 		},
 	}
 	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{
-		1: {RoomID: 1, StreamerName: "a", Enabled: true},
+		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
 		2: {RoomID: 2, StreamerName: "b"},
 	}}
 	reg, err := NewRoomRegistry(roomRepo)
@@ -449,16 +449,16 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	<-watchDone
 }
 
-// TestWatchRoomGatesSessionsOnEnabled 验证监控与录制的分离：禁用的房间
-// 照常接收房间状态事件（直播状态可见），但不开启会话；启用后若仍在播则
-// 立即开录，再禁用则立即停止。
-func TestWatchRoomGatesSessionsOnEnabled(t *testing.T) {
+// TestWatchRoomGatesSessionsOnRecordEnabled 验证监控与录制的分离：未配置
+// 录制的房间照常接收房间状态事件（直播状态可见），但不开启会话；配置录
+// 制后若仍在播则立即开录，再关闭录制则立即停止。
+func TestWatchRoomGatesSessionsOnRecordEnabled(t *testing.T) {
 	repo := &pumpBlockRepo{}
 	conn := &fakeDanmakuConn{
 		events:           make(chan *DanmakuEvent),
 		roomStateUpdates: make(chan *RoomInfo),
 	}
-	// 房间 42 初始为禁用态。
+	// 房间 42 初始未配置录制。
 	uc := newTestUsecaseWithRooms(t, map[int64]*Room{42: {RoomID: 42, StreamerName: "tester"}}, repo, &watchClient{conn: conn}, nil)
 	roomChanged := make(chan struct{}, 1)
 
@@ -472,38 +472,38 @@ func TestWatchRoomGatesSessionsOnEnabled(t *testing.T) {
 		}
 	}()
 
-	// 禁用房间收到开播事件：直播状态更新，但不得开启会话。
+	// 未配置录制的房间收到开播事件：直播状态更新，但不得开启会话。
 	conn.roomStateUpdates <- liveInfo(42, true)
 	waitFor(t, "live status applied", func() bool {
 		return uc.registry.runtime(42).LiveStatus == LiveStatusOnAir
 	})
 	time.Sleep(50 * time.Millisecond)
 	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
-		t.Fatalf("disabled room started recording: record status = %v", got)
+		t.Fatalf("room with record_enabled=false started recording: record status = %v", got)
 	}
 
-	// 启用：仍在播，应立即开录。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", Enabled: true})
+	// 开启录制：仍在播，应立即开录。
+	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
 	roomChanged <- struct{}{}
 	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
-		t.Fatal("session did not start after enabling a live room")
+		t.Fatal("session did not start after turning on recording for a live room")
 	}
 
-	// 禁用：立即优雅停止。
+	// 关闭录制：立即优雅停止。
 	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
 	roomChanged <- struct{}{}
 	if !waitRecordStatus(uc.registry, 42, RecordStatusIdle) {
-		t.Fatal("disabling did not stop the active session")
+		t.Fatal("turning off recording did not stop the active session")
 	}
 	if len(repo.finished) != 1 {
 		t.Fatalf("finished sessions = %d, want 1", len(repo.finished))
 	}
 
-	// 禁用后的开播事件同样不得开启会话。
+	// 关闭录制后的开播事件同样不得开启会话。
 	conn.roomStateUpdates <- liveInfo(42, true)
 	time.Sleep(50 * time.Millisecond)
 	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
-		t.Fatalf("disabled room started recording again: record status = %v", got)
+		t.Fatalf("room with record_enabled=false started recording again: record status = %v", got)
 	}
 
 	cancel()
@@ -574,9 +574,10 @@ func (r *gatedFinishRepo) FinishSession(ctx context.Context, _ *Session) error {
 
 func (r *gatedFinishRepo) RecoverPending(context.Context) error { return nil }
 
-// TestWatchRoomEnableDuringStopResumesSession 验证竞态路径：禁用触发的
-// 停止尚在收尾（转封装中）时又被启用，收尾完成后若仍在播应立即恢复录制。
-func TestWatchRoomEnableDuringStopResumesSession(t *testing.T) {
+// TestWatchRoomEnableRecordingDuringStopResumesSession 验证竞态路径：关闭
+// 录制触发的停止尚在收尾（转封装中）时又重新开启录制，收尾完成后若仍在播
+// 应立即恢复录制。
+func TestWatchRoomEnableRecordingDuringStopResumesSession(t *testing.T) {
 	repo := &gatedFinishRepo{gate: make(chan struct{})}
 	conn := &fakeDanmakuConn{
 		events:           make(chan *DanmakuEvent),
@@ -600,15 +601,15 @@ func TestWatchRoomEnableDuringStopResumesSession(t *testing.T) {
 		t.Fatal("session did not start recording")
 	}
 
-	// 禁用：会话进入收尾并阻塞在转封装 gate 上。
+	// 关闭录制：会话进入收尾并阻塞在转封装 gate 上。
 	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
 	roomChanged <- struct{}{}
 	if !waitRecordStatus(uc.registry, 42, RecordStatusRemuxing) {
-		t.Fatal("disable did not drive the session into finishing")
+		t.Fatal("turning off recording did not drive the session into finishing")
 	}
 
-	// 收尾完成前重新启用。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", Enabled: true})
+	// 收尾完成前重新开启录制。
+	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
 	roomChanged <- struct{}{}
 
 	// 放行收尾：仍在播，应立即恢复录制（第二个会话）。
@@ -680,7 +681,7 @@ func TestRunReconcilesRoomAddAndRemove(t *testing.T) {
 	go func() { runDone <- uc.Run(ctx) }()
 
 	// 新建房间：监控应立即建连。
-	reg.Add(Room{RoomID: 7, StreamerName: "n", Enabled: true})
+	reg.Add(Room{RoomID: 7, StreamerName: "n", RecordEnabled: true})
 	waitFor(t, "monitor started for created room", func() bool { return client.count() == 1 })
 
 	// 删除房间：监控应立即停止（弹幕连接被关闭）。
@@ -688,7 +689,7 @@ func TestRunReconcilesRoomAddAndRemove(t *testing.T) {
 	waitFor(t, "monitor stopped for deleted room", func() bool { return client.last().isClosed() })
 
 	// 重新添加：应由新的监控协程接管（新连接）。
-	reg.Add(Room{RoomID: 7, StreamerName: "n", Enabled: true})
+	reg.Add(Room{RoomID: 7, StreamerName: "n", RecordEnabled: true})
 	waitFor(t, "monitor restarted for re-added room", func() bool { return client.count() == 2 })
 
 	// 取消 Run：应在有限时间内排空并返回。

@@ -12,12 +12,12 @@ import (
 )
 
 type roomPO struct {
-	RoomID       int64 `gorm:"primaryKey"`
-	StreamerName string
-	RoomTitle    string
-	Enabled      bool
-	CreateTime   time.Time `gorm:"autoCreateTime"`
-	UpdateTime   time.Time `gorm:"autoUpdateTime"`
+	RoomID        int64 `gorm:"primaryKey"`
+	StreamerName  string
+	RoomTitle     string
+	RecordEnabled bool
+	CreateTime    time.Time `gorm:"autoCreateTime"`
+	UpdateTime    time.Time `gorm:"autoUpdateTime"`
 }
 
 func (roomPO) TableName() string { return "rooms" }
@@ -27,12 +27,12 @@ func toRoomPO(room *biz.Room) *roomPO {
 		return nil
 	}
 	return &roomPO{
-		RoomID:       room.RoomID,
-		StreamerName: room.StreamerName,
-		RoomTitle:    room.RoomTitle,
-		Enabled:      room.Enabled,
-		CreateTime:   room.CreateTime,
-		UpdateTime:   room.UpdateTime,
+		RoomID:        room.RoomID,
+		StreamerName:  room.StreamerName,
+		RoomTitle:     room.RoomTitle,
+		RecordEnabled: room.RecordEnabled,
+		CreateTime:    room.CreateTime,
+		UpdateTime:    room.UpdateTime,
 	}
 }
 
@@ -41,12 +41,12 @@ func toRoomDO(po *roomPO) *biz.Room {
 		return nil
 	}
 	return &biz.Room{
-		RoomID:       po.RoomID,
-		StreamerName: po.StreamerName,
-		RoomTitle:    po.RoomTitle,
-		Enabled:      po.Enabled,
-		CreateTime:   po.CreateTime,
-		UpdateTime:   po.UpdateTime,
+		RoomID:        po.RoomID,
+		StreamerName:  po.StreamerName,
+		RoomTitle:     po.RoomTitle,
+		RecordEnabled: po.RecordEnabled,
+		CreateTime:    po.CreateTime,
+		UpdateTime:    po.UpdateTime,
 	}
 }
 
@@ -88,8 +88,8 @@ func (r *roomRepo) ListRooms(ctx context.Context, queryOpt biz.ListQuery) ([]*bi
 	if queryOpt.RoomTitle != nil {
 		query = query.Where("room_title = ?", *queryOpt.RoomTitle)
 	}
-	if queryOpt.Enabled != nil {
-		query = query.Where("enabled = ?", *queryOpt.Enabled)
+	if queryOpt.RecordEnabled != nil {
+		query = query.Where("record_enabled = ?", *queryOpt.RecordEnabled)
 	}
 	query = query.Order("room_id ASC")
 
@@ -122,9 +122,9 @@ func (r *roomRepo) UpdateRoom(ctx context.Context, room *biz.Room) (*biz.Room, e
 	result := r.data.db.WithContext(ctx).Model(&roomPO{}).
 		Where("room_id = ?", po.RoomID).
 		Updates(map[string]any{
-			"streamer_name": po.StreamerName,
-			"room_title":    po.RoomTitle,
-			"enabled":       po.Enabled,
+			"streamer_name":  po.StreamerName,
+			"room_title":     po.RoomTitle,
+			"record_enabled": po.RecordEnabled,
 		})
 	if result.Error != nil {
 		return nil, result.Error

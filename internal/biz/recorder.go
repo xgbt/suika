@@ -150,10 +150,10 @@ type RecorderRepo interface {
 
 // ReconnectPolicy 是断流决策树使用的重连配置（展开后的扁平形式）。
 type ReconnectPolicy struct {
-	AutoReconnect      bool
-	MaxReconnect       int
-	ReconnectDelay     time.Duration
-	CDNTransientBudget int
+	AutoReconnect      bool          // 是否自动重连
+	MaxReconnect       int           // 最大重连次数
+	ReconnectDelay     time.Duration // 重连延迟
+	CDNTransientBudget int           // CDN 瞬时故障的重试预算，超过预算则不再重连
 }
 
 // RecorderUsecase 编排房间监控、会话生命周期和断流决策树。它只做
@@ -227,9 +227,9 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 
 // Run 运行录制守护进程的主循环：先收尾上次运行遗留的会话，然后作为监督
 // 循环持续调和 RoomRegistry 快照与每房间的监控协程。监控跟随房间存在：
-// 新建房间无论启用与否都立即开始监控，删除房间立即停止监控（活跃会话
-// 随之优雅停止）；enabled 翻转不影响监控，只作为重评估信号送达监控协
-// 程，由其决定开始或停止录制。
+// 新建房间无论是否配置录制都立即开始监控，删除房间立即停止监控（活跃会话
+// 随之优雅停止）；record_enabled 翻转不影响监控，只作为重评估信号送达监控
+// 协程，由其决定开始或停止录制。
 func (uc *RecorderUsecase) Run(ctx context.Context) error {
 
 	// 收尾上次运行遗留的转封装工作，若失败则记录错误并继续运行。
@@ -271,13 +271,13 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 }
 
 // monitorHandle 是监督循环管理的一个房间监控协程句柄。roomChanged 是
-// 合并式重评估信号（如 enabled 翻转），由监督循环送达 watchRoom。
+// 合并式重评估信号（如 record_enabled 翻转），由监督循环送达 watchRoom。
 type monitorHandle struct {
-	// enabled 记录最近一次 reconcile 时，房间的监控是否启用。用于监督循环向监控协程投递重评估信号。
-	enabled     bool
-	roomChanged chan struct{}
-	cancel      context.CancelFunc
-	done        chan struct{}
+	// recordEnabled 记录最近一次 reconcile 时，房间是否配置了录制。用于监督循环向监控协程投递重评估信号。
+	recordEnabled bool
+	roomChanged   chan struct{}
+	cancel        context.CancelFunc
+	done          chan struct{}
 }
 
 // signal 向 roomChanged 投递一个重评估信号，若通道已满则丢弃。
@@ -290,7 +290,7 @@ func (h *monitorHandle) signal() {
 
 // reconcile 按注册表快照调和监控协程集合：为新增房间启动监控；停止并
 // 移除已删除房间的监控（移入 retired 自行优雅收尾，不阻塞调和）；
-// enabled 翻转的房间投递重评估信号。
+// record_enabled 翻转的房间投递重评估信号。
 func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*monitorHandle, retired *[]*monitorHandle) {
 
 	// 回收已完成收尾的被移除监控。
@@ -323,14 +323,14 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 		//  初次启动，或中途新增房间，启动监控协程并登记到 monitors。
 		if !ok {
 			handle = uc.startMonitor(ctx, roomID)
-			handle.enabled = room.Enabled
+			handle.recordEnabled = room.RecordEnabled
 			monitors[roomID] = handle
 			continue
 		}
 
 		// 已存在房间监控状态变动，发送重评估信号
-		if handle.enabled != room.Enabled {
-			handle.enabled = room.Enabled
+		if handle.recordEnabled != room.RecordEnabled {
+			handle.recordEnabled = room.RecordEnabled
 			handle.signal()
 		}
 	}
@@ -368,9 +368,9 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan s
 // 协程的上下文，本身不含任何会话启停判断。启停策略集中在 sessionPolicy：
 // 各 select 分支把输入投递给策略（房间信息到达前先应用到注册表），并执
 // 行返回的决策——Start 启动会话协程，Stop 取消活跃会话。会话是否启动受
-// 房间 enabled 门控；roomChanged 信号只承担重评估的投递，监控本身不受影
-// 响。无活跃会话时弹幕事件被直接丢弃；活跃会话的 RecordSession 直接消费
-// 事件。
+// 房间 record_enabled 门控；roomChanged 信号只承担重评估的投递，监控本身
+// 不受影响。无活跃会话时弹幕事件被直接丢弃；活跃会话的 RecordSession 直接
+// 消费事件。
 func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
 
 	// 1. 弹幕连接
@@ -384,7 +384,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 	poll := time.NewTimer(jitterDuration(uc.pollInterval, pollJitterFraction))
 	defer poll.Stop()
 
-	policy := newSessionPolicy(uc.registry.Room(roomID).Enabled)
+	policy := newSessionPolicy(uc.registry.Room(roomID).RecordEnabled)
 	var active *sessionHandle
 	for {
 		// 3. 事件分发
@@ -424,10 +424,10 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 			}
 			poll.Reset(jitterDuration(uc.pollInterval, pollJitterFraction))
 		case <-roomChanged:
-			// 取得注册表中最新的启用状态后投递给策略；值未变时策略自
+			// 取得注册表中最新的录制开关状态后投递给策略；值未变时策略自
 			// 行吸收为无操作决策。
 			room := uc.registry.Room(roomID)
-			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.EnabledFlipped(room.Enabled))
+			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
 		}
 	}
 }

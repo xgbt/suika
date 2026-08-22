@@ -76,7 +76,7 @@ enum RecordStatus {
 
 message Room {
   int64 room_id = 1;
-  bool enabled = 3;
+  bool record_enabled = 3;
   LiveStatus live_status = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
   RecordStatus record_status = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
   string current_file = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
@@ -110,7 +110,7 @@ message ListRoomsRequest {
   int32 page_size = 1;
   string page_token = 2;
   optional int64 room_id = 3;
-  optional bool enabled = 5;
+  optional bool record_enabled = 5;
   optional string streamer_name = 6;
   optional string room_title = 7;
 }

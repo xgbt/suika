@@ -182,7 +182,7 @@ export default function RoomList() {
     setModalMode('create');
     setEditingRoom(null);
     form.resetFields();
-    form.setFieldsValue({ enabled: true });
+    form.setFieldsValue({ record_enabled: true });
     setModalOpen(true);
   }
 
@@ -192,7 +192,7 @@ export default function RoomList() {
     form.setFieldsValue({
       streamer_name: room.streamer_name,
       room_title: room.room_title,
-      enabled: room.enabled,
+      record_enabled: room.record_enabled,
     });
     setModalOpen(true);
   }
@@ -206,14 +206,14 @@ export default function RoomList() {
           room_id: values.room_id,
           streamer_name: values.streamer_name,
           room_title: values.room_title,
-          enabled: values.enabled ?? false,
+          record_enabled: values.record_enabled ?? false,
         });
         message.success('添加成功');
       } else if (editingRoom) {
         const paths: string[] = [];
         if (values.streamer_name !== editingRoom.streamer_name) paths.push('streamer_name');
         if (values.room_title !== editingRoom.room_title) paths.push('room_title');
-        if (values.enabled !== editingRoom.enabled) paths.push('enabled');
+        if (values.record_enabled !== editingRoom.record_enabled) paths.push('record_enabled');
         if (paths.length === 0) {
           message.info('没有改动');
           setModalOpen(false);
@@ -224,7 +224,7 @@ export default function RoomList() {
             room_id: editingRoom.room_id,
             streamer_name: values.streamer_name,
             room_title: values.room_title,
-            enabled: values.enabled,
+            record_enabled: values.record_enabled,
           },
           paths,
         );
@@ -330,19 +330,19 @@ export default function RoomList() {
                   <div className="room-status-row">
                     {RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>}
                     <span className="room-toggle">
-                      启用
+                      录制
                       <Switch
                         size="small"
-                        checked={room.enabled}
+                        checked={room.record_enabled}
                         onChange={(checked) => {
                           modal.confirm({
-                            title: checked ? `启用房间 ${room.room_id}？` : `禁用房间 ${room.room_id}？`,
-                            okText: checked ? '启用' : '禁用',
+                            title: checked ? `录制房间 ${room.room_id}？` : `停止录制房间 ${room.room_id}？`,
+                            okText: checked ? '录制' : '停止',
                             cancelText: '取消',
                             okButtonProps: checked ? {} : { danger: true },
                             onOk: async () => {
                               try {
-                                await roomsApi.update({ room_id: room.room_id, enabled: checked }, ['enabled']);
+                                await roomsApi.update({ room_id: room.room_id, record_enabled: checked }, ['record_enabled']);
                                 loadPage(pageTokenStack[currentPage] ?? '');
                               } catch (e: unknown) {
                                 message.error((e as Error).message ?? '更新失败');
@@ -417,7 +417,7 @@ export default function RoomList() {
           <Form.Item label="房间标题" name="room_title">
             <Input placeholder="可选，留空则由平台自动填充" allowClear />
           </Form.Item>
-          <Form.Item label="启用录制" name="enabled" valuePropName="checked">
+          <Form.Item label="录制" name="record_enabled" valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>
