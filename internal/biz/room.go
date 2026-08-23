@@ -44,14 +44,15 @@ type Room struct {
 
 // RoomRuntime 是面向读取的房间运行时快照，由房间信息、运行状态和当前录制会话进度组成。
 type RoomRuntime struct {
-	Room             Room         // 房间基础信息
-	LiveStatus       LiveStatus   // 当前直播状态
-	RecordStatus     RecordStatus // 当前录制状态
-	SessionStartedAt time.Time    // 当前录制会话开始时间
-	LastError        string       // 最近一次监控或录制错误
-	CurrentFile      string       // 当前录制会话正在写入的分段文件
-	BytesWritten     int64        // 当前分段已写入的字节数
-	DownloadSpeed    int64        // 当前下载速度（字节/秒）
+	Room             Room          // 房间基础信息
+	LiveStatus       LiveStatus    // 当前直播状态
+	RecordStatus     RecordStatus  // 当前录制状态
+	Quality          StreamQuality // B 站当前授予的直播流清晰度
+	SessionStartedAt time.Time     // 当前录制会话开始时间
+	LastError        string        // 最近一次监控或录制错误
+	CurrentFile      string        // 当前录制会话正在写入的分段文件
+	BytesWritten     int64         // 当前分段已写入的字节数
+	DownloadSpeed    int64         // 当前下载速度（字节/秒）
 }
 
 type RoomRepo interface {

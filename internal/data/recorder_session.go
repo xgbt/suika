@@ -32,7 +32,7 @@ type sessionMeta struct {
 	Quality       qualityMeta   `json:"quality"`
 	Status        string        `json:"status"`
 	Segments      []segmentMeta `json:"segments"`
-	Errors        []metaError   `json:"errors"`
+	Errors        []errorMeta   `json:"errors"`
 	UpdatedAt     int64         `json:"updated_at"`
 }
 
@@ -44,20 +44,20 @@ type qualityMeta struct {
 
 // segmentMeta 记录每个分段的元数据，存储在 meta.json 中
 type segmentMeta struct {
-	Part        int    `json:"part"`
-	Video       string `json:"video"`
-	FLVKept     bool   `json:"flv_kept"`
+	Part        int    `json:"part"`     // 分段编号
+	Video       string `json:"video"`    // 视频文件名
+	FLVKept     bool   `json:"flv_kept"` // 标记 FLV 文件是否保留
 	Danmaku     string `json:"danmaku"`
 	WallStart   int64  `json:"wall_start"`
 	WallEnd     int64  `json:"wall_end"`
 	TsStart     int64  `json:"ts_start"`
 	TsEnd       int64  `json:"ts_end"`
-	Bytes       int64  `json:"bytes"`
-	RemuxStatus string `json:"remux_status"`
-	RemuxError  string `json:"remux_error,omitempty"`
+	Bytes       int64  `json:"bytes"`                 // 分段文件大小
+	RemuxStatus string `json:"remux_status"`          // 转封装状态：pending, ok, failed
+	RemuxError  string `json:"remux_error,omitempty"` // 转封装错误信息，仅在 RemuxStatus 为 failed 时存在
 }
 
-type metaError struct {
+type errorMeta struct {
 	Time  int64  `json:"time"`
 	Stage string `json:"stage"`
 	Msg   string `json:"msg"`
@@ -107,6 +107,7 @@ func saveMeta(path string, meta *sessionMeta) error {
 	return os.Rename(tmp, path)
 }
 
+// updateMeta 加载 meta.json，执行修改函数 fn，然后保存回 meta.json
 func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -121,6 +122,7 @@ func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	}
 }
 
+// persistMeta 保存 meta.json，使用原子写入方式，避免写入中断导致文件损坏。
 func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -157,12 +159,14 @@ func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *segmentFile) {
 	})
 }
 
+// appendMetaError 将错误信息追加到 meta.json 中
 func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
-		meta.Errors = append(meta.Errors, metaError{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
+		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
 	})
 }
 
+// hasRetryableSegments 检查 meta.json 中是否有可重试的分段
 func hasRetryableSegments(meta *sessionMeta) bool {
 	for _, seg := range meta.Segments {
 		if seg.RemuxStatus == remuxStatusFailed && seg.FLVKept {

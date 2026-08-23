@@ -17,9 +17,6 @@ import (
 	"suika/internal/biz"
 	"suika/internal/conf"
 	"suika/internal/data/flv"
-
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // --- 辅助函数 ---
@@ -143,7 +140,7 @@ func TestMetaJSONRoundTrip(t *testing.T) {
 				RemuxStatus: remuxStatusFailed, RemuxError: "ffmpeg exploded",
 			},
 		},
-		Errors: []metaError{{Time: 55, Stage: "record", Msg: "write failed"}},
+		Errors: []errorMeta{{Time: 55, Stage: "record", Msg: "write failed"}},
 	}
 
 	before := time.Now().Unix()
@@ -335,24 +332,9 @@ func TestNewRecorderRepoConfigMapping(t *testing.T) {
 		t.Fatalf("defaults not applied: %+v", r)
 	}
 
-	c := &conf.Recorder{
-		RecordRoot:     "/srv/recordings",
-		SegmentMinutes: proto.Int32(30),
-		Reconnect: &conf.Recorder_ReconnectOptions{
-			HealthCheckInterval:   durationpb.New(7 * time.Second),
-			HealthCheckFailRounds: 5,
-		},
-	}
-	r = NewRecorderRepo(&Data{}, c).(*recorderRepo)
-	if r.recordRoot != "/srv/recordings" || r.segmentDuration != 30*time.Minute ||
-		r.healthInterval != 7*time.Second || r.healthFailRounds != 5 {
-		t.Fatalf("overrides not applied: %+v", r)
-	}
-
-	// 显式零值（可与未设置区分）表示关闭切分
-	r = NewRecorderRepo(&Data{}, &conf.Recorder{SegmentMinutes: proto.Int32(0)}).(*recorderRepo)
-	if r.segmentDuration != 0 {
-		t.Fatalf("segmentDuration = %v, want 0 (explicitly disabled)", r.segmentDuration)
+	r = NewRecorderRepo(&Data{}, &conf.Recorder{RecordRoot: "/srv/recordings"}).(*recorderRepo)
+	if r.recordRoot != "/srv/recordings" {
+		t.Fatalf("recordRoot = %q, want %q", r.recordRoot, "/srv/recordings")
 	}
 }
 

@@ -87,7 +87,7 @@ design rather than add the import.
 
 **service (DTO ↔ DO)**
 
-- `convertRoom` parses the writable proto fields into `biz.Room`; the
+- `convertRoom` parses `room_id` and `record_enabled` into `biz.Room`; the
   reverse direction is `convertRoomReply`, which maps `biz.RoomRuntime` to
   the API `Room` message.
 - `CreateRoom`, `GetRoom`, `ListRooms`, and `UpdateRoom` return their
@@ -150,11 +150,12 @@ returns), and `Stop` cancels the loop with a bounded 45s wait.
 The same layering and inversion pattern applies, with two more seams
 declared in `biz` and implemented in `data`:
 
-- `LiveClient` — the platform seam; ALL Bilibili traffic goes through it
-  (room info, stream URLs, danmaku websocket). Implemented in `data` by
-  `bili_api.go` / `danmaku.go` plus the risk-control helpers `wbi.go`
-  (WBI signing) and `buvid.go`. All risk orchestration lives in the
-  single `riskGuard` module (`risk.go`): cooldown gates, 412/403/429 and
+- `LiveClient` — the platform seam; ALL live-room Bilibili traffic goes
+  through it (room info, stream URLs, danmaku websocket). Implemented in
+  the `data/bili/` subpackage by `live.go` / `danmaku.go` plus the
+  risk-control helpers `wbi.go` (WBI signing) and `buvid.go`. All risk
+  orchestration lives in the single `riskGuard` module (`risk.go`):
+  cooldown gates, 412/403/429 and
   -352 refresh-and-retry, legacy-API fallback, error classification, and
   the per-room cooldown ladder. Endpoint code only builds requests,
   parses responses, and translates business codes — never retries or
@@ -165,11 +166,21 @@ declared in `biz` and implemented in `data`:
   (`recorder.go` session lifecycle + recovery, `recorder_segment.go`
   segment files, `recorder_session.go` `meta.json` bookkeeping,
   `recorder_stats.go` write-progress stats).
+- `PassportClient` — the account platform seam; QR-login and nav traffic
+  (passport.bilibili.com / api.bilibili.com) goes through it, explicitly
+  outside `riskGuard` (no WBI signing, no retry). Implemented in
+  `data/bili/passport.go`. Login cookies are captured from the poll response's
+  Set-Cookie headers.
+- `CredentialRepo` — the credential storage seam; persists the single
+  Bilibili login cookie in the `credentials` table and, on
+  save/delete, hot-swaps the in-memory cookie held by the `bili.Client`
+  inside `*Data` so the recorder picks up a new login without restart.
+  Implemented in `data/credential.go`. See ADR-0003.
 
 `RecorderUsecase` (biz/recorder.go) makes decisions only: its `Run` is a
 supervisor loop reconciling the registry's change notifications against
 per-room monitor goroutines, room monitoring (the danmaku WS is the primary
-live-detection channel; `fallback_poll_interval` polling is the backup),
+live-detection channel; fallback polling is the backup),
 session lifecycles, and the stream-drop/reconnect decision tree. Byte-level
 IO belongs to the seams.
 
@@ -198,13 +209,30 @@ and gRPC transports:
 | `CreateRoom` | `POST /v1/rooms/create` | Create a room using the caller-provided `room_id`. |
 | `ListRooms` | `POST /v1/rooms/list` | Query rooms with optional equality filters and pagination. |
 | `GetRoom` | `POST /v1/rooms/get` | Get one room and its current runtime state. |
-| `UpdateRoom` | `POST /v1/rooms/update` | Partially update a room. |
+| `UpdateRoom` | `POST /v1/rooms/update` | Toggle `record_enabled`; platform identity fields are read-only. |
 | `DeleteRoom` | `POST /v1/rooms/delete` | Delete a room by `room_id`. |
+
+### Account API
+
+`AccountService` is defined in `api/account/v1/account.proto` and manages the
+Bilibili account the recorder acts as. The login credential is obtained via
+QR login and stored in the sqlite `credentials` table — the only cookie source.
+
+| RPC | HTTP route | Purpose |
+|---|---|---|
+| `CreateQRLogin` | `POST /v1/account/qr-login/create` | Generate a QR login session (`url`, `qrcode_key`, ~180s expiry). |
+| `PollQRLogin` | `POST /v1/account/qr-login/poll` | Poll scan status; on confirm, persist the cookie and hot-swap it live. |
+| `GetAccountStatus` | `POST /v1/account/status/get` | Report the logged-in account (verified against Bilibili nav). |
+| `Logout` | `POST /v1/account/logout` | Local logout: delete the stored credential and clear memory. |
+
+`PollQRLogin` returns a `QRLoginStatus` enum (`NOT_SCANNED`, `SCANNED`,
+`EXPIRED`, `CONFIRMED`); expiry/scanned are normal outcomes, not errors.
+Platform failures map to `ERROR_REASON_UNAVAILABLE` (503).
 
 ### Room message
 
-Writable fields are `room_id`, `streamer_name`, `room_title`, and
-`record_enabled`. The following fields
+The create request accepts `room_id` and `record_enabled`. `streamer_name` and
+`room_title` are output-only fields populated from Bilibili. The following fields
 are `OUTPUT_ONLY` and must be populated by the service:
 
 - `live_status`: `LIVE_STATUS_UNSPECIFIED`, `LIVE_STATUS_PREPARING`, or
@@ -216,11 +244,8 @@ are `OUTPUT_ONLY` and must be populated by the service:
   `session_started_at`, `last_error`, `create_time`, and `update_time`.
 
 `room_id` is the caller-provided unique platform room ID and is immutable.
-`CreateRoomRequest.room` and `UpdateRoomRequest.room` are required;
-`UpdateRoomRequest.update_mask` is also required. Updates currently allow
-only the `streamer_name`, `room_title`, and `record_enabled` paths. Invalid IDs or
-unsupported update paths
-return `ERROR_REASON_INVALID_ARGUMENT`; duplicate IDs return
+`CreateRoomRequest.room` is required. Invalid IDs return
+`ERROR_REASON_INVALID_ARGUMENT`; duplicate IDs return
 `ERROR_REASON_ALREADY_EXISTS`; missing rooms return
 `ERROR_REASON_NOT_FOUND`.
 
@@ -256,10 +281,13 @@ and the in-memory snapshot keeps the new values.
 `web/` is a React + TypeScript + Vite + Ant Design SPA and the only
 graphical consumer of the HTTP API (`RoomList`: table with runtime
 status, create/edit, recording on/off confirmation, delete confirmation,
-5s auto-refresh). It is decoupled from the Go build — `npm install` /
-`npm run dev`, with vite proxying `/v1` to `http://localhost:8000`.
-Frontend types mirror `room.proto` by hand (`web/src/api/rooms.ts`),
-so proto changes must be synced there.
+auto-refresh). The header also carries an account bar (`AccountBar`) with
+a QR-login modal (`QRLoginModal`) for obtaining the Bilibili credential,
+plus status display and logout. It is decoupled from the Go build —
+`npm install` / `npm run dev`, with vite proxying `/v1` to
+`http://localhost:8000`. Frontend types mirror `room.proto` by hand
+(`web/src/api/rooms.ts`) and `account.proto` by hand
+(`web/src/api/auth.ts`), so proto changes must be synced there.
 
 ## Add-a-resource checklist
 
@@ -301,12 +329,18 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
 
 - Conventional Commits: `feat:`, `fix:`, `refactor:`, `chore(deps):`,
   `docs:`, `test:`.
-- Real credentials (the Bilibili cookie) live only in
-  `configs/credentials.yaml` (gitignored; copy
-  `credentials.example.yaml`). Kratos merges every yaml in the `-conf`
-  directory into one Bootstrap, so `config.yaml` keeps the sensitive
-  fields empty. The `redis` block in `config.yaml` is a vestigial
-  template placeholder — nothing reads it.
+- The Bilibili login credential (cookie) is obtained via web QR login and
+  stored in the sqlite `credentials` table — it is the only cookie source.
+  The config field `recorder.cookie` is deprecated and ignored;
+  `configs/credentials.yaml` is no longer needed (see
+  `credentials.example.yaml`). See ADR-0003.
+- Config governance: `config.yaml` holds only deployment-varying items
+  (addrs, database path, record root, concurrency cap, remux switch). The
+  `cookie` field is a deprecated placeholder kept for compatibility and is
+  ignored — the credential comes from QR login. Behavioral tuning (segment
+  length, reconnect policy, poll interval, stream quality) is code
+  constants in `biz` / `data`, not config fields — see
+  `docs/design/bili-recorder.md` §7 before adding a new config field.
 
 ## Design docs
 

@@ -21,9 +21,9 @@ import (
 
 const (
 	defaultRecordRoot     = "./recordings"   // 默认录制目录
-	defaultSegmentMinutes = 120              // 默认分段时长（分钟），为 0 时不切分
-	defaultHealthInterval = 60 * time.Second // 默认健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
-	defaultHealthRounds   = 3                // 默认健康检查失败轮数，连续失败达到该轮数则判定录制异常
+	defaultSegmentMinutes = 120              // 分段时长（分钟）
+	defaultHealthInterval = 30 * time.Second // 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
+	defaultHealthRounds   = 3                // 健康检查失败轮数，连续失败达到该轮数则判定录制异常
 	splitOverrun          = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 	maxTitleLen           = 64               // meta.json 中 title 字段的最大长度，超过则截断
 	maxNameLen            = 32               // meta.json 中 room_name 字段的最大长度，超过则截断
@@ -55,22 +55,8 @@ func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 		healthFailRounds: defaultHealthRounds,
 		stats:            make(map[int64]*pumpStats),
 	}
-	if c == nil {
-		return r
-	}
-	if c.GetRecordRoot() != "" {
+	if c != nil && c.GetRecordRoot() != "" {
 		r.recordRoot = c.GetRecordRoot()
-	}
-	if c.SegmentMinutes != nil {
-		r.segmentDuration = time.Duration(c.GetSegmentMinutes()) * time.Minute
-	}
-	if rc := c.GetReconnect(); rc != nil {
-		if rc.GetHealthCheckInterval() != nil {
-			r.healthInterval = rc.GetHealthCheckInterval().AsDuration()
-		}
-		if rc.GetHealthCheckFailRounds() > 0 {
-			r.healthFailRounds = int(rc.GetHealthCheckFailRounds())
-		}
 	}
 	return r
 }
@@ -138,6 +124,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	}
 	defer stream.Body.Close()
 
+	// 获取会话目录和文件名前缀
 	dir, base, err := r.sessionPaths(session)
 	if err != nil {
 		return nil, err
@@ -147,16 +134,19 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	}
 	metaPath := filepath.Join(dir, base+".meta.json")
 
+	// 读取 FLV 文件头
 	header, err := flv.ParseHeader(stream.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
 
+	// 记录当前会话的写入进度
 	stats := r.statsFor(session.RoomID)
+	// 记录本次录制之前的写入进度
 	baseBytes := stats.bytes.Load()
 	stats.file.Store("")
 
-	// 把授予的清晰度记入 meta。
+	// 把 CDN 实际授予的清晰度记入 meta
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Quality = qualityMeta{Qn: stream.Quality.Qn, Desc: stream.Quality.Desc}
 		meta.Title = session.Title
@@ -222,18 +212,25 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 
 	for {
 		select {
+		// 关闭录制开关、停机、房间被删除
 		case <-ctx.Done():
 			closeSegment()
 			return &result, ctx.Err()
+		// 读取 tag
 		case tr := <-tagCh:
+			// 读取 tag 失败，可能是流断开或其他瞬时错误
 			if tr.err != nil {
 				closeSegment()
+				// EOF 表示流干净结束
 				if tr.err == io.EOF {
 					return &result, nil
 				}
+				// 其他瞬时错误，则返回，让上层决定是否重连
 				return &result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.err)
 			}
+
 			tag := tr.tag
+			// 如果当前还没有分段文件，或者该 tag 触发了切分条件，则关闭当前分段并打开新分段
 			if seg == nil {
 				if err := openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
@@ -266,19 +263,19 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 				r.appendMetaError(metaPath, "record", err)
 				return &result, err
 			}
+		// 弹幕/礼物等事件写入
 		case ev := <-events:
 			if seg == nil {
 				continue
 			}
 			if err := seg.writeEvent(ev); err != nil {
 				log.Warn("danmaku write failed", "room", session.RoomID, "err", err)
+				// 尽力而为, 不影响录制主流程
 			}
+		// 下载速度采样
 		case <-speedSampler.C:
 			now := time.Now()
-			delta := sessionBytes - lastSample
-			if delta < 0 {
-				delta = 0
-			}
+			delta := max(sessionBytes-lastSample, 0)
 			elapsed := now.Sub(lastSampleAt)
 			if elapsed <= 0 {
 				continue
@@ -286,6 +283,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			stats.speed.Store(int64(float64(delta) / elapsed.Seconds()))
 			lastSample = sessionBytes
 			lastSampleAt = now
+		// 健康检查：在 healthInterval 内未见新数据则计为一次失败，连续 failRounds 次则判定录制异常。
 		case <-health.C:
 			if sessionBytes > lastGrowth {
 				lastGrowth = sessionBytes

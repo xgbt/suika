@@ -27,3 +27,7 @@ _Avoid_: scheduler, controller
 **Reconcile** (调和):
 The supervisor loop's act of bringing the set of monitors in line with the room registry — adding, removing, and signaling monitors. The word is reserved for this level.
 _Avoid_: using "reconcile" for session-level start/stop decisions — that is the session policy
+
+**Credential** (登录凭据):
+The persisted Bilibili login cookie, stored as a singleton row in the `credentials` table and obtained via web QR login. It is the recorder's only cookie source; a successful login hot-swaps the in-memory cookie so recording picks it up without a restart.
+_Avoid_: config cookie (the deprecated `recorder.cookie` field is ignored), "token" (ambiguous with the danmaku token)

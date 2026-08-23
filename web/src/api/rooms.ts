@@ -1,5 +1,7 @@
 // Room API types matching room.proto
 
+import { request } from './request';
+
 export const LiveStatus = {
   LIVE_STATUS_UNSPECIFIED: 0,
   LIVE_STATUS_PREPARING: 1,
@@ -28,23 +30,12 @@ export interface Room {
   current_file: string;
   bytes_written: number;
   download_speed_bps: number;
+  granted_qn: number;
+  granted_qn_desc: string;
   session_started_at?: string;
   last_error: string;
   create_time?: string;
   update_time?: string;
-}
-
-async function request<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }));
-    throw new Error(err.message ?? res.statusText);
-  }
-  return res.json();
 }
 
 export interface ListRoomsParams {
@@ -70,17 +61,14 @@ export const roomsApi = {
     return request('/v1/rooms/get', { room_id });
   },
 
-  create(room: Pick<Room, 'room_id' | 'streamer_name' | 'room_title' | 'record_enabled'>): Promise<{ room: Room }> {
+  create(room: Pick<Room, 'room_id' | 'record_enabled'>): Promise<{ room: Room }> {
     return request('/v1/rooms/create', { room });
   },
 
-  update(
-    room: Pick<Room, 'room_id'> & Partial<Pick<Room, 'streamer_name' | 'room_title' | 'record_enabled'>>,
-    paths: string[],
-  ): Promise<{ room: Room }> {
+  updateRecordEnabled(room_id: number, record_enabled: boolean): Promise<{ room: Room }> {
     return request('/v1/rooms/update', {
-      room,
-      update_mask: { paths },
+      room: { room_id, record_enabled },
+      update_mask: { paths: ['record_enabled'] },
     });
   },
 

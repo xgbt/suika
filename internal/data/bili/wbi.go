@@ -1,4 +1,4 @@
-package data
+package bili
 
 import (
 	"crypto/md5"
@@ -34,13 +34,13 @@ var mixinKeyEncTab = [64]int{
 // 密钥从 nav API 获取并缓存 1 小时。
 type wbiSigner struct {
 	httpClient *resty.Client
-	cookie     string
+	cookie     func() string // 取当前生效的 cookie（每次调用读快照）
 	mu         sync.Mutex
 	mixinKey   string
 	updatedAt  time.Time
 }
 
-func newWBISigner(httpc *resty.Client, cookie string) *wbiSigner {
+func newWBISigner(httpc *resty.Client, cookie func() string) *wbiSigner {
 	return &wbiSigner{httpClient: httpc, cookie: cookie}
 }
 
@@ -105,8 +105,8 @@ func (s *wbiSigner) fetchKeys() error {
 		SetHeader("User-Agent", biliUserAgent).
 		SetHeader("Referer", "https://www.bilibili.com").
 		SetDoNotParseResponse(true)
-	if s.cookie != "" {
-		req.SetHeader("Cookie", s.cookie)
+	if cookie := s.cookie(); cookie != "" {
+		req.SetHeader("Cookie", cookie)
 	}
 
 	resp, err := req.Get(navURL)

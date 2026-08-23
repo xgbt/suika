@@ -55,12 +55,15 @@ func openSegment(dir, base string, part int, header *flv.FileHeader, cache *head
 		bw:        bufio.NewWriterSize(vf, 1<<20),
 		wallStart: time.Now(),
 	}
+	// 写入 FLV 文件头
 	hb := header.Bytes()
 	if _, err := seg.bw.Write(hb); err != nil {
 		seg.close()
 		return nil, err
 	}
 	seg.bytes += int64(len(hb))
+	// 写入缓存的头标签
+	// 这些标签包括 metadata、video sequence header 和 audio sequence header，确保新分段文件可以独立播放。
 	for _, tag := range []*flv.Tag{cache.metadata, cache.videoSeq, cache.audioSeq} {
 		if tag == nil {
 			continue

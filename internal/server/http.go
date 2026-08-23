@@ -1,6 +1,7 @@
 package server
 
 import (
+	accountv1 "suika/api/account/v1"
 	v1 "suika/api/room/v1"
 	"suika/internal/conf"
 	"suika/internal/service"
@@ -14,7 +15,7 @@ import (
 )
 
 // NewHTTPServer 创建 HTTP 服务器。
-func NewHTTPServer(c *conf.Server, room *service.RoomService) *http.Server {
+func NewHTTPServer(c *conf.Server, room *service.RoomService, account *service.AccountService) *http.Server {
 	var opts = []http.ServerOption{
 		http.Middleware(
 			recovery.Recovery(),
@@ -28,16 +29,11 @@ func NewHTTPServer(c *conf.Server, room *service.RoomService) *http.Server {
 			}),
 		),
 	}
-	if c.Http.Network != "" {
-		opts = append(opts, http.Network(c.Http.Network))
-	}
-	if c.Http.Addr != "" {
-		opts = append(opts, http.Address(c.Http.Addr))
-	}
-	if c.Http.Timeout != nil {
-		opts = append(opts, http.Timeout(c.Http.Timeout.AsDuration()))
+	if addr := c.GetHttp().GetAddr(); addr != "" {
+		opts = append(opts, http.Address(addr))
 	}
 	srv := http.NewServer(opts...)
 	v1.RegisterRoomServiceHTTPServer(srv, room)
+	accountv1.RegisterAccountServiceHTTPServer(srv, account)
 	return srv
 }

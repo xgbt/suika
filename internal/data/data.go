@@ -1,47 +1,49 @@
 package data
 
 import (
+	stderrors "errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
+	"suika/internal/biz"
 	"suika/internal/conf"
+	"suika/internal/data/bili"
 
 	"github.com/go-kratos/kratos/v3/log"
-	"github.com/go-resty/resty/v2"
 	"github.com/google/wire"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
-var ProviderSet = wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo)
+var ProviderSet = wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient)
 
-// Data 持有长生命周期的存储/平台客户端（模板惯例）。对录制器而言，
-// 它们是携带 cookie 的 HTTP 客户端、共享的风控助手（WBI 签名器、
-// buvid 存储），以及持久化 Room 列表的嵌入式数据库。
+// Data 持有长生命周期的存储/平台客户端（模板惯例）：共享的 sqlite
+// 句柄、与 B 站平台交互的共享客户端（bili 子包），以及录制器配置。
 type Data struct {
 	// db 是共享的 gorm 句柄（sqlite）。
 	db *gorm.DB
 
-	// apiClient 用于短小的 B 站 API 调用。
-	apiClient *resty.Client
-	// streamClient 拉取直播流；不设超时，因为读取是长生命周期的，
-	// 取消经请求 context 传递。
-	streamClient *resty.Client
-
-	cookie string
-	signer *wbiSigner
-	buvids *buvidStore
+	// bili 是与 B 站平台交互的共享客户端：携带 cookie 的 HTTP 客户端、
+	// 当前生效的登录态与风控助手（WBI 签名器、buvid 存储）。
+	bili *bili.Client
 
 	// 录制器配置（已应用默认值；proto 零值与未设置无法区分）。
-	qualityQN          int
-	recordInteractWord bool
-	remuxEnabled       bool
-	ffmpegPath         string
+	remuxEnabled bool
+	ffmpegPath   string
 }
+
+// NewLiveClient 提供 biz.LiveClient；B 站直播流量全部实现在 bili 子包。
+func NewLiveClient(d *Data) biz.LiveClient { return bili.NewLiveClient(d.bili) }
+
+// NewPassportClient 提供 biz.PassportClient；实现位于 bili 子包。
+func NewPassportClient(d *Data) biz.PassportClient { return bili.NewPassportClient(d.bili) }
+
+// Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。
+// 登录态由 bili 客户端持有，这里只是读快照的委托。
+func (d *Data) Cookie() string { return d.bili.Cookie() }
 
 // NewData 构建共享客户端。开启转封装但找不到 ffmpeg 时快速失败
 // （设计如此：启动期探测）。
@@ -50,32 +52,24 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := db.AutoMigrate(&roomPO{}); err != nil {
-		return nil, nil, fmt.Errorf("data: auto-migrate rooms table: %w", err)
+	if err := db.AutoMigrate(&roomPO{}, &credentialPO{}); err != nil {
+		return nil, nil, fmt.Errorf("data: auto-migrate tables: %w", err)
 	}
 
-	apiClient := resty.New().SetTimeout(15 * time.Second)
+	// 登录凭据只来自数据库（recorder.cookie 已退役）。
+	cookie, err := loadCredentialCookie(db)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	d := &Data{
 		db:           db,
-		apiClient:    apiClient,
-		streamClient: resty.New(),
-		cookie:       rc.GetCookie(),
-		qualityQN:    10000,
+		bili:         bili.NewClient(cookie),
 		remuxEnabled: true,
 	}
-	d.signer = newWBISigner(apiClient, d.cookie)
-	d.buvids = newBuvidStore(apiClient)
 
-	if rc != nil {
-		if rc.GetQualityQn() > 0 {
-			d.qualityQN = int(rc.GetQualityQn())
-		}
-		if rc.GetDanmaku() != nil {
-			d.recordInteractWord = rc.GetDanmaku().GetRecordInteractWord()
-		}
-		if rc.RemuxEnabled != nil {
-			d.remuxEnabled = rc.GetRemuxEnabled()
-		}
+	if rc != nil && rc.RemuxEnabled != nil {
+		d.remuxEnabled = rc.GetRemuxEnabled()
 	}
 	if rc != nil && d.remuxEnabled {
 		ffmpegPath, err := exec.LookPath("ffmpeg")
@@ -87,8 +81,11 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 			log.Warn("ffprobe not found; remux verification limited to output existence")
 		}
 	}
-	if rc != nil && d.cookie == "" {
-		log.Warn("recorder: no cookie configured; source quality may be unavailable")
+	if rc != nil && rc.GetCookie() != "" {
+		log.Warn("recorder: config field recorder.cookie is deprecated and ignored; the credential is managed in the database via web QR login")
+	}
+	if cookie == "" {
+		log.Warn("data: no bilibili credential in the database; log in from the web UI to enable source quality")
 	}
 
 	cleanup := func() {
@@ -100,11 +97,20 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	return d, cleanup, nil
 }
 
-func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
-	driver := c.GetDriver()
-	if driver != "sqlite" {
-		return nil, fmt.Errorf("data: unsupported database driver %q, only \"sqlite\" is supported", driver)
+// loadCredentialCookie 启动时读取凭据单例行；无行返回空串。
+func loadCredentialCookie(db *gorm.DB) (string, error) {
+	var po credentialPO
+	err := db.First(&po, credentialSingletonID).Error
+	if stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
 	}
+	if err != nil {
+		return "", fmt.Errorf("data: load credential: %w", err)
+	}
+	return po.Cookie, nil
+}
+
+func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
 	source := c.GetSource()
 	if source == "" {
 		return nil, fmt.Errorf("data: database source is empty")

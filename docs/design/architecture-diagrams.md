@@ -18,7 +18,7 @@
 
 **解决的问题**：服务边界在哪、依赖什么基础设施。
 
-Suika 是**单进程、单机部署**：一个 `kratos.App` 内并行运行三个 `transport.Server` —— HTTP（:8000）、gRPC（:9000）与录制守护进程（`server.Daemon`）。没有 API 网关、没有消息队列；`config.yaml` 中的 `redis` 块是模板遗留占位，**代码中没有任何组件读取它**，故不入图。
+Suika 是**单进程、单机部署**：一个 `kratos.App` 内并行运行三个 `transport.Server` —— HTTP（:8000）、gRPC（:9000）与录制守护进程（`server.Daemon`）。没有 API 网关、没有消息队列，也不依赖其他基础设施。
 
 ```mermaid
 flowchart TB
@@ -52,14 +52,14 @@ flowchart TB
     DM -- "会话目录 / 分段 / meta.json 读写" --> REC
     DM -- "exec 转封装" --> FF
     DM -- "HTTPS（WBI 签名 + cookie + buvid，riskGuard 统一风控）" --> API
-    DM -- "HTTPS 长连接拉流（quality_qn 默认 10000 原画）" --> CDN
+    DM -- "HTTPS 长连接拉流（固定请求 10000 原画）" --> CDN
     DM -- "WSS：弹幕事件 + 房间状态事件（开播主探测通道）" --> DMWS
 ```
 
 要点：
 
 - **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份 `api/room/v1/room.proto` 契约。
-- 所有 B 站流量收敛在 `LiveClient` 一个缝（`data/bili_api.go`、`danmaku.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。
+- 所有 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`、`danmaku.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。
 - 录制产物是**文件系统**而非数据库；`meta.json` 是录制历史的唯一事实源，重启后由 `RecoverPending` 扫描恢复。
 
 ---
@@ -100,7 +100,7 @@ flowchart TB
     subgraph DATA["internal/data —— PO 与全部 IO"]
         RR["roomRepo · roomPO → rooms 表<br/>toRoomPO / toRoomDO"]
         RREPO["recorderRepo<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · remux"]
-        LC["liveClient<br/>bili_api · danmaku · wbi · buvid · risk"]
+        LC["liveClient<br/>bili/ 子包：live · danmaku · wbi · buvid · risk"]
     end
 
     DTO["api/room/v1<br/>proto DTO（RoomService 契约）"]
@@ -182,7 +182,8 @@ sequenceDiagram
 
 同构变体：
 
-- **UpdateRoom**：service 先 `GetRoom` 读当前值 → `fieldmask.Update` 合并（仅允许 `streamer_name` / `room_title` / `record_enabled` 路径）→ 落库 → `registry.Update`。`record_enabled` 翻转经监督循环以重评估信号送达 Monitor，实时启停录制。
+- **UpdateRoom**：service 仅接受 `record_enabled` 的 `update_mask`，落库后经
+    `registry.Update` 通知 Monitor 重新评估录制策略；主播名和房间标题由平台维护。
 - **DeleteRoom**：落库 → `registry.Remove` → reconcile 立即取消该房间 Monitor（活跃会话优雅停止，已录文件保留），返回 `DeleteRoomResponse{empty}`。
 
 ### 3.2 开播检测与会话启动（异步事件驱动）
@@ -208,7 +209,7 @@ sequenceDiagram
     par 主通道：弹幕 WS 房间状态事件
         DC--)M: RoomStateUpdates：RoomInfo{Live:true, Title, StreamerName}
         M->>G: ApplyRoomInfo(roomID, info)
-        G->>R: UpdateRoom 回写（失败仅 warn，内存保留新值）
+        G->>R: repo.UpdateRoom 回写（失败仅 warn，内存保留新值）
         M->>P: RoomInfoArrived(info)
         P-->>M: Start(info)　（record_enabled 且 phase=idle 时）
         M->>Sess: launchSession：启动会话协程
@@ -259,7 +260,7 @@ sequenceDiagram
         else 仍在播 且 ErrStreamTransient（404/连接重置）
             Note over Sess: CDN 瞬时预算--（默认 5）<br/>指数退避 2s→60s 后重连
         else 仍在播 且其他错误
-            Note over Sess: auto_reconnect 且次数<3：等 10s 重连<br/>否则带已录内容收尾
+            Note over Sess: 次数<3：等 10s 重连<br/>否则带已录内容收尾
         end
     end
 

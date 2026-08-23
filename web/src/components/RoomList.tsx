@@ -4,7 +4,6 @@ import {
   Button,
   Modal,
   Form,
-  Input,
   InputNumber,
   Switch,
   Space,
@@ -15,12 +14,10 @@ import {
   App,
   Badge,
   Empty,
-  Spin,
 } from 'antd';
 import {
   PlusOutlined,
   ReloadOutlined,
-  EditOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
 import { roomsApi, LiveStatus, RecordStatus } from '../api/rooms';
@@ -44,13 +41,12 @@ function formatSpeed(bytesPerSecond: number): string {
 
 const RECORD_STATUS_MAP: Record<RecordStatus, React.ReactNode> = {
   [RecordStatus.RECORD_STATUS_UNSPECIFIED]: <Tag>未知</Tag>,
-  [RecordStatus.RECORD_STATUS_IDLE]: <Tag color="default">空闲</Tag>,
-  [RecordStatus.RECORD_STATUS_RECORDING]: <Badge status="processing" color="green" text={<Text type="success">录制中</Text>} />,
+  [RecordStatus.RECORD_STATUS_IDLE]: <span className="status-pill status-pill-idle">空闲</span>,
+  [RecordStatus.RECORD_STATUS_RECORDING]: <span className="status-pill status-pill-recording">录制中</span>,
   [RecordStatus.RECORD_STATUS_REMUXING]: <Badge status="processing" color="blue" text={<Text type="secondary">合并中</Text>} />,
   [RecordStatus.RECORD_STATUS_ERROR]: <Tag color="error">错误</Tag>,
 };
 
-type ModalMode = 'create' | 'edit';
 const SPEED_HISTORY_POINTS = 24;
 
 type SpeedSparklineProps = {
@@ -100,23 +96,19 @@ export default function RoomList() {
   const { message, modal } = App.useApp();
 
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [loading, setLoading] = useState(false);
   const [nextPageToken, setNextPageToken] = useState<string>('');
   const [pageTokenStack, setPageTokenStack] = useState<string[]>(['']);
   const [currentPage, setCurrentPage] = useState(0);
   const [speedHistoryByRoom, setSpeedHistoryByRoom] = useState<Record<number, number[]>>({});
 
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState<ModalMode>('create');
-  const [editingRoom, setEditingRoom] = useState<Room | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [form] = Form.useForm();
   const PAGE_SIZE = 20;
   const REFRESH_INTERVAL_MS = 2000;
 
-  const loadPage = useCallback(async (token: string) => {
-    setLoading(true);
+  const loadPage = useCallback(async (token: string, showError = true) => {
     try {
       const res = await roomsApi.list({ page_size: PAGE_SIZE, page_token: token || undefined });
       const nextRooms = res.rooms ?? [];
@@ -135,9 +127,9 @@ export default function RoomList() {
       });
       setNextPageToken(res.next_page_token ?? '');
     } catch (e: unknown) {
-      message.error((e as Error).message ?? '加载失败');
-    } finally {
-      setLoading(false);
+      if (showError) {
+        message.error((e as Error).message ?? '加载失败');
+      }
     }
   }, [message]);
 
@@ -152,7 +144,7 @@ export default function RoomList() {
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
-      loadPage(tokenRef.current);
+      void loadPage(tokenRef.current, false);
     }, REFRESH_INTERVAL_MS);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -179,21 +171,8 @@ export default function RoomList() {
   }
 
   function openCreate() {
-    setModalMode('create');
-    setEditingRoom(null);
     form.resetFields();
     form.setFieldsValue({ record_enabled: true });
-    setModalOpen(true);
-  }
-
-  function openEdit(room: Room) {
-    setModalMode('edit');
-    setEditingRoom(room);
-    form.setFieldsValue({
-      streamer_name: room.streamer_name,
-      room_title: room.room_title,
-      record_enabled: room.record_enabled,
-    });
     setModalOpen(true);
   }
 
@@ -201,35 +180,11 @@ export default function RoomList() {
     const values = await form.validateFields();
     setSubmitting(true);
     try {
-      if (modalMode === 'create') {
-        await roomsApi.create({
-          room_id: values.room_id,
-          streamer_name: values.streamer_name,
-          room_title: values.room_title,
-          record_enabled: values.record_enabled ?? false,
-        });
-        message.success('添加成功');
-      } else if (editingRoom) {
-        const paths: string[] = [];
-        if (values.streamer_name !== editingRoom.streamer_name) paths.push('streamer_name');
-        if (values.room_title !== editingRoom.room_title) paths.push('room_title');
-        if (values.record_enabled !== editingRoom.record_enabled) paths.push('record_enabled');
-        if (paths.length === 0) {
-          message.info('没有改动');
-          setModalOpen(false);
-          return;
-        }
-        await roomsApi.update(
-          {
-            room_id: editingRoom.room_id,
-            streamer_name: values.streamer_name,
-            room_title: values.room_title,
-            record_enabled: values.record_enabled,
-          },
-          paths,
-        );
-        message.success('更新成功');
-      }
+      await roomsApi.create({
+        room_id: values.room_id,
+        record_enabled: values.record_enabled ?? false,
+      });
+      message.success('添加成功');
       setModalOpen(false);
       loadPage(pageTokenStack[currentPage] ?? '');
     } catch (e: unknown) {
@@ -260,7 +215,7 @@ export default function RoomList() {
           <Button icon={<PlusOutlined />} type="primary" onClick={openCreate}>
             添加房间
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>
+          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             刷新
           </Button>
         </Space>
@@ -275,7 +230,7 @@ export default function RoomList() {
         </Space>
       </div>
 
-      <Spin spinning={loading}>
+      <div>
         {rooms.length === 0 ? (
           <Card className="room-card-empty" bordered={false}>
             <Empty description="当前页暂无房间" />
@@ -286,7 +241,6 @@ export default function RoomList() {
               const speedHistory = speedHistoryByRoom[room.room_id] ?? [0];
               const isLive = room.live_status === LiveStatus.LIVE_STATUS_LIVE;
               const isRecording = room.record_status === RecordStatus.RECORD_STATUS_RECORDING;
-              const livePillClassName = isRecording ? 'live-pill live-pill-strong' : 'live-pill live-pill-light';
               return (
                 <Card key={room.room_id} className={`room-card ${isLive ? 'room-card-live' : ''}`} bordered={false}>
                   <div className="room-card-head">
@@ -303,14 +257,11 @@ export default function RoomList() {
                             房间 #{room.room_id}
                           </button>
                         </Popconfirm>
-                        {isLive ? <span className={livePillClassName}>LIVE</span> : null}
+                        {isLive ? <span className="live-indicator" aria-label="直播中" title="直播中" /> : null}
                       </div>
                       <div className="room-name">{room.streamer_name || '未命名主播'}</div>
                     </div>
                     <Space align="start" className="room-head-actions">
-                      <Tooltip title="编辑">
-                        <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(room)} />
-                      </Tooltip>
                       <Popconfirm
                         title={`确认删除房间 ${room.room_id}？`}
                         onConfirm={() => handleDelete(room.room_id)}
@@ -328,11 +279,15 @@ export default function RoomList() {
                   <div className="room-title">{room.room_title || '暂无房间标题'}</div>
 
                   <div className="room-status-row">
-                    {RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>}
+                    {isRecording && room.granted_qn ? (
+                      <Tooltip title={`QN ${room.granted_qn}${room.granted_qn_desc ? ` · ${room.granted_qn_desc}` : ''}`}>
+                        <span aria-label="查看当前录制清晰度">{RECORD_STATUS_MAP[room.record_status]}</span>
+                      </Tooltip>
+                    ) : (RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>)}
                     <span className="room-toggle">
-                      录制
+                      <span className="room-toggle-label">录制开关</span>
                       <Switch
-                        size="small"
+                        className="room-record-switch"
                         checked={room.record_enabled}
                         onChange={(checked) => {
                           modal.confirm({
@@ -342,7 +297,7 @@ export default function RoomList() {
                             okButtonProps: checked ? {} : { danger: true },
                             onOk: async () => {
                               try {
-                                await roomsApi.update({ room_id: room.room_id, record_enabled: checked }, ['record_enabled']);
+                                await roomsApi.updateRecordEnabled(room.room_id, checked);
                                 loadPage(pageTokenStack[currentPage] ?? '');
                               } catch (e: unknown) {
                                 message.error((e as Error).message ?? '更新失败');
@@ -386,38 +341,30 @@ export default function RoomList() {
             })}
           </div>
         )}
-      </Spin>
+      </div>
 
       <Modal
-        title={modalMode === 'create' ? '添加房间' : '编辑房间'}
+        title="添加房间"
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
         confirmLoading={submitting}
-        okText={modalMode === 'create' ? '添加' : '保存'}
+        okText="添加"
         cancelText="取消"
         destroyOnHidden
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          {modalMode === 'create' && (
-            <Form.Item
-              label="房间 ID"
-              name="room_id"
-              rules={[
-                { required: true, message: '请输入房间 ID' },
-                { type: 'number', min: 1, message: '房间 ID 须为正整数' },
-              ]}
-            >
-              <InputNumber style={{ width: '100%' }} placeholder="Bilibili 直播间 ID" min={1} precision={0} />
-            </Form.Item>
-          )}
-          <Form.Item label="主播名称" name="streamer_name">
-            <Input placeholder="可选，留空则由平台自动填充" allowClear />
+          <Form.Item
+            label="房间 ID"
+            name="room_id"
+            rules={[
+              { required: true, message: '请输入房间 ID' },
+              { type: 'number', min: 1, message: '房间 ID 须为正整数' },
+            ]}
+          >
+            <InputNumber style={{ width: '100%' }} placeholder="Bilibili 直播间 ID" min={1} precision={0} />
           </Form.Item>
-          <Form.Item label="房间标题" name="room_title">
-            <Input placeholder="可选，留空则由平台自动填充" allowClear />
-          </Form.Item>
-          <Form.Item label="录制" name="record_enabled" valuePropName="checked">
+          <Form.Item label="录制开关" name="record_enabled" valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

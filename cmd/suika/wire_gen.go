@@ -22,7 +22,7 @@ import (
 
 // Injectors from wire.go:
 
-// wireApp init kratos application.
+// wireApp 初始化 Kratos 应用。
 func wireApp(confServer *conf.Server, confData *conf.Data, recorder *conf.Recorder, logger *slog.Logger) (*kratos.App, func(), error) {
 	dataData, cleanup, err := data.NewData(confData, recorder)
 	if err != nil {
@@ -38,8 +38,12 @@ func wireApp(confServer *conf.Server, confData *conf.Data, recorder *conf.Record
 	sessionStatsRepo := data.NewSessionStatsRepo(recorderRepo)
 	roomUsecase := biz.NewRoomUsecase(roomRepo, roomRegistry, sessionStatsRepo)
 	roomService := service.NewRoomService(roomUsecase)
-	grpcServer := server.NewGRPCServer(confServer, roomService)
-	httpServer := server.NewHTTPServer(confServer, roomService)
+	passportClient := data.NewPassportClient(dataData)
+	credentialRepo := data.NewCredentialRepo(dataData)
+	accountUsecase := biz.NewAccountUsecase(passportClient, credentialRepo)
+	accountService := service.NewAccountService(accountUsecase)
+	grpcServer := server.NewGRPCServer(confServer, roomService, accountService)
+	httpServer := server.NewHTTPServer(confServer, roomService, accountService)
 	liveClient := data.NewLiveClient(dataData)
 	recorderUsecase := biz.NewRecorderUsecase(recorder, roomRegistry, recorderRepo, liveClient)
 	daemon := server.NewDaemon(recorderUsecase)

@@ -12,10 +12,10 @@ import (
 )
 
 type roomPO struct {
-	RoomID        int64 `gorm:"primaryKey"`
-	StreamerName  string
-	RoomTitle     string
-	RecordEnabled bool
+	RoomID        int64     `gorm:"primaryKey"`
+	StreamerName  string    `gorm:"size:255;not null"`
+	RoomTitle     string    `gorm:"size:255;not null"`
+	RecordEnabled bool      `gorm:"not null"`
 	CreateTime    time.Time `gorm:"autoCreateTime"`
 	UpdateTime    time.Time `gorm:"autoUpdateTime"`
 }
