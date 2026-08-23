@@ -77,13 +77,13 @@ func TestRoomServiceCRUD(t *testing.T) {
 	svc := newTestRoomEnv(t, newTestData(t)).svc
 
 	created, err := svc.CreateRoom(ctx, &v1.CreateRoomRequest{
-		Room: &v1.Room{RoomId: 1001, StreamerName: "streamer-a", RecordEnabled: true},
+		Room: &v1.Room{RoomId: 1001, RecordEnabled: true},
 	})
 	if err != nil {
 		t.Fatalf("CreateRoom() error = %v", err)
 	}
 	createdRoom := created.GetRoom()
-	if createdRoom.GetRoomId() != 1001 || createdRoom.GetStreamerName() != "streamer-a" || !createdRoom.GetRecordEnabled() {
+	if createdRoom.GetRoomId() != 1001 || createdRoom.GetStreamerName() != "" || createdRoom.GetRoomTitle() != "" || !createdRoom.GetRecordEnabled() {
 		t.Fatalf("CreateRoom() = %+v, want created room", created)
 	}
 	if createdRoom.GetCreateTime() == nil || createdRoom.GetUpdateTime() == nil {
@@ -105,32 +105,22 @@ func TestRoomServiceCRUD(t *testing.T) {
 		t.Fatalf("GetRoom() error = %v", err)
 	}
 	gotRoom := got.GetRoom()
-	if gotRoom.GetStreamerName() != "streamer-a" || !gotRoom.GetRecordEnabled() {
+	if gotRoom.GetStreamerName() != "" || gotRoom.GetRoomTitle() != "" || !gotRoom.GetRecordEnabled() {
 		t.Fatalf("GetRoom() = %+v, want created room", got)
 	}
 
 	updated, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
-		Room:       &v1.Room{RoomId: 1001, StreamerName: "streamer-b"},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"streamer_name"}},
-	})
-	if err != nil {
-		t.Fatalf("UpdateRoom(streamer_name) error = %v", err)
-	}
-	updatedRoom := updated.GetRoom()
-	if updatedRoom.GetStreamerName() != "streamer-b" || !updatedRoom.GetRecordEnabled() {
-		t.Fatalf("UpdateRoom(streamer_name) = %+v, want renamed room with record_enabled kept", updated)
-	}
-
-	recordOff, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
 		Room:       &v1.Room{RoomId: 1001, RecordEnabled: false},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"record_enabled"}},
 	})
-	if err != nil {
-		t.Fatalf("UpdateRoom(record_enabled) error = %v", err)
+	if err != nil || updated.GetRoom().GetRecordEnabled() {
+		t.Fatalf("UpdateRoom(record_enabled) = %+v, error = %v, want disabled", updated, err)
 	}
-	recordOffRoom := recordOff.GetRoom()
-	if recordOffRoom.GetRecordEnabled() || recordOffRoom.GetStreamerName() != "streamer-b" {
-		t.Fatalf("UpdateRoom(record_enabled) = %+v, want room with recording off and streamer_name kept", recordOff)
+	if _, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
+		Room:       &v1.Room{RoomId: 1001, StreamerName: "platform-owned"},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"streamer_name"}},
+	}); !kratoserrors.IsBadRequest(err) {
+		t.Fatalf("UpdateRoom(streamer_name) error = %v, want bad request", err)
 	}
 
 	if _, err := svc.DeleteRoom(ctx, &v1.DeleteRoomRequest{RoomId: 1001}); err != nil {
@@ -256,24 +246,6 @@ func TestRoomServiceValidation(t *testing.T) {
 		t.Fatalf("CreateRoom(duplicate) error = %v, want conflict", err)
 	}
 
-	if _, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
-		Room:       &v1.Room{RoomId: 1001, StreamerName: "x"},
-		UpdateMask: &fieldmaskpb.FieldMask{},
-	}); !kratoserrors.IsBadRequest(err) {
-		t.Fatalf("UpdateRoom(empty mask) error = %v, want bad request", err)
-	}
-	if _, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
-		Room:       &v1.Room{RoomId: 1001, StreamerName: "x"},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"room_id"}},
-	}); !kratoserrors.IsBadRequest(err) {
-		t.Fatalf("UpdateRoom(room_id path) error = %v, want bad request", err)
-	}
-	if _, err := svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
-		Room:       &v1.Room{RoomId: 9999, StreamerName: "x"},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"streamer_name"}},
-	}); !kratoserrors.IsNotFound(err) {
-		t.Fatalf("UpdateRoom(missing) error = %v, want not found", err)
-	}
 	if _, err := svc.DeleteRoom(ctx, &v1.DeleteRoomRequest{RoomId: 9999}); !kratoserrors.IsNotFound(err) {
 		t.Fatalf("DeleteRoom(missing) error = %v, want not found", err)
 	}
@@ -400,20 +372,13 @@ func TestRoomServicePlatformRefreshOverridesStreamerName(t *testing.T) {
 	}
 	env := newTestRoomEnv(t, d)
 
-	if _, err := env.svc.UpdateRoom(ctx, &v1.UpdateRoomRequest{
-		Room:       &v1.Room{RoomId: 7007, StreamerName: "user-name"},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"streamer_name"}},
-	}); err != nil {
-		t.Fatalf("UpdateRoom(streamer_name) error = %v", err)
-	}
-
 	env.reg.ApplyRoomInfo(ctx, 7007, &biz.RoomInfo{RoomID: 7007, Live: true, StreamerName: "streamer-name"})
 
 	got, err := env.svc.GetRoom(ctx, &v1.GetRoomRequest{RoomId: 7007})
 	if err != nil {
 		t.Fatalf("GetRoom() error = %v", err)
 	}
-	// 平台上报的非空身份直接覆盖用户经 UpdateRoom 设置的值（新语义）。
+	// 平台上报的非空身份直接回填房间信息。
 	if got.GetRoom().GetStreamerName() != "streamer-name" {
 		t.Fatalf("GetRoom() streamer_name = %q, want streamer-name", got.GetRoom().GetStreamerName())
 	}

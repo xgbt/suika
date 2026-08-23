@@ -16,18 +16,14 @@ const (
 	defaultPageSize = 20
 )
 
-// updatableRoomFields 是 UpdateRoom 接受的全部字段路径；room_id 不可变，
-// 运行时字段由服务端填充。
-var updatableRoomFields = map[string]bool{
-	"streamer_name":  true,
-	"room_title":     true,
-	"record_enabled": true,
-}
-
 type RoomService struct {
 	v1.UnimplementedRoomServiceServer
 
 	uc *biz.RoomUsecase
+}
+
+var updatableRoomFields = map[string]bool{
+	"record_enabled": true,
 }
 
 func NewRoomService(uc *biz.RoomUsecase) *RoomService {

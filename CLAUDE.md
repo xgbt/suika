@@ -87,7 +87,7 @@ design rather than add the import.
 
 **service (DTO ↔ DO)**
 
-- `convertRoom` parses the writable proto fields into `biz.Room`; the
+- `convertRoom` parses `room_id` and `record_enabled` into `biz.Room`; the
   reverse direction is `convertRoomReply`, which maps `biz.RoomRuntime` to
   the API `Room` message.
 - `CreateRoom`, `GetRoom`, `ListRooms`, and `UpdateRoom` return their
@@ -209,7 +209,7 @@ and gRPC transports:
 | `CreateRoom` | `POST /v1/rooms/create` | Create a room using the caller-provided `room_id`. |
 | `ListRooms` | `POST /v1/rooms/list` | Query rooms with optional equality filters and pagination. |
 | `GetRoom` | `POST /v1/rooms/get` | Get one room and its current runtime state. |
-| `UpdateRoom` | `POST /v1/rooms/update` | Partially update a room. |
+| `UpdateRoom` | `POST /v1/rooms/update` | Toggle `record_enabled`; platform identity fields are read-only. |
 | `DeleteRoom` | `POST /v1/rooms/delete` | Delete a room by `room_id`. |
 
 ### Account API
@@ -231,8 +231,8 @@ Platform failures map to `ERROR_REASON_UNAVAILABLE` (503).
 
 ### Room message
 
-Writable fields are `room_id`, `streamer_name`, `room_title`, and
-`record_enabled`. The following fields
+The create request accepts `room_id` and `record_enabled`. `streamer_name` and
+`room_title` are output-only fields populated from Bilibili. The following fields
 are `OUTPUT_ONLY` and must be populated by the service:
 
 - `live_status`: `LIVE_STATUS_UNSPECIFIED`, `LIVE_STATUS_PREPARING`, or
@@ -244,11 +244,8 @@ are `OUTPUT_ONLY` and must be populated by the service:
   `session_started_at`, `last_error`, `create_time`, and `update_time`.
 
 `room_id` is the caller-provided unique platform room ID and is immutable.
-`CreateRoomRequest.room` and `UpdateRoomRequest.room` are required;
-`UpdateRoomRequest.update_mask` is also required. Updates currently allow
-only the `streamer_name`, `room_title`, and `record_enabled` paths. Invalid IDs or
-unsupported update paths
-return `ERROR_REASON_INVALID_ARGUMENT`; duplicate IDs return
+`CreateRoomRequest.room` is required. Invalid IDs return
+`ERROR_REASON_INVALID_ARGUMENT`; duplicate IDs return
 `ERROR_REASON_ALREADY_EXISTS`; missing rooms return
 `ERROR_REASON_NOT_FOUND`.
 

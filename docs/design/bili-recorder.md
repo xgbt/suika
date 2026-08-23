@@ -74,7 +74,7 @@ internal/biz/
                          recordStatus 状态，mutex 保护，repo IO 在锁外）；
                          daemon 写状态，room API 读快照；ApplyRoomInfo
                          更新房态、用平台非空值覆盖 streamer_name /
-                         room_title，并经 UpdateRoom 持久化写回 sqlite
+                         room_title，并经 RoomRepo.UpdateRoom 持久化写回 sqlite
   recorder.go            DO：RoomInfo / StreamQuality / LiveStream
                          DanmakuEvent / RecordingSession / RecordingResult / SessionStats
                          事件类型常量、默认值常量
@@ -176,7 +176,7 @@ configs/
 web/                     管理界面前端（React 19 + TypeScript + Vite + Ant Design 6）：
   src/api/rooms.ts       与 room.proto 对齐的类型 + fetch 封装（全部 POST）
   src/components/RoomList.tsx  房间表格：分页、状态徽标、5s 自动刷新、
-                         建/编辑弹窗、启停确认、删除确认
+                         添加弹窗、record_enabled 启停确认、删除确认
   vite.config.ts         开发代理 /v1 → http://localhost:8000
 ```
 
@@ -191,7 +191,7 @@ DDD 领域模型已独立到文档：`docs/design/ddd-domain-model.md`。
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
 | 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / RecordSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / recorder_segment.go / recorder_session.go / recorder_stats.go）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、remux |
-| 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤 |
+| 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤；UpdateRoom 仅供平台信息回写 |
 | 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站 HTTP API 与弹幕 WS 流量、风控 |
 
 控制流/IO 分工：**biz 只做决定**（何时开录、是否重连、何时收尾），
@@ -303,7 +303,7 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
    房间不在 registry（如刚被删除）则整体忽略。
 2. 用平台非空值覆盖内存里的 `streamer_name` / `room_title`，随后在锁外
    调 `repo.UpdateRoom` 写回 sqlite。**覆盖语义**：平台数据优先于库里
-   已有值（包括用户经 UpdateRoom 设置的值）。覆盖后的值重启不丢。
+  已有值。覆盖后的值重启不丢。
 3. 写回失败只记 warn，内存快照仍然更新（降级不丢状态）。
 
 启动后创建的房间在落库成功后即由 `RoomUsecase` 登记进 registry，录制
@@ -751,20 +751,19 @@ recorder:
 | CreateRoom | `POST /v1/rooms/create` | 注册新房间；响应回填 create_time / update_time，运行时字段为默认值；room_id 重复 → 409 |
 | ListRooms | `POST /v1/rooms/list` | 分页列表，支持四个 optional 等值查询字段；合并运行时状态返回 |
 | GetRoom | `POST /v1/rooms/get` | body 传 room_id，合并运行时状态；不存在 → 404 |
-| UpdateRoom | `POST /v1/rooms/update` | update_mask 部分更新，仅可改 `streamer_name` / `room_title` / `record_enabled`，room_id 不可变；不存在 → 404 |
+| UpdateRoom | `POST /v1/rooms/update` | 通过 update_mask 更新 `record_enabled`；主播名和房间标题只读；不存在 → 404 |
 | DeleteRoom | `POST /v1/rooms/delete` | body 传 room_id，返回 `google.protobuf.Empty`；不存在 → 404 |
 
 - `Room` 消息 = 持久字段（room_id / streamer_name / room_title /
-  record_enabled / create_time / update_time；旧 `name` 字段已拆分为
-  streamer_name（主播名）与 room_title（房间标题）两个独立可写字段）
+  record_enabled / create_time / update_time；主播名与房间标题由 B 站信息
+  回填，接口侧为只读字段）
   + 运行时字段（live_status / record_status / current_file /
   bytes_written / session_started_at / last_error，全部标注
   OUTPUT_ONLY）。**运行时字段只在 Get/List 响应中由 registry 合并返回；
   Create/Update 的响应里是默认值**（LIVE_STATUS_UNSPECIFIED /
   IDLE / 零值；Delete 返回 Empty），也不参与查询过滤。
 - 五个 RPC 同时注册 HTTP 与 gRPC；中间件沿用 recovery + validate
-  （Create/Update 的 `room` 字段与 update_mask、Get/Delete 的
-  `room_id` 声明为 REQUIRED）。根目录 `openapi.yaml` 由 `make api`
+  （Create/Update 的 `room` 字段与 update_mask、Get/Delete 的 `room_id` 声明为 REQUIRED）。根目录 `openapi.yaml` 由 `make api`
   一并重新生成。
 - 所有路由都是字面 POST 路径，不存在通配路由，注册顺序无歧义。
 
@@ -778,16 +777,12 @@ recorder:
   token（einride pagination），返回行数 ≥ page_size 时附 `next_page_token`。
 - page_token 非法 → INVALID_ARGUMENT。
 
-**UpdateRoom 细则**：service 先校验 room_id > 0、update_mask 非空且
-路径 ⊆ {streamer_name, room_title, record_enabled}，再 GetRoom 取当前值
-（顺带得到 404），`fieldmask.Update` 覆盖后经 usecase 落库；repo 只
-更新 streamer_name / room_title / record_enabled 三列（update_time 由 gorm
-自动刷新），`RowsAffected == 0` → ErrRoomNotFound，读-改-写全程在
-单进程内完成。
+**UpdateRoom 细则**：service 仅允许 `update_mask` 包含 `record_enabled`，用于
+切换房间录制开关；`streamer_name` / `room_title` 由平台回填，不提供手动更新。
 
 **平台刷新语义**：recorder 经 `ApplyRoomInfo` → `repo.UpdateRoom` 写回
-主播名/房间标题时是**覆盖**语义——平台非空值优先于库里已有值（包括
-用户经 UpdateRoom 设置过的值）。写回失败只记 warn，内存快照仍然更新
+主播名/房间标题时是**覆盖**语义——平台非空值优先于库里已有值。
+写回失败只记 warn，内存快照仍然更新
 （service 测试 TestRoomServicePlatformRefreshOverridesStreamerName 专门
 覆盖该语义）。
 
@@ -823,9 +818,8 @@ biz ↔ proto 枚举映射（`service.convertRoomReply`，五个 RPC 共用）�
 **Web 管理界面**（`web/`）：React 19 + TypeScript + Ant Design 6 +
 Vite 的 SPA，是 HTTP API 目前唯一的图形化消费者。`RoomList` 组件提供
 房间表格（live/record 状态徽标、已写字节、最近错误、房间 ID 直达
-B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹窗
-（room_id / streamer_name / room_title / record_enabled；编辑按实际改动字段
-生成最小 update_mask）、录制 Switch（带确认对话框）与删除确认
+B 站直播间、5s 自动刷新）、offset token 栈式翻页、添加弹窗
+（room_id / record_enabled）与删除确认
 （Popconfirm）。开发模式经 vite 代理 `/v1` → `http://localhost:8000`。
 前端类型与 room.proto 手工对齐（`web/src/api/rooms.ts`），改 proto
 时需同步。
@@ -844,7 +838,7 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
    则立即开录。录制开关翻转与会话收尾竞态时，收尾完成后仍在播即恢复录制。
 4. 平台刷新的主播名/房间标题会经 `ApplyRoomInfo` → `UpdateRoom` 覆盖
    写回 sqlite，重启不丢（写回失败只记 warn，内存仍更新，不影响录制）；
-   用户手动改的名/标题立即生效，但会被下一次平台刷新覆盖。
+  名称和标题以平台返回值为准，用户侧不提供手动编辑入口。
 
 启动后创建的房间 Get/List 照常可查，且立即被监控；反复启停房间只影响
 录制会话，不断开弹幕连接（监控协程不随 record_enabled 翻转重启）。
@@ -874,7 +868,7 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 | 无活动场次时弹幕到达 | Events 缓冲（4096）满即丢弃，不阻塞 WS 读循环 |
 | watchRoom 收到重复"在播" | 幂等：已有活动场次则忽略 |
 | 场次中途改标题/轮次 | 目录与文件名沿用开播快照，不重命名；ROUND/ROOM_CHANGE 仅刷新房态 |
-| 平台刷新撞上用户已设置的值 | ApplyRoomInfo 覆盖语义：平台非空值优先，经 UpdateRoom 写回（§8） |
+| 平台刷新覆盖已有身份 | ApplyRoomInfo 覆盖语义：平台非空值优先，经 UpdateRoom 写回（§8） |
 | 新场次字节计数 | PrepareSession 清零在途 stats，新场次进度不叠加旧场次（重启续录不受影响，stats 本是内存态） |
 
 ---
@@ -888,7 +882,7 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 |---|---|---|
 | biz | `recorder_test.go`（20） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、拉流瞬时失败复查已下播静默收尾（不记错误）/仍在播按预算重试/复查失败终止、复查因 ctx 取消失败静默收尾（不记错误）、ctx 取消即停、nil/覆盖配置、抖动区间；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`redialDelay` 字段供测试压缩时延 |
 | biz | `room_test.go`（10） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；**registry Add/Update/Remove 实时同步与合并式变更通知（含退订）**、**RoomUsecase CRUD 落库后同步 registry（持久化失败不回写）**；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
-| service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（RemuxEnabled=false 免 ffmpeg 探测），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/改名/关闭录制/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、空/越权 update_mask、不存在 404、坏 page_token）、**平台刷新覆盖已更新的 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
+| service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（RemuxEnabled=false 免 ffmpeg 探测），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、坏 page_token）、**平台刷新回填 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
 | data | `recorder_test.go`（25） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾（无 meta noop / remux 关保 FLV / 成功替换 / 失败保留 / 空 ffmpegPath）、缺源恢复、RecoverPending |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `remux_test.go`（4） | 假 ffmpeg shell 脚本（`writeFakeFFmpeg`：记录参数、可控失败次数、写出非空产物），不依赖真 ffmpeg 验证重试与参数构造 |

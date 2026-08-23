@@ -59,17 +59,14 @@ export const roomsApi = {
     return request('/v1/rooms/get', { room_id });
   },
 
-  create(room: Pick<Room, 'room_id' | 'streamer_name' | 'room_title' | 'record_enabled'>): Promise<{ room: Room }> {
+  create(room: Pick<Room, 'room_id' | 'record_enabled'>): Promise<{ room: Room }> {
     return request('/v1/rooms/create', { room });
   },
 
-  update(
-    room: Pick<Room, 'room_id'> & Partial<Pick<Room, 'streamer_name' | 'room_title' | 'record_enabled'>>,
-    paths: string[],
-  ): Promise<{ room: Room }> {
+  updateRecordEnabled(room_id: number, record_enabled: boolean): Promise<{ room: Room }> {
     return request('/v1/rooms/update', {
-      room,
-      update_mask: { paths },
+      room: { room_id, record_enabled },
+      update_mask: { paths: ['record_enabled'] },
     });
   },
 

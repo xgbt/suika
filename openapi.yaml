@@ -335,8 +335,10 @@ components:
                     type: string
                     format: date-time
                 streamerName:
+                    readOnly: true
                     type: string
                 roomTitle:
+                    readOnly: true
                     type: string
                 downloadSpeedBps:
                     readOnly: true

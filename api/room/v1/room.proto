@@ -85,8 +85,8 @@ message Room {
   string last_error = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp create_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
-  string streamer_name = 12;
-  string room_title = 13;
+  string streamer_name = 12 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string room_title = 13 [(google.api.field_behavior) = OUTPUT_ONLY];
   int64 download_speed_bps = 14 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
@@ -124,6 +124,7 @@ message UpdateRoomRequest {
   Room room = 1 [(google.api.field_behavior) = REQUIRED];
   google.protobuf.FieldMask update_mask = 2 [(google.api.field_behavior) = REQUIRED];
 }
+
 message UpdateRoomResponse {
   Room room = 1;
 }

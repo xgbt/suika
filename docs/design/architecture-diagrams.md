@@ -182,7 +182,8 @@ sequenceDiagram
 
 同构变体：
 
-- **UpdateRoom**：service 先 `GetRoom` 读当前值 → `fieldmask.Update` 合并（仅允许 `streamer_name` / `room_title` / `record_enabled` 路径）→ 落库 → `registry.Update`。`record_enabled` 翻转经监督循环以重评估信号送达 Monitor，实时启停录制。
+- **UpdateRoom**：service 仅接受 `record_enabled` 的 `update_mask`，落库后经
+    `registry.Update` 通知 Monitor 重新评估录制策略；主播名和房间标题由平台维护。
 - **DeleteRoom**：落库 → `registry.Remove` → reconcile 立即取消该房间 Monitor（活跃会话优雅停止，已录文件保留），返回 `DeleteRoomResponse{empty}`。
 
 ### 3.2 开播检测与会话启动（异步事件驱动）
@@ -208,7 +209,7 @@ sequenceDiagram
     par 主通道：弹幕 WS 房间状态事件
         DC--)M: RoomStateUpdates：RoomInfo{Live:true, Title, StreamerName}
         M->>G: ApplyRoomInfo(roomID, info)
-        G->>R: UpdateRoom 回写（失败仅 warn，内存保留新值）
+        G->>R: repo.UpdateRoom 回写（失败仅 warn，内存保留新值）
         M->>P: RoomInfoArrived(info)
         P-->>M: Start(info)　（record_enabled 且 phase=idle 时）
         M->>Sess: launchSession：启动会话协程

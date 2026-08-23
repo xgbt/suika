@@ -779,7 +779,7 @@ var File_room_v1_room_proto protoreflect.FileDescriptor
 
 const file_room_v1_room_proto_rawDesc = "" +
 	"\n" +
-	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x82\x05\n" +
+	"\x12room/v1/room.proto\x12\aroom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8c\x05\n" +
 	"\x04Room\x12\x17\n" +
 	"\aroom_id\x18\x01 \x01(\x03R\x06roomId\x12%\n" +
 	"\x0erecord_enabled\x18\x03 \x01(\bR\rrecordEnabled\x129\n" +
@@ -795,10 +795,10 @@ const file_room_v1_room_proto_rawDesc = "" +
 	" \x01(\v2\x1a.google.protobuf.TimestampB\x03\xe0A\x03R\n" +
 	"createTime\x12@\n" +
 	"\vupdate_time\x18\v \x01(\v2\x1a.google.protobuf.TimestampB\x03\xe0A\x03R\n" +
-	"updateTime\x12#\n" +
-	"\rstreamer_name\x18\f \x01(\tR\fstreamerName\x12\x1d\n" +
+	"updateTime\x12(\n" +
+	"\rstreamer_name\x18\f \x01(\tB\x03\xe0A\x03R\fstreamerName\x12\"\n" +
 	"\n" +
-	"room_title\x18\r \x01(\tR\troomTitle\x121\n" +
+	"room_title\x18\r \x01(\tB\x03\xe0A\x03R\troomTitle\x121\n" +
 	"\x12download_speed_bps\x18\x0e \x01(\x03B\x03\xe0A\x03R\x10downloadSpeedBps\";\n" +
 	"\x11CreateRoomRequest\x12&\n" +
 	"\x04room\x18\x01 \x01(\v2\r.room.v1.RoomB\x03\xe0A\x02R\x04room\"7\n" +
