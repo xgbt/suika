@@ -35,19 +35,20 @@ flowchart TB
         HS -.- DM
     end
 
-    DB[("SQLite 文件 ./data/suika.db<br/>唯一表 rooms · GORM 单连接")]
+    DB[("SQLite 文件 ./data/suika.db<br/>rooms + credentials（登录凭据单例）· GORM 单连接")]
     REC[("录制目录 ./recordings/**<br/>FLV/MP4 + 弹幕 JSONL + meta.json")]
     FF["ffmpeg 子进程（可选）<br/>remux_enabled=true 时 FLV→MP4<br/>启动期探测，缺失则启动失败"]
 
-    subgraph BILI["B 站平台（外部依赖，全部经 LiveClient 出入）"]
-        API["api.live.bilibili.com<br/>房间信息 getInfoByRoom<br/>流地址 getRoomPlayInfo<br/>弹幕 token getDanmuInfo/getConf"]
+    subgraph BILI["B 站平台（外部依赖：直播流量经 LiveClient，登录/账号经 PassportClient）"]
+        API["api.live.bilibili.com<br/>房间信息 getInfoByRoom<br/>流地址 getRoomPlayInfo<br/>弹幕 token getDanmuInfo/getConf<br/>passport.bilibili.com QR 登录/nav"]
         CDN["直播 CDN<br/>FLV 流 HTTP 长连接"]
         DMWS["弹幕 WebSocket<br/>broadcastlv.chat.bilibili.com"]
     end
 
-    WEB -- "POST /v1/rooms/{create,list,get,update,delete}" --> HS
-    GRPCCLI -- "RoomService RPC" --> GS
+    WEB -- "POST /v1/rooms/{create,list,get,update,delete}<br/>POST /v1/account/{qr-login/create,qr-login/poll,status/get,logout}" --> HS
+    GRPCCLI -- "RoomService / AccountService RPC" --> GS
     HS -- "房间 CRUD" --> DB
+    HS -- "QR 登录 / 账号核验（passport 接口，不走风控）" --> API
     DM -- "平台身份信息回写（rooms 表）" --> DB
     DM -- "会话目录 / 分段 / meta.json 读写" --> REC
     DM -- "exec 转封装" --> FF
@@ -58,8 +59,8 @@ flowchart TB
 
 要点：
 
-- **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份 `api/room/v1/room.proto` 契约。
-- 所有 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`、`danmaku.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。
+- **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份契约（`api/room/v1/room.proto` + `api/account/v1/account.proto`）。
+- 直播侧 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`、`danmaku.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。唯一例外是 passport 流量（扫码登录 / 账号核验，`passport.go` 的 `PassportClient`），刻意不走 riskGuard（无 WBI 签名、无重试）；登录凭据经 `CredentialRepo` 持久化在 `credentials` 表单例行，落库后热替换内存 cookie（ADR-0003）。
 - 录制产物是**文件系统**而非数据库；`meta.json` 是录制历史的唯一事实源，重启后由 `RecoverPending` 扫描恢复。
 
 ---
@@ -84,10 +85,12 @@ flowchart TB
 
     subgraph SERVICE["internal/service —— DTO ↔ DO"]
         RS["RoomService<br/>convertRoom / convertRoomReply<br/>AIP pagination + fieldmask"]
+        AS["AccountService<br/>QR 登录 / 状态 / 登出"]
     end
 
     subgraph BIZ["internal/biz —— DO 与决策，不碰存储客户端"]
         RU["RoomUsecase<br/>房间 CRUD + 运行时合并"]
+        AU["AccountUsecase<br/>扫码登录 / 账号状态 / 登出"]
         RECU["RecorderUsecase<br/>监督循环 / Monitor / 断流决策树<br/>只做决策，不做字节级 IO"]
         REG["RoomRegistry<br/>房间配置 + 运行时状态的唯一事实源"]
         POL["sessionPolicy（ADR-0001）<br/>会话启停决策：Start / Stop / None"]
@@ -95,33 +98,43 @@ flowchart TB
         IF2[/"RecorderRepo 接口"/]
         IF3[/"LiveClient 接口"/]
         IF4[/"SessionStatsRepo 接口"/]
+        IF5[/"CredentialRepo 接口"/]
+        IF6[/"PassportClient 接口"/]
     end
 
     subgraph DATA["internal/data —— PO 与全部 IO"]
         RR["roomRepo · roomPO → rooms 表<br/>toRoomPO / toRoomDO"]
         RREPO["recorderRepo<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · remux"]
         LC["liveClient<br/>bili/ 子包：live · danmaku · wbi · buvid · risk"]
+        CR["credentialRepo<br/>credentials 表单例行 + cookie 热替换"]
+        PC["passportClient<br/>QR 登录 · nav 核验（不走 riskGuard）"]
     end
 
-    DTO["api/room/v1<br/>proto DTO（RoomService 契约）"]
+    DTO["api/room/v1 · api/account/v1<br/>proto DTO（RoomService / AccountService 契约）"]
 
     WIRE --> SHTTP & SGRPC & SDMN
-    SHTTP & SGRPC --> RS
+    SHTTP & SGRPC --> RS & AS
     RS -- "DTO（请求/响应）" --- DTO
     RS -- "DO" --> RU
+    AS --> AU
     SDMN --> RECU
     RU --> REG
     RECU --> REG
     RECU --> POL
     RU --> IF1 & IF4
     RECU --> IF2 & IF3
+    AU --> IF5 & IF6
     IF1 -. 实现 .-> RR
     IF4 -. 实现（同一 recorderRepo） .-> RREPO
     IF2 -. 实现 .-> RREPO
     IF3 -. 实现 .-> LC
+    IF5 -. 实现 .-> CR
+    IF6 -. 实现 .-> PC
     RR --> SQLITE[("SQLite / GORM")]
+    CR --> SQLITE
     RREPO --> FS[("recordings/ 文件目录 + ffmpeg")]
     LC --> BILI[("B 站 API / CDN / 弹幕 WS")]
+    PC --> BILI
 ```
 
 分层纪律（违反箭头方向即分层错误）：
@@ -133,7 +146,7 @@ flowchart TB
 | data | PO、`toXxxPO/toXxxDO` | DO ↔ PO | DTO |
 | server | 传输装配 | — | 转换与业务逻辑 |
 
-两条关键倒置缝都在 `biz` 声明、`data` 实现：`LiveClient`（平台 IO）与 `RecorderRepo`（磁盘 IO）；`RoomRepo` 同理。`RoomRegistry` 是被两侧共享的运行时状态中枢：房间 CRUD 落库后同步 `Add/Update/Remove`，录制守护进程经 `Subscribe` 的合并式信号实时调和监控集合，无需重启。
+倒置缝都在 `biz` 声明、`data` 实现：`LiveClient`（直播平台 IO）、`RecorderRepo`（磁盘 IO）、`RoomRepo`（房间持久化）、`CredentialRepo`（凭据持久化 + cookie 热替换）与 `PassportClient`（账号平台，刻意不走风控）。`RoomRegistry` 是被两侧共享的运行时状态中枢：房间 CRUD 落库后同步 `Add/Update/Remove`，录制守护进程经 `Subscribe` 的合并式信号实时调和监控集合，无需重启。
 
 ---
 
@@ -241,7 +254,7 @@ sequenceDiagram
     participant FS as recordings/ 文件目录
     participant FF as ffmpeg
 
-    Sess->>Sess: acquireSlot（max_concurrent=2，满则阻塞等待）
+    Sess->>Sess: acquireSlot（max_concurrent 配置上限，0=不限；满则阻塞等待）
     Sess->>G: StartRecording(roomID)
     Sess->>RR: PrepareSession(session)
     RR->>FS: mkdir 会话目录；写 meta.json（status=recording）
@@ -250,6 +263,7 @@ sequenceDiagram
         Sess->>LC: OpenLiveStream(roomID)
         LC->>CDN: getRoomPlayInfo 选流 → GET FLV 长连接
         LC-->>Sess: LiveStream{URL, Quality, Body}
+        Sess->>G: SetStreamQuality(roomID, Quality)
         Sess->>RR: RecordSession(session, stream, events)
         RR->>FS: 开分段写 FLV（按关键帧切分，默认 120min）<br/>弹幕事件写 JSONL；健康检查（30s × 3 轮无新数据即失败）<br/>速度采样（1s）更新 pumpStats
         RR-->>Sess: RecordingResult{BytesWritten, Parts}, err
@@ -294,7 +308,7 @@ sequenceDiagram
     U->>+R: ListRooms(query)　ORDER BY room_id ASC
     R-->>-U: []*Room（PO → DO）
     loop 每个房间
-        U->>G: runtime(roomID)：live/record 状态快照
+        U->>G: runtime(roomID)：live/record 状态 + 授予清晰度快照
         opt record_status == RECORDING
             U->>RR: SessionStats(roomID)
             RR-->>U: {current_file, bytes_written, download_speed_bps}
@@ -359,7 +373,10 @@ stateDiagram-v2
 
 ## 5. ER 图
 
-数据库中**只有一张表 `rooms`**（GORM AutoMigrate，SQLite 单连接）。录制会话与分段不落库，而是以 `meta.json` + 媒体文件持久化在录制目录，图中作为逻辑实体给出，关系均为一对多：
+数据库中有两张表：`rooms` 与 `credentials`（登录凭据单例行，来自
+Web 扫码登录，ADR-0003；两表无关联）。均为 GORM AutoMigrate、SQLite
+单连接。录制会话与分段不落库，而是以 `meta.json` + 媒体文件持久化在
+录制目录，图中作为逻辑实体给出，关系均为一对多：
 
 ```
 recordings/<room_id>_<主播名>/<开播日期>/<日期_时间_标题>.meta.json
@@ -382,13 +399,22 @@ erDiagram
         datetime update_time "GORM autoUpdateTime"
     }
 
+    CREDENTIALS {
+        int64 id PK "固定为 1 的单例行"
+        string cookie "登录 cookie（扫码确认时从 Set-Cookie 捕获）"
+        string refresh_token "刷新令牌"
+        datetime create_time "首次登录时间"
+        datetime update_time "最近登录时间"
+    }
+
     SESSION {
         int64 room_id "所属房间"
         string room_name "主播名（上限 32 字符）"
         string title "直播标题（上限 64 字符）"
         int64 live_start_time "开播时间，决定目录与文件名前缀"
         int64 end_time "收尾时间"
-        int32 quality_qn "实际授予的清晰度"
+        int32 quality_qn "实际授予的清晰度档位"
+        string quality_desc "清晰度描述（g_qn_desc 或内置表）"
         string status "recording / remuxing / done / partial"
     }
 
@@ -417,4 +443,4 @@ erDiagram
 
 - `SESSION` / `SEGMENT` / `DANMAKU` 三个实体对应 `meta.json` 的 `sessionMeta` / `segmentMeta` 结构与弹幕 JSONL 行（`danmuLine`），由 `data` 层独占读写，**没有外键约束**——关联键是目录路径与文件名约定，而非数据库引用。
 - `rooms` 表的 `streamer_name` / `room_title` 会被录制守护进程经 `RoomRegistry.ApplyRoomInfo` 用平台非空值覆盖回写；回写失败只记 warn，不影响内存快照。
-- 运行时的写入进度（`current_file` / `bytes_written` / `download_speed_bps`）不在任何持久层，来自 `recorderRepo` 内存中的 `pumpStats` 原子计数，仅在 `record_status=RECORDING` 时 best-effort 提供给查询。
+- 运行时的写入进度（`current_file` / `bytes_written` / `download_speed_bps`）不在任何持久层，来自 `recorderRepo` 内存中的 `pumpStats` 原子计数，仅在 `record_status=RECORDING` 时 best-effort 提供给查询。授予清晰度（`granted_qn` / `granted_qn_desc`）同样不落库：由录制器拉流成功后经 `SetStreamQuality` 写入 `RoomRegistry`，会话开始/结束时清零。

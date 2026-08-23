@@ -240,6 +240,8 @@ are `OUTPUT_ONLY` and must be populated by the service:
 - `record_status`: `RECORD_STATUS_UNSPECIFIED`, `RECORD_STATUS_IDLE`,
   `RECORD_STATUS_RECORDING`, `RECORD_STATUS_REMUXING`, or
   `RECORD_STATUS_ERROR`.
+- `granted_qn`, `granted_qn_desc`: the stream quality Bilibili actually
+  granted for the current recording session (zero/empty when not recording).
 - `current_file`, `bytes_written`, `download_speed_bps`,
   `session_started_at`, `last_error`, `create_time`, and `update_time`.
 
@@ -263,7 +265,10 @@ CRUD after each successful persist (`Add` / `Update` / `Remove`), and holds
 mutable live and recording state. The recorder updates the registry; room
 reads merge the registry snapshot with persisted fields. For an actively
 recording room, `SessionStatsRepo` best-effort supplies `current_file`,
-`bytes_written`, and `download_speed_bps`. CRUD changes take effect on the recorder in real time via
+`bytes_written`, and `download_speed_bps`; the granted stream quality
+(`granted_qn` / `granted_qn_desc`) is registry state itself —
+`SetStreamQuality` records what each opened stream actually got, and the
+quality resets when a session starts and when it finishes. CRUD changes take effect on the recorder in real time via
 its supervisor loop (no restart): created rooms are monitored immediately
 regardless of `record_enabled`, deleting a room stops its monitor immediately
 (gracefully stopping any active session, recorded files are kept), and
@@ -280,8 +285,9 @@ and the in-memory snapshot keeps the new values.
 
 `web/` is a React + TypeScript + Vite + Ant Design SPA and the only
 graphical consumer of the HTTP API (`RoomList`: table with runtime
-status, create/edit, recording on/off confirmation, delete confirmation,
-auto-refresh). The header also carries an account bar (`AccountBar`) with
+status, create, recording on/off confirmation, delete confirmation,
+auto-refresh; the recording badge of an actively recording room carries a
+tooltip with the granted quality). The header also carries an account bar (`AccountBar`) with
 a QR-login modal (`QRLoginModal`) for obtaining the Bilibili credential,
 plus status display and logout. It is decoupled from the Go build —
 `npm install` / `npm run dev`, with vite proxying `/v1` to
@@ -347,11 +353,11 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
 `docs/design/bili-recorder.md` (Chinese) is the deep-dive on the
 recorder service: goroutine structure, room states, stream-drop decision
 tree, on-disk layout (`meta.json`, danmaku JSONL), risk control, config
-defaults, and failure handling. `docs/design/ddd-domain-model.md` is its
-companion DDD view: subdomains, domain class diagram, and the
-repository/ACL seam relationships. Both defer repo-level conventions
-(layering, naming, build commands) to this file — when changing template
-rules, keep the three consistent.
+defaults, and failure handling. `docs/design/architecture-diagrams.md` is
+its companion diagram set: system/app architecture, sequence diagrams for
+room CRUD / live detection / recording / query, state machines, and the ER
+view. Both defer repo-level conventions (layering, naming, build commands)
+to this file — when changing template rules, keep the three consistent.
 
 ## Agent skills
 
