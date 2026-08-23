@@ -156,10 +156,11 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 
 	// 记录当前会话的写入进度
 	stats := r.statsFor(session.RoomID)
+	// 记录本次录制之前的写入进度
 	baseBytes := stats.bytes.Load()
 	stats.file.Store("")
 
-	// 把授予的清晰度记入 meta。
+	// 把 CDN 实际授予的清晰度记入 meta
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Quality = qualityMeta{Qn: stream.Quality.Qn, Desc: stream.Quality.Desc}
 		meta.Title = session.Title
@@ -225,18 +226,25 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 
 	for {
 		select {
+		// 关闭录制开关、停机、房间被删除
 		case <-ctx.Done():
 			closeSegment()
 			return &result, ctx.Err()
+		// 读取 tag
 		case tr := <-tagCh:
+			// 读取 tag 失败，可能是流断开或其他瞬时错误
 			if tr.err != nil {
 				closeSegment()
+				// EOF 表示流干净结束
 				if tr.err == io.EOF {
 					return &result, nil
 				}
+				// 其他瞬时错误，则返回，让上层决定是否重连
 				return &result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.err)
 			}
+
 			tag := tr.tag
+			// 如果当前还没有分段文件，或者该 tag 触发了切分条件，则关闭当前分段并打开新分段
 			if seg == nil {
 				if err := openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
@@ -269,19 +277,19 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 				r.appendMetaError(metaPath, "record", err)
 				return &result, err
 			}
+		// 弹幕/礼物等事件写入
 		case ev := <-events:
 			if seg == nil {
 				continue
 			}
 			if err := seg.writeEvent(ev); err != nil {
 				log.Warn("danmaku write failed", "room", session.RoomID, "err", err)
+				// 尽力而为, 不影响录制主流程
 			}
+		// 下载速度采样
 		case <-speedSampler.C:
 			now := time.Now()
-			delta := sessionBytes - lastSample
-			if delta < 0 {
-				delta = 0
-			}
+			delta := max(sessionBytes-lastSample, 0)
 			elapsed := now.Sub(lastSampleAt)
 			if elapsed <= 0 {
 				continue
@@ -289,6 +297,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			stats.speed.Store(int64(float64(delta) / elapsed.Seconds()))
 			lastSample = sessionBytes
 			lastSampleAt = now
+		// 健康检查：在 healthInterval 内未见新数据则计为一次失败，连续 failRounds 次则判定录制异常。
 		case <-health.C:
 			if sessionBytes > lastGrowth {
 				lastGrowth = sessionBytes

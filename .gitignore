@@ -35,6 +35,7 @@ bin/
 configs/credentials.yaml
 recordings/
 /data/
+/docs/learn/
 
 # Develop tools
 .vscode/

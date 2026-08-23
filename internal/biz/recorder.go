@@ -554,7 +554,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			return
 		}
 
-		// 4. 断流决策树：CDN 瞬时故障重连、风控拒绝不重连、其他错误按配置重连。
+		// 4. CDN 瞬时故障重连、风控拒绝不重连、其他错误按配置重连。
 		if stderrors.Is(recErr, ErrStreamTransient) {
 			if cdnBudget <= 0 {
 				log.Warn("cdn transient budget exhausted, finishing session with recorded content", "room", roomID)
