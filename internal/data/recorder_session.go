@@ -11,15 +11,9 @@ import (
 
 const (
 	metaStatusRecording = "recording" // 录制中，可能还会有新分段
-	metaStatusRemuxing  = "remuxing"  // 录制完成，正在转封装
-	metaStatusDone      = "done"      // 录制完成，转封装完成
-	metaStatusPartial   = "partial"   // 录制完成，转封装失败，但至少有一个分段转封装成功
-)
-
-const (
-	remuxStatusPending = "pending" // 转封装尚未开始
-	remuxStatusOK      = "ok"      // 转封装成功
-	remuxStatusFailed  = "failed"  // 转封装失败
+	metaStatusMerging   = "merging"   // 录制完成，正在合并分段
+	metaStatusDone      = "done"      // 录制完成，收尾完成
+	metaStatusPartial   = "partial"   // 录制完成，合并失败，源分段保留待重试
 )
 
 // sessionMeta 关键元数据，存储在 meta.json 中, 记录录制会话的状态、分段信息、错误日志等
@@ -32,8 +26,12 @@ type sessionMeta struct {
 	Quality       qualityMeta   `json:"quality"`
 	Status        string        `json:"status"`
 	Segments      []segmentMeta `json:"segments"`
-	Errors        []errorMeta   `json:"errors"`
-	UpdatedAt     int64         `json:"updated_at"`
+	// MergedVideo / MergedDanmaku 是收尾合并产物的文件名；合并禁用、
+	// 尚未合并或合并失败时为空。
+	MergedVideo   string      `json:"merged_video,omitempty"`
+	MergedDanmaku string      `json:"merged_danmaku,omitempty"`
+	Errors        []errorMeta `json:"errors"`
+	UpdatedAt     int64       `json:"updated_at"`
 }
 
 // qualityMeta 记录录制的清晰度信息，存储在 meta.json 中
@@ -44,17 +42,15 @@ type qualityMeta struct {
 
 // segmentMeta 记录每个分段的元数据，存储在 meta.json 中
 type segmentMeta struct {
-	Part        int    `json:"part"`     // 分段编号
-	Video       string `json:"video"`    // 视频文件名
-	FLVKept     bool   `json:"flv_kept"` // 标记 FLV 文件是否保留
-	Danmaku     string `json:"danmaku"`
-	WallStart   int64  `json:"wall_start"`
-	WallEnd     int64  `json:"wall_end"`
-	TsStart     int64  `json:"ts_start"`
-	TsEnd       int64  `json:"ts_end"`
-	Bytes       int64  `json:"bytes"`                 // 分段文件大小
-	RemuxStatus string `json:"remux_status"`          // 转封装状态：pending, ok, failed
-	RemuxError  string `json:"remux_error,omitempty"` // 转封装错误信息，仅在 RemuxStatus 为 failed 时存在
+	Part      int    `json:"part"`     // 分段编号
+	Video     string `json:"video"`    // 视频文件名
+	FLVKept   bool   `json:"flv_kept"` // 标记 FLV 文件是否保留
+	Danmaku   string `json:"danmaku"`
+	WallStart int64  `json:"wall_start"`
+	WallEnd   int64  `json:"wall_end"`
+	TsStart   int64  `json:"ts_start"`
+	TsEnd     int64  `json:"ts_end"`
+	Bytes     int64  `json:"bytes"` // 分段文件大小
 }
 
 type errorMeta struct {
@@ -134,11 +130,10 @@ func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
 func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *segmentFile) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Segments = append(meta.Segments, segmentMeta{
-			Part:        seg.part,
-			Video:       filepath.Base(seg.videoPath),
-			Danmaku:     filepath.Base(seg.danmuPath),
-			WallStart:   seg.wallStart.Unix(),
-			RemuxStatus: remuxStatusPending,
+			Part:      seg.part,
+			Video:     filepath.Base(seg.videoPath),
+			Danmaku:   filepath.Base(seg.danmuPath),
+			WallStart: seg.wallStart.Unix(),
 		})
 	})
 }
@@ -164,14 +159,4 @@ func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
 	})
-}
-
-// hasRetryableSegments 检查 meta.json 中是否有可重试的分段
-func hasRetryableSegments(meta *sessionMeta) bool {
-	for _, seg := range meta.Segments {
-		if seg.RemuxStatus == remuxStatusFailed && seg.FLVKept {
-			return true
-		}
-	}
-	return false
 }

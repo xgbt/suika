@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -130,17 +131,17 @@ func TestMetaJSONRoundTrip(t *testing.T) {
 		Status:        metaStatusDone,
 		Segments: []segmentMeta{
 			{
-				Part: 1, Video: "base_part1.mp4", Danmaku: "base_part1.danmu.jsonl",
+				Part: 1, Video: "base_part1.flv", Danmaku: "base_part1.danmu.jsonl",
 				WallStart: 1_700_000_000, WallEnd: 1_700_003_600,
 				TsStart: 0, TsEnd: 7_200_000, Bytes: 123456,
-				RemuxStatus: remuxStatusOK,
 			},
 			{
 				Part: 2, Video: "base_part2.flv", FLVKept: true, Danmaku: "base_part2.danmu.jsonl",
-				RemuxStatus: remuxStatusFailed, RemuxError: "ffmpeg exploded",
 			},
 		},
-		Errors: []errorMeta{{Time: 55, Stage: "record", Msg: "write failed"}},
+		MergedVideo:   "base.flv",
+		MergedDanmaku: "base.danmu.jsonl",
+		Errors:        []errorMeta{{Time: 55, Stage: "record", Msg: "write failed"}},
 	}
 
 	before := time.Now().Unix()
@@ -245,7 +246,7 @@ func TestNextPartNumber(t *testing.T) {
 			name: "unrelated files ignored, padded and mp4 counted",
 			files: []string{
 				base + "_part001.flv",       // 前导零编号：Atoi 能处理
-				base + "_part002.mp4",       // 已转封装的分段也计入
+				base + "_part002.mp4",       // 历史遗留的 mp4 分段也计入
 				"other_part99.flv",          // 基座前缀不同
 				base + "_partX.flv",         // 编号非数字
 				base + "_part3.danmu.jsonl", // 扩展符不符
@@ -652,7 +653,7 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 	if seg.Part != 1 || seg.Video != base+"_part1.flv" || seg.Danmaku != base+"_part1.danmu.jsonl" {
 		t.Fatalf("segment = %+v", seg)
 	}
-	if seg.RemuxStatus != remuxStatusPending || seg.TsStart != 0 || seg.TsEnd != 40 {
+	if seg.TsStart != 0 || seg.TsEnd != 40 {
 		t.Fatalf("segment bookkeeping = %+v", seg)
 	}
 	if fi, err := os.Stat(videoPath); err != nil || seg.Bytes != fi.Size() {
@@ -665,6 +666,57 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 	}
 	if stats.BytesWritten != wantBytes || stats.CurrentFile != videoPath {
 		t.Fatalf("stats = %+v, want %d bytes at %s", stats, wantBytes, videoPath)
+	}
+}
+
+func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	streamBytes := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			stream := &biz.LiveStream{
+				Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+				Body:    io.NopCloser(bytes.NewReader(streamBytes)),
+			}
+			_, err := repo.RecordSession(ctx, session, stream, nil)
+			errs <- err
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("RecordSession: %v", err)
+		}
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := loadMeta(filepath.Join(dir, base+".meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meta.Segments) != 2 {
+		t.Fatalf("segments = %+v, want two distinct segments", meta.Segments)
+	}
+	if meta.Segments[0].Part == meta.Segments[1].Part {
+		t.Fatalf("segments reused part number: %+v", meta.Segments)
+	}
+	for _, seg := range meta.Segments {
+		if _, err := os.Stat(filepath.Join(dir, seg.Video)); err != nil {
+			t.Fatalf("segment %q missing: %v", seg.Video, err)
+		}
 	}
 }
 
@@ -831,37 +883,52 @@ func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
 	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeq, audioSeq, key100, audio110, inter120})
 }
 
-// --- FinishSession / finalizeSegments ---
+// --- FinishSession / 收尾合并 ---
 
-// seedPendingSession 准备一个会话目录：写入 meta.json 和一个待处理分段
-// （FLV 内容由参数给定），返回断言所需的路径。
-func seedPendingSession(t *testing.T, repo *recorderRepo, flvContent []byte) (dir, metaPath, flvName, mp4Name string) {
+// seedMergeSession 准备一个会话目录：meta.json + 每个 part 一个分段
+// （FLV 内容由参数给定；nil 表示磁盘上不落该文件，仅登记进 meta），
+// 返回断言所需的路径。
+func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (dir, base, metaPath string) {
 	t.Helper()
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
 		t.Fatal(err)
 	}
-	var base string
-	dir, base, err := repo.sessionPaths(session)
+	var err error
+	dir, base, err = repo.sessionPaths(session)
 	if err != nil {
 		t.Fatal(err)
 	}
 	metaPath = filepath.Join(dir, base+".meta.json")
-	flvName = base + "_part1.flv"
-	mp4Name = base + "_part1.mp4"
-	if flvContent != nil {
-		if err := os.WriteFile(filepath.Join(dir, flvName), flvContent, 0o644); err != nil {
+	for i, content := range parts {
+		part := i + 1
+		videoPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.flv", base, part))
+		danmuPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.danmu.jsonl", base, part))
+		if content != nil {
+			if err := os.WriteFile(videoPath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(danmuPath, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
+		repo.appendSegmentMeta(metaPath, &segmentFile{
+			part:      part,
+			videoPath: videoPath,
+			danmuPath: danmuPath,
+			wallStart: session.LiveStartTime,
+		})
 	}
-	repo.appendSegmentMeta(metaPath, &segmentFile{
-		part:      1,
-		videoPath: filepath.Join(dir, flvName),
-		danmuPath: filepath.Join(dir, base+"_part1.danmu.jsonl"),
-		wallStart: session.LiveStartTime,
-	})
-	return dir, metaPath, flvName, mp4Name
+	return dir, base, metaPath
+}
+
+// mergeTestTags 返回合并测试共用的头标签。
+func mergeTestTags() (metaTag, videoSeq, audioSeq *flv.Tag) {
+	metaTag = &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq = &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq = &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	return
 }
 
 func TestFinishSessionWithoutMetaIsNoop(t *testing.T) {
@@ -871,10 +938,12 @@ func TestFinishSessionWithoutMetaIsNoop(t *testing.T) {
 	}
 }
 
-func TestFinishSessionRemuxDisabledKeepsFLV(t *testing.T) {
-	repo := newTestRepo(t, &Data{remuxEnabled: false}, nil)
-	content := []byte("fake flv bytes")
-	dir, metaPath, flvName, mp4Name := seedPendingSession(t, repo, content)
+func TestFinishSessionMergeDisabledKeepsSegments(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	content := buildFLVStream(t, metaTag, videoSeq, audioSeq, key0)
+	repo := newTestRepo(t, &Data{mergeEnabled: false}, nil)
+	dir, base, metaPath := seedMergeSession(t, repo, content)
 
 	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
 		t.Fatalf("FinishSession: %v", err)
@@ -886,35 +955,39 @@ func TestFinishSessionRemuxDisabledKeepsFLV(t *testing.T) {
 	}
 	if meta.Status != metaStatusDone {
 		t.Fatalf("status = %q, want %q", meta.Status, metaStatusDone)
+	}
+	if meta.MergedVideo != "" || meta.MergedDanmaku != "" {
+		t.Fatalf("merge bookkeeping = %+v, want empty when merge disabled", meta)
 	}
 	if meta.EndTime == 0 || meta.Quality.Qn != 10000 || meta.Quality.Desc != "source" {
 		t.Fatalf("finish bookkeeping = %+v", meta)
 	}
-	if len(meta.Segments) != 1 {
-		t.Fatalf("segments = %+v", meta.Segments)
+	if seg := meta.Segments[0]; !seg.FLVKept {
+		t.Fatalf("segment = %+v, want flv kept", seg)
 	}
-	seg := meta.Segments[0]
-	if seg.RemuxStatus != remuxStatusOK || !seg.FLVKept || seg.Video != flvName {
-		t.Fatalf("segment = %+v, want ok / flv_kept / %s", seg, flvName)
+	if _, err := os.Stat(filepath.Join(dir, base+".flv")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no merged file must be produced when merge is disabled (stat err = %v)", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, mp4Name)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("mp4 must not be produced without ffmpeg (stat err = %v)", err)
-	}
-	if got, err := os.ReadFile(filepath.Join(dir, flvName)); err != nil || !bytes.Equal(got, content) {
-		t.Fatalf("source flv modified: %q, %v", got, err)
+	if got, err := os.ReadFile(filepath.Join(dir, base+"_part1.flv")); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("source flv modified: %v", err)
 	}
 }
 
-func TestFinishSessionRemuxSuccessReplacesFLV(t *testing.T) {
-	ffmpeg, _, countFile := writeFakeFFmpeg(t, t.TempDir(), 0)
-	repo := newTestRepo(t, &Data{remuxEnabled: true, ffmpegPath: ffmpeg}, nil)
-	dir, metaPath, flvName, mp4Name := seedPendingSession(t, repo, []byte("fake flv bytes"))
+// 单段场次同样走完整合并路径：产物是 {base}.flv，onMetaData 被跳过，
+// 源分段验证后删除。
+func TestFinishSessionMergeSingleSegment(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	dir, base, metaPath := seedMergeSession(t, repo, buildFLVStream(t, metaTag, videoSeq, audioSeq, key0, inter40))
+	danmu := `{"ts":1,"type":"danmaku","text":"hi"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, base+"_part1.danmu.jsonl"), []byte(danmu), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
 		t.Fatalf("FinishSession: %v", err)
-	}
-	if n := readCount(t, countFile); n != 1 {
-		t.Fatalf("ffmpeg invocations = %d, want 1", n)
 	}
 
 	meta, err := loadMeta(metaPath)
@@ -924,103 +997,194 @@ func TestFinishSessionRemuxSuccessReplacesFLV(t *testing.T) {
 	if meta.Status != metaStatusDone {
 		t.Fatalf("status = %q, want %q", meta.Status, metaStatusDone)
 	}
-	seg := meta.Segments[0]
-	if seg.RemuxStatus != remuxStatusOK || seg.FLVKept || seg.Video != mp4Name {
-		t.Fatalf("segment = %+v, want ok / mp4 / flv dropped", seg)
+	if meta.MergedVideo != base+".flv" || meta.MergedDanmaku != base+".danmu.jsonl" {
+		t.Fatalf("merge bookkeeping = %+v", meta)
 	}
-	if got, err := os.ReadFile(filepath.Join(dir, mp4Name)); err != nil || string(got) != "FAKE_MP4_DATA" {
-		t.Fatalf("mp4 = %q, %v", got, err)
+	if seg := meta.Segments[0]; seg.FLVKept {
+		t.Fatalf("segment = %+v, want source dropped after verified merge", seg)
 	}
-	if _, err := os.Stat(filepath.Join(dir, flvName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("source flv must be removed after a verified remux (stat err = %v)", err)
+
+	// 合并产物 = 头 + 除 onMetaData 外的全部标签。
+	_, tags := readSegmentTags(t, filepath.Join(dir, base+".flv"))
+	assertTagsEqual(t, tags, []*flv.Tag{videoSeq, audioSeq, key0, inter40})
+
+	// 源分段与源弹幕验证后删除；弹幕内容完整保留。
+	for _, name := range []string{base + "_part1.flv", base + "_part1.danmu.jsonl"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s must be removed after a verified merge (stat err = %v)", name, err)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, base+".danmu.jsonl")); err != nil || string(got) != danmu {
+		t.Fatalf("merged danmaku = %q, %v", got, err)
 	}
 }
 
-func TestFinishSessionRemuxFailureKeepsFLV(t *testing.T) {
-	ffmpeg, _, countFile := writeFakeFFmpeg(t, t.TempDir(), 999) // 恒定失败
-	repo := newTestRepo(t, &Data{remuxEnabled: true, ffmpegPath: ffmpeg}, nil)
-	dir, metaPath, flvName, mp4Name := seedPendingSession(t, repo, []byte("fake flv bytes"))
+func TestFinishedSessionCanAppendAfterRecordingIsReenabled(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	firstKey := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	firstEnd := &flv.Tag{Type: flv.TagVideo, Timestamp: 10_000, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
+	secondKey := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
+	secondEnd := &flv.Tag{Type: flv.TagVideo, Timestamp: 5_000, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
 
-	// finalize 把失败记录在 meta 中，而不是返回错误
-	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
-		t.Fatalf("FinishSession: %v", err)
-	}
-	if n := readCount(t, countFile); n != 2 {
-		t.Fatalf("ffmpeg invocations = %d, want 2 (remuxWithRetry retries once)", n)
-	}
-
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Status != metaStatusPartial {
-		t.Fatalf("status = %q, want %q", meta.Status, metaStatusPartial)
-	}
-	seg := meta.Segments[0]
-	if seg.RemuxStatus != remuxStatusFailed || !seg.FLVKept || seg.RemuxError == "" {
-		t.Fatalf("segment = %+v, want failed / flv kept / error recorded", seg)
-	}
-	if !strings.Contains(seg.RemuxError, "fake ffmpeg failure") {
-		t.Fatalf("RemuxError = %q, want the ffmpeg stderr captured", seg.RemuxError)
-	}
-	if _, err := os.Stat(filepath.Join(dir, flvName)); err != nil {
-		t.Fatalf("source flv must survive a failed remux: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, mp4Name)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("no mp4 must exist after a failed remux (stat err = %v)", err)
-	}
-}
-
-func TestFinishSessionEmptyFFmpegPathMarksFailed(t *testing.T) {
-	// 开启转封装但未解析到 ffmpeg：remuxWithRetry 收到空路径，
-	// 必须优雅失败而不是 panic。
-	repo := newTestRepo(t, &Data{remuxEnabled: true}, nil)
-	dir, metaPath, flvName, mp4Name := seedPendingSession(t, repo, []byte("fake flv bytes"))
-
-	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
-		t.Fatalf("FinishSession: %v", err)
-	}
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Status != metaStatusPartial {
-		t.Fatalf("status = %q, want %q", meta.Status, metaStatusPartial)
-	}
-	seg := meta.Segments[0]
-	if seg.RemuxStatus != remuxStatusFailed || !seg.FLVKept || !strings.Contains(seg.RemuxError, "ffmpeg") {
-		t.Fatalf("segment = %+v, want failed with an ffmpeg error", seg)
-	}
-	if _, err := os.Stat(filepath.Join(dir, flvName)); err != nil {
-		t.Fatalf("source flv must survive: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, mp4Name)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("no mp4 must exist (stat err = %v)", err)
-	}
-}
-
-func TestFinalizeSegmentsMissingSourceRecovery(t *testing.T) {
-	// 这里不会调用 ffmpegPath：两个分支都只看文件系统
-	//（源缺失，或 mp4 此前已转封装完成）。
-	repo := newTestRepo(t, &Data{remuxEnabled: true, ffmpegPath: "/should/not/be/called"}, nil)
-	ctx := context.Background()
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
 	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
+	record := func(tags ...*flv.Tag) {
+		t.Helper()
+		if err := repo.PrepareSession(context.Background(), session); err != nil {
+			t.Fatal(err)
+		}
+		stream := &biz.LiveStream{
+			Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+			Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+		}
+		if _, err := repo.RecordSession(context.Background(), session, stream, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.FinishSession(context.Background(), session); err != nil {
+			t.Fatal(err)
+		}
 	}
+
+	record(metaTag, videoSeq, audioSeq, firstKey, firstEnd)
+	record(metaTag, videoSeq, audioSeq, secondKey, secondEnd)
+
 	dir, base, err := repo.sessionPaths(session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	metaPath := filepath.Join(dir, base+".meta.json")
-	// part1：磁盘上 flv 和 mp4 都不存在；part2：flv 已删，mp4 已存在。
-	if err := os.WriteFile(filepath.Join(dir, base+"_part2.mp4"), []byte("done"), 0o644); err != nil {
+	_, tags := readSegmentTags(t, filepath.Join(dir, base+".flv"))
+	wantVideoSeq2 := &flv.Tag{Type: flv.TagVideo, Timestamp: 10_000, Data: videoSeq.Data}
+	wantAudioSeq2 := &flv.Tag{Type: flv.TagAudio, Timestamp: 10_000, Data: audioSeq.Data}
+	wantSecondKey := &flv.Tag{Type: flv.TagVideo, Timestamp: 10_000, Data: secondKey.Data}
+	wantSecondEnd := &flv.Tag{Type: flv.TagVideo, Timestamp: 15_000, Data: secondEnd.Data}
+	assertTagsEqual(t, tags, []*flv.Tag{
+		videoSeq, audioSeq, firstKey, firstEnd,
+		wantVideoSeq2, wantAudioSeq2, wantSecondKey, wantSecondEnd,
+	})
+
+	meta, err := loadMeta(filepath.Join(dir, base+".meta.json"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	repo.appendSegmentMeta(metaPath, &segmentFile{part: 1, videoPath: filepath.Join(dir, base+"_part1.flv"), danmuPath: filepath.Join(dir, base+"_part1.danmu.jsonl"), wallStart: session.LiveStartTime})
-	repo.appendSegmentMeta(metaPath, &segmentFile{part: 2, videoPath: filepath.Join(dir, base+"_part2.flv"), danmuPath: filepath.Join(dir, base+"_part2.danmu.jsonl"), wallStart: session.LiveStartTime})
+	if meta.Status != metaStatusDone || meta.MergedVideo != base+".flv" {
+		t.Fatalf("meta = %+v, want completed appended recording", meta)
+	}
+}
 
-	if err := repo.FinishSession(ctx, session); err != nil {
+// 多段合并：第 2 段重新注入的序列头时间戳平移到合并边界，全片时间戳
+// 单调不回跳；两段的弹幕按 part 顺序拼接。
+func TestFinishSessionMergeMultiSegmentRebasesBoundaryHeaders(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
+	// 2 小时分段边界后的内容标签：绝对时间戳延续。
+	const boundary = 7_200_000
+	keyB := &flv.Tag{Type: flv.TagVideo, Timestamp: boundary, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
+	interB := &flv.Tag{Type: flv.TagVideo, Timestamp: boundary + 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
+
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq, key0, inter40)
+	// part2 模拟切段后的重注入：序列头保留近零时间戳，内容标签延续。
+	part2 := buildFLVStream(t, metaTag, videoSeq, audioSeq, keyB, interB)
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	dir, base, metaPath := seedMergeSession(t, repo, part1, part2)
+	if err := os.WriteFile(filepath.Join(dir, base+"_part1.danmu.jsonl"), []byte("line1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, base+"_part2.danmu.jsonl"), []byte("line2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
+		t.Fatalf("FinishSession: %v", err)
+	}
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != metaStatusDone {
+		t.Fatalf("status = %q, want %q", meta.Status, metaStatusDone)
+	}
+	for i, seg := range meta.Segments {
+		if seg.FLVKept {
+			t.Fatalf("segment %d = %+v, want source dropped", i+1, seg)
+		}
+	}
+
+	mergedPath := filepath.Join(dir, base+".flv")
+	_, tags := readSegmentTags(t, mergedPath)
+	// 边界处的序列头被平移到 part1 的最后时间戳（40）。
+	wantVideoSeq2 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: videoSeq.Data}
+	wantAudioSeq2 := &flv.Tag{Type: flv.TagAudio, Timestamp: 40, Data: audioSeq.Data}
+	assertTagsEqual(t, tags, []*flv.Tag{videoSeq, audioSeq, key0, inter40, wantVideoSeq2, wantAudioSeq2, keyB, interB})
+	for i := 1; i < len(tags); i++ {
+		if tags[i].Timestamp < tags[i-1].Timestamp {
+			t.Fatalf("timestamps not monotonic at tag %d: %d < %d", i, tags[i].Timestamp, tags[i-1].Timestamp)
+		}
+	}
+	if n := countMatchingTags(tags, metaTag); n != 0 {
+		t.Errorf("onMetaData appears %d times in merged file, want 0", n)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(dir, base+".danmu.jsonl")); err != nil || string(got) != "line1\nline2\n" {
+		t.Fatalf("merged danmaku = %q, %v", got, err)
+	}
+}
+
+// 合并失败（分段损坏）：记录错误、状态 partial、源文件全部保留、
+// 不留临时文件。
+func TestFinishSessionMergeFailureKeepsSegments(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	dir, base, metaPath := seedMergeSession(t, repo, part1, []byte("not an flv"))
+
+	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
+		t.Fatalf("FinishSession records merge failure in meta, got %v", err)
+	}
+
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != metaStatusPartial {
+		t.Fatalf("status = %q, want %q", meta.Status, metaStatusPartial)
+	}
+	if meta.MergedVideo != "" {
+		t.Fatalf("merge bookkeeping = %+v, want empty after failed merge", meta)
+	}
+	var sawMergeErr bool
+	for _, e := range meta.Errors {
+		if e.Stage == "merge" {
+			sawMergeErr = true
+		}
+	}
+	if !sawMergeErr {
+		t.Fatalf("errors = %+v, want a merge-stage error", meta.Errors)
+	}
+	for i, seg := range meta.Segments {
+		if !seg.FLVKept {
+			t.Fatalf("segment %d = %+v, want flv kept after failed merge", i+1, seg)
+		}
+	}
+	// 源文件原样保留，无合并产物与临时文件残留。
+	if _, err := os.Stat(filepath.Join(dir, base+"_part2.flv")); err != nil {
+		t.Fatalf("source flv must survive a failed merge: %v", err)
+	}
+	for _, name := range []string{base + ".flv", base + ".flv.tmp"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s must not exist after a failed merge (stat err = %v)", name, err)
+		}
+	}
+}
+
+// 分段源文件缺失：合并失败，状态 partial。
+func TestFinishSessionMergeMissingSegmentMarksPartial(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	_, _, metaPath := seedMergeSession(t, repo, part1, nil) // part2 未落盘
+
+	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
 		t.Fatalf("FinishSession: %v", err)
 	}
 	meta, err := loadMeta(metaPath)
@@ -1029,22 +1193,18 @@ func TestFinalizeSegmentsMissingSourceRecovery(t *testing.T) {
 	}
 	if meta.Status != metaStatusPartial {
 		t.Fatalf("status = %q, want %q", meta.Status, metaStatusPartial)
-	}
-	if got := meta.Segments[0]; got.RemuxStatus != remuxStatusFailed || got.RemuxError != "source flv missing" {
-		t.Fatalf("missing-source segment = %+v", got)
-	}
-	if got := meta.Segments[1]; got.RemuxStatus != remuxStatusOK || got.Video != base+"_part2.mp4" || got.FLVKept {
-		t.Fatalf("already-remuxed segment = %+v", got)
 	}
 }
 
 // --- RecoverPending ---
 
 func TestRecoverPendingFinishesInterruptedSessions(t *testing.T) {
-	repo := newTestRepo(t, &Data{remuxEnabled: false}, nil)
-	_, metaPath, flvName, _ := seedPendingSession(t, repo, []byte("fake flv bytes"))
-	// 模拟转封装期间崩溃
-	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusRemuxing })
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	_, base, metaPath := seedMergeSession(t, repo, part1)
+	// 模拟合并期间崩溃
+	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusMerging })
 
 	if err := repo.RecoverPending(context.Background()); err != nil {
 		t.Fatalf("RecoverPending: %v", err)
@@ -1056,7 +1216,76 @@ func TestRecoverPendingFinishesInterruptedSessions(t *testing.T) {
 	if meta.Status != metaStatusDone {
 		t.Fatalf("status = %q, want %q", meta.Status, metaStatusDone)
 	}
-	if seg := meta.Segments[0]; seg.RemuxStatus != remuxStatusOK || !seg.FLVKept || seg.Video != flvName {
-		t.Fatalf("segment = %+v, want ok / flv kept", seg)
+	if meta.MergedVideo != base+".flv" {
+		t.Fatalf("merge bookkeeping = %+v", meta)
+	}
+}
+
+// 旧版本遗留的未知状态（如 "remuxing"）：跳过并原样保留。
+func TestRecoverPendingSkipsUnknownStatus(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	dir, base, metaPath := seedMergeSession(t, repo, part1)
+	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = "remuxing" })
+
+	if err := repo.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("RecoverPending: %v", err)
+	}
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != "remuxing" {
+		t.Fatalf("status = %q, want legacy status untouched", meta.Status)
+	}
+	if _, err := os.Stat(filepath.Join(dir, base+"_part1.flv")); err != nil {
+		t.Fatalf("legacy source must be left in place: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, base+".flv")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no merged file must be produced for legacy sessions (stat err = %v)", err)
+	}
+}
+
+// partial 且源分段齐全：重试合并。
+func TestRecoverPendingRetriesPartialWithSources(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	_, base, metaPath := seedMergeSession(t, repo, part1)
+	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
+
+	if err := repo.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("RecoverPending: %v", err)
+	}
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != metaStatusDone || meta.MergedVideo != base+".flv" {
+		t.Fatalf("meta = %+v, want done with merged output", meta)
+	}
+}
+
+// partial 但源分段缺失（如旧版本的转封装产物）：原样保留，不反复报错。
+func TestRecoverPendingLeavesPartialWithoutSources(t *testing.T) {
+	metaTag, videoSeq, audioSeq := mergeTestTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	dir, base, metaPath := seedMergeSession(t, repo, part1, nil) // part2 未落盘
+	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
+
+	if err := repo.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("RecoverPending: %v", err)
+	}
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != metaStatusPartial {
+		t.Fatalf("status = %q, want partial left as-is", meta.Status)
+	}
+	if _, err := os.Stat(filepath.Join(dir, base+".flv")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no merged file must be produced (stat err = %v)", err)
 	}
 }

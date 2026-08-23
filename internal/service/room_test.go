@@ -42,8 +42,8 @@ func newTestData(t *testing.T) *data.Data {
 			Source: filepath.Join(t.TempDir(), "test.db"),
 		},
 	}
-	// RemuxEnabled=false 使 NewData 不去探测 ffmpeg。
-	d, cleanup, err := data.NewData(confData, &conf.Recorder{RemuxEnabled: proto.Bool(false)})
+	// MergeEnabled=false 关闭收尾合并（测试只关心 CRUD 与运行时合并）。
+	d, cleanup, err := data.NewData(confData, &conf.Recorder{MergeEnabled: proto.Bool(false)})
 	if err != nil {
 		t.Fatalf("NewData() error = %v", err)
 	}
@@ -268,7 +268,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 		{RoomId: 2002, StreamerName: "disabled-room", RecordEnabled: false},
 		{RoomId: 3003, StreamerName: "recording-room", RecordEnabled: true},
 		{RoomId: 4004, StreamerName: "stats-error-room", RecordEnabled: true},
-		{RoomId: 5005, StreamerName: "remuxing-room", RecordEnabled: true},
+		{RoomId: 5005, StreamerName: "merging-room", RecordEnabled: true},
 	} {
 		if _, err := env.svc.CreateRoom(ctx, &v1.CreateRoomRequest{Room: room}); err != nil {
 			t.Fatalf("CreateRoom(%d) error = %v", room.GetRoomId(), err)
@@ -288,7 +288,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	env.reg.ApplyRoomInfo(ctx, 3003, &biz.RoomInfo{RoomID: 3003, Live: true})
 	env.reg.StartRecording(3003)
 	env.reg.StartRecording(4004)
-	env.reg.SetRemuxing(5005)
+	env.reg.SetMerging(5005)
 
 	reply, err := env.svc.ListRooms(ctx, &v1.ListRoomsRequest{PageSize: 10})
 	if err != nil {
@@ -337,9 +337,9 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	if rooms[3].GetCurrentFile() != "" || rooms[3].GetBytesWritten() != 0 {
 		t.Fatalf("ListRooms() stats-error room progress = %+v, want zero values on stats error", rooms[3])
 	}
-	// 转封装中的房间正常列出，但不查询统计。
-	if rooms[4].GetRoomId() != 5005 || rooms[4].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_REMUXING {
-		t.Fatalf("ListRooms() fifth room = %+v, want remuxing room 5005", rooms[4])
+	// 合并中的房间正常列出，但不查询统计。
+	if rooms[4].GetRoomId() != 5005 || rooms[4].GetRecordStatus() != v1.RecordStatus_RECORD_STATUS_MERGING {
+		t.Fatalf("ListRooms() fifth room = %+v, want merging room 5005", rooms[4])
 	}
 	// 会话统计只查询录制中的房间。
 	if len(env.stats.calls) != 2 || env.stats.calls[0] != 3003 || env.stats.calls[1] != 4004 {
@@ -446,16 +446,16 @@ func TestConvertRoomReply(t *testing.T) {
 			},
 		},
 		{
-			name: "remuxing",
+			name: "merging",
 			in: &biz.RoomRuntime{
 				Room:         biz.Room{RoomID: 4, StreamerName: "room-four"},
-				RecordStatus: biz.RecordStatusRemuxing,
+				RecordStatus: biz.RecordStatusMerging,
 			},
 			want: &v1.Room{
 				RoomId:       4,
 				StreamerName: "room-four",
 				LiveStatus:   v1.LiveStatus_LIVE_STATUS_UNSPECIFIED,
-				RecordStatus: v1.RecordStatus_RECORD_STATUS_REMUXING,
+				RecordStatus: v1.RecordStatus_RECORD_STATUS_MERGING,
 			},
 		},
 		{

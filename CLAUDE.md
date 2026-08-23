@@ -32,9 +32,9 @@ from `buf.gen.yaml` / `buf.gen.config.yaml`, so nothing besides `buf` and
 
 All direct `go build` / `go test` / `go vet` invocations pass `-mod=mod`;
 vendor mode is never used. The sqlite driver (`mattn/go-sqlite3`) requires
-cgo. Setting `remux_enabled: true` with no `ffmpeg` in PATH fails startup
-by design (startup probe); the checked-in `config.yaml` ships with it
-`false`. There is no `third_party/` directory — buf resolves googleapis
+cgo. There are no external binary dependencies — recording and the
+session-end merge are pure Go; the checked-in `config.yaml` ships with
+`merge_enabled: true`. There is no `third_party/` directory — buf resolves googleapis
 from the BSR.
 
 Never hand-edit generated files: `*.pb.go`, `*_grpc.pb.go`, `*_http.pb.go`,
@@ -162,7 +162,7 @@ declared in `biz` and implemented in `data`:
   sleeps on risk itself.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
-  remux (`remux.go`). Implemented across `internal/data/recorder*.go`
+  the session-end merge (`merge.go`). Implemented across `internal/data/recorder*.go`
   (`recorder.go` session lifecycle + recovery, `recorder_segment.go`
   segment files, `recorder_session.go` `meta.json` bookkeeping,
   `recorder_stats.go` write-progress stats).
@@ -317,9 +317,9 @@ isolation: service tests fake the usecase, biz tests fake the repo, data
 tests exercise repo implementations at the storage boundary. Room service
 tests in `internal/service/room_test.go` exercise CRUD, pagination,
 optional query filtering, runtime merging, and validation against real sqlite
-(`t.TempDir()` db file, wired like `wireApp`; pass `RemuxEnabled: false`
-to skip the ffmpeg probe). Data-layer tests use the real filesystem and
-a scripted fake ffmpeg binary, so no real ffmpeg is needed.
+(`t.TempDir()` db file, wired like `wireApp`; pass `MergeEnabled: false`
+to disable the session-end merge). Data-layer tests use the real
+filesystem; the merge is pure Go, so nothing external is needed.
 
 ## Naming & error reasons
 
@@ -341,7 +341,7 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
   `configs/credentials.yaml` is no longer needed (see
   `credentials.example.yaml`). See ADR-0003.
 - Config governance: `config.yaml` holds only deployment-varying items
-  (addrs, database path, record root, concurrency cap, remux switch). The
+  (addrs, database path, record root, concurrency cap, merge switch). The
   `cookie` field is a deprecated placeholder kept for compatibility and is
   ignored — the credential comes from QR login. Behavioral tuning (segment
   length, reconnect policy, poll interval, stream quality) is code

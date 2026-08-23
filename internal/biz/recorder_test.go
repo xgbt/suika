@@ -623,7 +623,7 @@ func TestWatchRoomFallbackPollStartsSession(t *testing.T) {
 	<-watchDone
 }
 
-// gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的转封装收尾，
+// gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的合并收尾，
 // 让测试可以稳定命中"会话正在停止中"的窗口。
 type gatedFinishRepo struct {
 	gate     chan struct{}
@@ -652,7 +652,7 @@ func (r *gatedFinishRepo) FinishSession(ctx context.Context, _ *RecordingSession
 func (r *gatedFinishRepo) RecoverPending(context.Context) error { return nil }
 
 // TestWatchRoomEnableRecordingDuringStopResumesSession 验证竞态路径：关闭
-// 录制触发的停止尚在收尾（转封装中）时又重新开启录制，收尾完成后若仍在播
+// 录制触发的停止尚在收尾（合并中）时又重新开启录制，收尾完成后若仍在播
 // 应立即恢复录制。
 func TestWatchRoomEnableRecordingDuringStopResumesSession(t *testing.T) {
 	repo := &gatedFinishRepo{gate: make(chan struct{})}
@@ -678,10 +678,10 @@ func TestWatchRoomEnableRecordingDuringStopResumesSession(t *testing.T) {
 		t.Fatal("session did not start recording")
 	}
 
-	// 关闭录制：会话进入收尾并阻塞在转封装 gate 上。
+	// 关闭录制：会话进入收尾并阻塞在合并 gate 上。
 	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
 	roomChanged <- struct{}{}
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRemuxing) {
+	if !waitRecordStatus(uc.registry, 42, RecordStatusMerging) {
 		t.Fatal("turning off recording did not drive the session into finishing")
 	}
 

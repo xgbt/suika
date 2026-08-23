@@ -14,8 +14,9 @@ export const RecordStatus = {
   RECORD_STATUS_UNSPECIFIED: 0,
   RECORD_STATUS_IDLE: 1,
   RECORD_STATUS_RECORDING: 2,
-  RECORD_STATUS_REMUXING: 3,
+  RECORD_STATUS_REMUXING: 3, // 已废弃：历史遗留值，新流程使用 MERGING
   RECORD_STATUS_ERROR: 4,
+  RECORD_STATUS_MERGING: 5,
 } as const;
 
 export type RecordStatus = (typeof RecordStatus)[keyof typeof RecordStatus];

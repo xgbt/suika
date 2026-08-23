@@ -29,7 +29,7 @@ const (
 	maxNameLen            = 32               // meta.json 中 room_name 字段的最大长度，超过则截断
 )
 
-// recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与转封装。
+// recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与收尾合并。
 type recorderRepo struct {
 	d *Data
 
@@ -42,8 +42,9 @@ type recorderRepo struct {
 	// healthFailRounds 连续健康检查失败轮数，达到该轮数则判定录制异常。
 	healthFailRounds int
 
-	mu    sync.Mutex
-	stats map[int64]*pumpStats
+	mu        sync.Mutex
+	segmentMu sync.Mutex
+	stats     map[int64]*pumpStats
 }
 
 func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
@@ -95,6 +96,11 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 	// 读取 meta.json，
 	metaPath := filepath.Join(dir, base+".meta.json")
 	if meta, err := loadMeta(metaPath); err == nil {
+		if meta.Status == metaStatusDone && meta.MergedVideo != "" {
+			if err := reopenMergedSession(dir, base, meta); err != nil {
+				return err
+			}
+		}
 		// 之前已经录制过，已存在 meta.json, 更新 meta.json 的状态为 recording, 并更新标题和房间名
 		meta.Status = metaStatusRecording
 		meta.Title = session.Title
@@ -185,6 +191,11 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 
 	// openNewSegment 打开新分段文件，写入头标签并更新 meta.json。
 	openNewSegment := func() error {
+		// 编号探测和 O_TRUNC 创建必须串行，否则并发的录制泵会同时选中
+		// 同一个 part，并截断彼此刚写入的分段。
+		r.segmentMu.Lock()
+		defer r.segmentMu.Unlock()
+
 		part := nextPartNumber(dir, base)
 		newSeg, err := openSegment(dir, base, part, header, &cache)
 		if err != nil {
@@ -312,7 +323,7 @@ func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
 	return tag.IsVideoKeyframe() || elapsed >= r.segmentDuration+splitOverrun
 }
 
-// FinishSession 收尾 meta.json 并对所有已录分段执行转封装。
+// FinishSession 收尾 meta.json 并合并所有已录分段。
 func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.RecordingSession) error {
 	dir, base, err := r.sessionPaths(session)
 	if err != nil {
@@ -329,7 +340,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Recording
 		}
 		return err
 	}
-	meta.Status = metaStatusRemuxing
+	meta.Status = metaStatusMerging
 	meta.EndTime = time.Now().Unix()
 	meta.Title = session.Title
 	meta.Quality = qualityMeta{Qn: session.Quality.Qn, Desc: session.Quality.Desc}
@@ -338,7 +349,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Recording
 	if err != nil {
 		return err
 	}
-	return r.finalizeSegments(ctx, metaPath, meta)
+	return r.finalizeSession(ctx, metaPath, meta)
 }
 
 // --- 辅助函数 ---
@@ -417,67 +428,105 @@ func nextPartNumber(dir, base string) int {
 	return maxPart + 1
 }
 
-func (r *recorderRepo) finalizeSegments(ctx context.Context, metaPath string, meta *sessionMeta) error {
+// reopenMergedSession 将已完成会话的合并产物恢复为历史分段，使同一直播
+// 场次关闭录制后再次开启时，可以继续追加而不是覆盖旧产物。
+func reopenMergedSession(dir, base string, meta *sessionMeta) error {
+	part := 1
+	for _, seg := range meta.Segments {
+		part = max(part, seg.Part)
+	}
+	videoName := fmt.Sprintf("%s_part%d.flv", base, part)
+	videoPath := filepath.Join(dir, videoName)
+	for {
+		if _, err := os.Stat(videoPath); os.IsNotExist(err) {
+			break
+		}
+		part++
+		videoName = fmt.Sprintf("%s_part%d.flv", base, part)
+		videoPath = filepath.Join(dir, videoName)
+	}
+
+	mergedVideoPath := filepath.Join(dir, meta.MergedVideo)
+	if err := os.Rename(mergedVideoPath, videoPath); err != nil {
+		return fmt.Errorf("reopen merged session: %w", err)
+	}
+
+	danmuName := ""
+	if meta.MergedDanmaku != "" {
+		danmuName = fmt.Sprintf("%s_part%d.danmu.jsonl", base, part)
+		if err := os.Rename(filepath.Join(dir, meta.MergedDanmaku), filepath.Join(dir, danmuName)); err != nil {
+			_ = os.Rename(videoPath, mergedVideoPath)
+			return fmt.Errorf("reopen merged danmaku: %w", err)
+		}
+	}
+
+	var wallStart, wallEnd, tsStart, tsEnd int64
+	for _, seg := range meta.Segments {
+		if wallStart == 0 || seg.WallStart != 0 && seg.WallStart < wallStart {
+			wallStart = seg.WallStart
+		}
+		wallEnd = max(wallEnd, seg.WallEnd)
+		if tsStart == 0 || seg.TsStart < tsStart {
+			tsStart = seg.TsStart
+		}
+		tsEnd = max(tsEnd, seg.TsEnd)
+	}
+	fi, err := os.Stat(videoPath)
+	if err != nil {
+		return err
+	}
+	meta.Segments = []segmentMeta{{
+		Part: part, Video: videoName, FLVKept: true, Danmaku: danmuName,
+		WallStart: wallStart, WallEnd: wallEnd, TsStart: tsStart, TsEnd: tsEnd, Bytes: fi.Size(),
+	}}
+	meta.MergedVideo = ""
+	meta.MergedDanmaku = ""
+	meta.EndTime = 0
+	return nil
+}
+
+// finalizeSession 执行会话收尾：把全部分段合并为单个文件。合并失败不向
+// 上返回错误，而是记录在 meta.json（状态 partial、源分段保留），由
+// 下次启动的 RecoverPending 重试；只有合并产物验证通过后才删除源分段。
+func (r *recorderRepo) finalizeSession(ctx context.Context, metaPath string, meta *sessionMeta) error {
 	dir := filepath.Dir(metaPath)
-	allOK := true
+
+	if !r.d.mergeEnabled {
+		for i := range meta.Segments {
+			meta.Segments[i].FLVKept = true
+		}
+		meta.Status = metaStatusDone
+		return r.persistMeta(metaPath, meta)
+	}
+
+	base := sessionBaseFromMetaPath(metaPath)
+	videoName, danmuName, err := mergeSessionFiles(ctx, dir, base, meta.Segments)
+	if err != nil {
+		for i := range meta.Segments {
+			meta.Segments[i].FLVKept = true
+		}
+		meta.Status = metaStatusPartial
+		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: "merge", Msg: err.Error()})
+		log.Error("merge failed, keeping segments", "dir", dir, "err", err)
+		return r.persistMeta(metaPath, meta)
+	}
+
+	meta.MergedVideo = videoName
+	meta.MergedDanmaku = danmuName
 	for i := range meta.Segments {
 		seg := &meta.Segments[i]
-		if seg.RemuxStatus == remuxStatusOK {
-			continue
+		_ = os.Remove(filepath.Join(dir, seg.Video))
+		if seg.Danmaku != "" {
+			_ = os.Remove(filepath.Join(dir, seg.Danmaku))
 		}
-		if !r.d.remuxEnabled {
-			seg.RemuxStatus = remuxStatusOK
-			seg.FLVKept = true
-			r.persistMeta(metaPath, meta)
-			continue
-		}
-		flvPath := filepath.Join(dir, seg.Video)
-		mp4Name := strings.TrimSuffix(seg.Video, ".flv") + ".mp4"
-		mp4Path := filepath.Join(dir, mp4Name)
-
-		if _, err := os.Stat(flvPath); err != nil {
-			if _, merr := os.Stat(mp4Path); merr == nil {
-				seg.RemuxStatus = remuxStatusOK
-				seg.Video = mp4Name
-				seg.FLVKept = false
-			} else {
-				seg.RemuxStatus = remuxStatusFailed
-				seg.RemuxError = "source flv missing"
-				allOK = false
-			}
-			r.persistMeta(metaPath, meta)
-			continue
-		}
-
-		if err := remuxWithRetry(ctx, r.d.ffmpegPath, flvPath, mp4Path, meta.Title, meta.RoomName, meta.LiveStartTime); err != nil {
-			seg.RemuxStatus = remuxStatusFailed
-			seg.RemuxError = err.Error()
-			seg.FLVKept = true
-			allOK = false
-			log.Error("remux failed, keeping flv", "file", flvPath, "err", err)
-		} else if fi, serr := os.Stat(mp4Path); serr != nil || fi.Size() == 0 {
-			seg.RemuxStatus = remuxStatusFailed
-			seg.RemuxError = "remux output missing or empty"
-			seg.FLVKept = true
-			allOK = false
-		} else {
-			_ = os.Remove(flvPath)
-			seg.RemuxStatus = remuxStatusOK
-			seg.Video = mp4Name
-			seg.FLVKept = false
-		}
-		r.persistMeta(metaPath, meta)
+		seg.FLVKept = false
 	}
-	if allOK {
-		meta.Status = metaStatusDone
-	} else {
-		meta.Status = metaStatusPartial
-	}
+	meta.Status = metaStatusDone
 	return r.persistMeta(metaPath, meta)
 }
 
 // RecoverPending 扫描录制根目录下的所有 meta.json，完成上次运行遗留
-// 的转封装工作。
+// 的合并工作。
 func (r *recorderRepo) RecoverPending(ctx context.Context) error {
 	pattern := filepath.Join(r.recordRoot, "*", "*", "*.meta.json")
 	paths, err := filepath.Glob(pattern)
@@ -496,23 +545,29 @@ func (r *recorderRepo) RecoverPending(ctx context.Context) error {
 			continue
 		}
 		switch meta.Status {
-		case metaStatusRemuxing, metaStatusRecording:
+		case metaStatusMerging, metaStatusRecording:
 			log.Info("recovering unfinished session", "path", path, "status", meta.Status)
-			meta.Status = metaStatusRemuxing
+			meta.Status = metaStatusMerging
 			if meta.EndTime == 0 {
 				meta.EndTime = time.Now().Unix()
 			}
 			r.persistMeta(path, meta)
-			if err := r.finalizeSegments(ctx, path, meta); err != nil {
+			if err := r.finalizeSession(ctx, path, meta); err != nil {
 				log.Warn("recover: finalize failed", "path", path, "err", err)
 			}
-		case metaStatusPartial, metaStatusDone:
-			if hasRetryableSegments(meta) {
-				log.Info("retrying failed segments", "path", path)
-				if err := r.finalizeSegments(ctx, path, meta); err != nil {
+		case metaStatusPartial:
+			// 合并失败且源分段仍在磁盘上才值得重试；源文件缺失
+			//（如旧版本遗留的转封装产物）时原样保留。
+			if allSegmentSourcesExist(filepath.Dir(path), meta.Segments) {
+				log.Info("retrying failed merge", "path", path)
+				if err := r.finalizeSession(ctx, path, meta); err != nil {
 					log.Warn("recover: finalize failed", "path", path, "err", err)
 				}
 			}
+		case metaStatusDone:
+			// 无需处理。
+		default:
+			log.Warn("recover: unknown session status, skipping", "path", path, "status", meta.Status)
 		}
 	}
 	return nil

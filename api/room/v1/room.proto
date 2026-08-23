@@ -68,10 +68,13 @@ enum RecordStatus {
   RECORD_STATUS_IDLE = 1;
   // 正在录制直播流。
   RECORD_STATUS_RECORDING = 2;
-  // 录制结束，正在合并文件。
+  // 已废弃：历史遗留值（当时的收尾是 ffmpeg 转封装）。保留以避免破坏性
+  // 变更，新流程使用 RECORD_STATUS_MERGING。
   RECORD_STATUS_REMUXING = 3;
   // 录制任务发生错误。
   RECORD_STATUS_ERROR = 4;
+  // 录制结束，正在合并分段文件。
+  RECORD_STATUS_MERGING = 5;
 }
 
 message Room {

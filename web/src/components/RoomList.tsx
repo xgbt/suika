@@ -45,6 +45,7 @@ const RECORD_STATUS_MAP: Record<RecordStatus, React.ReactNode> = {
   [RecordStatus.RECORD_STATUS_RECORDING]: <span className="status-pill status-pill-recording">录制中</span>,
   [RecordStatus.RECORD_STATUS_REMUXING]: <Badge status="processing" color="blue" text={<Text type="secondary">合并中</Text>} />,
   [RecordStatus.RECORD_STATUS_ERROR]: <Tag color="error">错误</Tag>,
+  [RecordStatus.RECORD_STATUS_MERGING]: <Badge status="processing" color="blue" text={<Text type="secondary">合并中</Text>} />,
 };
 
 const SPEED_HISTORY_POINTS = 24;

@@ -28,7 +28,7 @@ type RecordStatus int
 const (
 	RecordStatusIdle      RecordStatus = iota // 空闲
 	RecordStatusRecording                     // 正在录制
-	RecordStatusRemuxing                      // 正在转封装
+	RecordStatusMerging                       // 正在合并分段
 	RecordStatusError                         // 出错
 )
 

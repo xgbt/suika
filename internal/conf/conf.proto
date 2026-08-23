@@ -25,13 +25,14 @@ message Recorder {
   string record_root = 3;
   // Maximum rooms recorded concurrently; 0 means unlimited.
   int32 max_concurrent = 7;
-  // Remux finished segments from FLV to MP4 via ffmpeg. Optional so an
-  // explicit false (e.g. ffmpeg-less machines) is distinguishable from
-  // unset (unset defaults to true).
-  optional bool remux_enabled = 8;
+  // Merge the recorded FLV segments of a finished session into a single
+  // FLV file (pure Go, no external tools). Optional so an explicit false
+  // (keep the separate segments) is distinguishable from unset (unset
+  // defaults to true).
+  optional bool merge_enabled = 8;
   reserved 1, 4, 5, 6, 9, 10;
   reserved "fallback_poll_interval", "quality_qn", "segment_minutes",
-      "danmaku", "reconnect";
+      "danmaku", "reconnect", "remux_enabled";
 }
 
 message Server {

@@ -156,8 +156,8 @@ func toRoomDTO(rt *biz.RoomRuntime) *v1.Room {
 	switch rt.RecordStatus {
 	case biz.RecordStatusRecording:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_RECORDING
-	case biz.RecordStatusRemuxing:
-		recordStatus = v1.RecordStatus_RECORD_STATUS_REMUXING
+	case biz.RecordStatusMerging:
+		recordStatus = v1.RecordStatus_RECORD_STATUS_MERGING
 	case biz.RecordStatusError:
 		recordStatus = v1.RecordStatus_RECORD_STATUS_ERROR
 	default:

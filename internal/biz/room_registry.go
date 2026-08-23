@@ -216,9 +216,9 @@ func (reg *RoomRegistry) SetStreamQuality(roomID int64, quality StreamQuality) {
 	reg.setState(roomID, func(st *roomState) { st.quality = quality })
 }
 
-// SetRemuxing 将房间会话标记为收尾中（正在转封装）。
-func (reg *RoomRegistry) SetRemuxing(roomID int64) {
-	reg.setState(roomID, func(st *roomState) { st.recordStatus = RecordStatusRemuxing })
+// SetMerging 将房间会话标记为收尾中（正在合并分段）。
+func (reg *RoomRegistry) SetMerging(roomID int64) {
+	reg.setState(roomID, func(st *roomState) { st.recordStatus = RecordStatusMerging })
 }
 
 // FailRecording 将房间会话标记为失败并记录错误。

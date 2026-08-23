@@ -27,7 +27,7 @@ import (
 const (
 	// danmakuEventBuffer 是弹幕事件通道（events）的缓冲容量。
 	// 缓冲满时新事件直接丢弃（见 emit），因此容量要足够大，
-	// 能吸收录制端短暂变慢（如切分段、remux）时的事件峰值。
+	// 能吸收录制端短暂变慢（如切分段、收尾合并）时的事件峰值。
 	danmakuEventBuffer = 4096
 
 	// danmakuRoomStateUpdateBuffer 是房间状态通道（roomStateUpdates）的缓冲容量。

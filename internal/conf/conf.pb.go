@@ -100,10 +100,11 @@ type Recorder struct {
 	RecordRoot string `protobuf:"bytes,3,opt,name=record_root,json=recordRoot,proto3" json:"record_root,omitempty"`
 	// Maximum rooms recorded concurrently; 0 means unlimited.
 	MaxConcurrent int32 `protobuf:"varint,7,opt,name=max_concurrent,json=maxConcurrent,proto3" json:"max_concurrent,omitempty"`
-	// Remux finished segments from FLV to MP4 via ffmpeg. Optional so an
-	// explicit false (e.g. ffmpeg-less machines) is distinguishable from
-	// unset (unset defaults to true).
-	RemuxEnabled  *bool `protobuf:"varint,8,opt,name=remux_enabled,json=remuxEnabled,proto3,oneof" json:"remux_enabled,omitempty"`
+	// Merge the recorded FLV segments of a finished session into a single
+	// FLV file (pure Go, no external tools). Optional so an explicit false
+	// (keep the separate segments) is distinguishable from unset (unset
+	// defaults to true).
+	MergeEnabled  *bool `protobuf:"varint,8,opt,name=merge_enabled,json=mergeEnabled,proto3,oneof" json:"merge_enabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -160,9 +161,9 @@ func (x *Recorder) GetMaxConcurrent() int32 {
 	return 0
 }
 
-func (x *Recorder) GetRemuxEnabled() bool {
-	if x != nil && x.RemuxEnabled != nil {
-		return *x.RemuxEnabled
+func (x *Recorder) GetMergeEnabled() bool {
+	if x != nil && x.MergeEnabled != nil {
+		return *x.MergeEnabled
 	}
 	return false
 }
@@ -404,17 +405,17 @@ const file_conf_conf_proto_rawDesc = "" +
 	"\tBootstrap\x12*\n" +
 	"\x06server\x18\x01 \x01(\v2\x12.kratos.api.ServerR\x06server\x12$\n" +
 	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\x120\n" +
-	"\brecorder\x18\x03 \x01(\v2\x14.kratos.api.RecorderR\brecorder\"\x97\x02\n" +
+	"\brecorder\x18\x03 \x01(\v2\x14.kratos.api.RecorderR\brecorder\"\xa6\x02\n" +
 	"\bRecorder\x12\x1a\n" +
 	"\x06cookie\x18\x02 \x01(\tB\x02\x18\x01R\x06cookie\x12\x1f\n" +
 	"\vrecord_root\x18\x03 \x01(\tR\n" +
 	"recordRoot\x12%\n" +
 	"\x0emax_concurrent\x18\a \x01(\x05R\rmaxConcurrent\x12(\n" +
-	"\rremux_enabled\x18\b \x01(\bH\x00R\fremuxEnabled\x88\x01\x01B\x10\n" +
-	"\x0e_remux_enabledJ\x04\b\x01\x10\x02J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\t\x10\n" +
+	"\rmerge_enabled\x18\b \x01(\bH\x00R\fmergeEnabled\x88\x01\x01B\x10\n" +
+	"\x0e_merge_enabledJ\x04\b\x01\x10\x02J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
 	"\x10\vR\x16fallback_poll_intervalR\n" +
-	"quality_qnR\x0fsegment_minutesR\adanmakuR\treconnect\"\xd6\x01\n" +
+	"quality_qnR\x0fsegment_minutesR\adanmakuR\treconnectR\rremux_enabled\"\xd6\x01\n" +
 	"\x06Server\x12+\n" +
 	"\x04http\x18\x01 \x01(\v2\x17.kratos.api.Server.HTTPR\x04http\x12+\n" +
 	"\x04grpc\x18\x02 \x01(\v2\x17.kratos.api.Server.GRPCR\x04grpc\x1a8\n" +

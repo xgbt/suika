@@ -4,7 +4,6 @@ import (
 	stderrors "errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -31,8 +30,7 @@ type Data struct {
 	bili *bili.Client
 
 	// 录制器配置（已应用默认值；proto 零值与未设置无法区分）。
-	remuxEnabled bool
-	ffmpegPath   string
+	mergeEnabled bool
 }
 
 // NewLiveClient 提供 biz.LiveClient；B 站直播流量全部实现在 bili 子包。
@@ -45,8 +43,7 @@ func NewPassportClient(d *Data) biz.PassportClient { return bili.NewPassportClie
 // 登录态由 bili 客户端持有，这里只是读快照的委托。
 func (d *Data) Cookie() string { return d.bili.Cookie() }
 
-// NewData 构建共享客户端。开启转封装但找不到 ffmpeg 时快速失败
-// （设计如此：启动期探测）。
+// NewData 构建共享客户端。
 func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	db, err := openDatabase(c.GetDatabase())
 	if err != nil {
@@ -65,21 +62,11 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	d := &Data{
 		db:           db,
 		bili:         bili.NewClient(cookie),
-		remuxEnabled: true,
+		mergeEnabled: true,
 	}
 
-	if rc != nil && rc.RemuxEnabled != nil {
-		d.remuxEnabled = rc.GetRemuxEnabled()
-	}
-	if rc != nil && d.remuxEnabled {
-		ffmpegPath, err := exec.LookPath("ffmpeg")
-		if err != nil {
-			return nil, nil, fmt.Errorf("recorder: remux enabled but ffmpeg not found in PATH: %w", err)
-		}
-		d.ffmpegPath = ffmpegPath
-		if _, err := exec.LookPath("ffprobe"); err != nil {
-			log.Warn("ffprobe not found; remux verification limited to output existence")
-		}
+	if rc != nil && rc.MergeEnabled != nil {
+		d.mergeEnabled = rc.GetMergeEnabled()
 	}
 	if rc != nil && rc.GetCookie() != "" {
 		log.Warn("recorder: config field recorder.cookie is deprecated and ignored; the credential is managed in the database via web QR login")

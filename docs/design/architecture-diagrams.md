@@ -36,8 +36,7 @@ flowchart TB
     end
 
     DB[("SQLite 文件 ./data/suika.db<br/>rooms + credentials（登录凭据单例）· GORM 单连接")]
-    REC[("录制目录 ./recordings/**<br/>FLV/MP4 + 弹幕 JSONL + meta.json")]
-    FF["ffmpeg 子进程（可选）<br/>remux_enabled=true 时 FLV→MP4<br/>启动期探测，缺失则启动失败"]
+    REC[("录制目录 ./recordings/**<br/>FLV + 弹幕 JSONL + meta.json")]
 
     subgraph BILI["B 站平台（外部依赖：直播流量经 LiveClient，登录/账号经 PassportClient）"]
         API["api.live.bilibili.com<br/>房间信息 getInfoByRoom<br/>流地址 getRoomPlayInfo<br/>弹幕 token getDanmuInfo/getConf<br/>passport.bilibili.com QR 登录/nav"]
@@ -51,7 +50,6 @@ flowchart TB
     HS -- "QR 登录 / 账号核验（passport 接口，不走风控）" --> API
     DM -- "平台身份信息回写（rooms 表）" --> DB
     DM -- "会话目录 / 分段 / meta.json 读写" --> REC
-    DM -- "exec 转封装" --> FF
     DM -- "HTTPS（WBI 签名 + cookie + buvid，riskGuard 统一风控）" --> API
     DM -- "HTTPS 长连接拉流（固定请求 10000 原画）" --> CDN
     DM -- "WSS：弹幕事件 + 房间状态事件（开播主探测通道）" --> DMWS
@@ -104,7 +102,7 @@ flowchart TB
 
     subgraph DATA["internal/data —— PO 与全部 IO"]
         RR["roomRepo · roomPO → rooms 表<br/>toRoomPO / toRoomDO"]
-        RREPO["recorderRepo<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · remux"]
+        RREPO["recorderRepo<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · 收尾合并"]
         LC["liveClient<br/>bili/ 子包：live · danmaku · wbi · buvid · risk"]
         CR["credentialRepo<br/>credentials 表单例行 + cookie 热替换"]
         PC["passportClient<br/>QR 登录 · nav 核验（不走 riskGuard）"]
@@ -132,7 +130,7 @@ flowchart TB
     IF6 -. 实现 .-> PC
     RR --> SQLITE[("SQLite / GORM")]
     CR --> SQLITE
-    RREPO --> FS[("recordings/ 文件目录 + ffmpeg")]
+    RREPO --> FS[("recordings/ 文件目录")]
     LC --> BILI[("B 站 API / CDN / 弹幕 WS")]
     PC --> BILI
 ```
@@ -241,7 +239,7 @@ sequenceDiagram
 
 ### 3.3 录制会话：拉流、断流决策树、收尾
 
-会话协程独占完整生命周期：槽位 → 准备 → 录制循环 → 收尾/转封装。录制状态写入 `RoomRegistry`（RECORDING → REMUXING → IDLE/ERROR，见 §4.1）。
+会话协程独占完整生命周期：槽位 → 准备 → 录制循环 → 收尾/合并。录制状态写入 `RoomRegistry`（RECORDING → MERGING → IDLE/ERROR，见 §4.1）。
 
 ```mermaid
 sequenceDiagram
@@ -252,7 +250,6 @@ sequenceDiagram
     participant LC as LiveClient
     participant CDN as 直播 CDN
     participant FS as recordings/ 文件目录
-    participant FF as ffmpeg
 
     Sess->>Sess: acquireSlot（max_concurrent 配置上限，0=不限；满则阻塞等待）
     Sess->>G: StartRecording(roomID)
@@ -278,12 +275,11 @@ sequenceDiagram
         end
     end
 
-    Sess->>G: SetRemuxing(roomID)
+    Sess->>G: SetMerging(roomID)
     Sess->>RR: FinishSession（脱离运行 ctx，30s 宽限）
-    RR->>FS: meta.json status=remuxing，记 end_time
-    RR->>FF: 逐分段 FLV→MP4（remux_enabled=true；失败保留 flv）
-    FF-->>RR: MP4 产物（校验非空）
-    RR->>FS: meta.json status=done（全成功）/ partial（有失败）
+    RR->>FS: meta.json status=merging，记 end_time
+    RR->>FS: 全部分段合并为单个 FLV、弹幕拼接（merge_enabled=true；<br/>临时文件+字节数校验+原子改名；成功后删源分段，失败保留源并置 partial）
+    RR->>FS: meta.json status=done（合并成功）/ partial（合并失败）
     Sess->>G: FinishRecording(roomID)
     Sess->>Sess: releaseSlot
 ```
@@ -332,10 +328,10 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> IDLE : 房间登记进注册表
     IDLE --> RECORDING : StartRecording（会话协程取得槽位后）
-    RECORDING --> REMUXING : SetRemuxing（录制循环结束）
-    REMUXING --> IDLE : FinishRecording（FinishSession 成功）
+    RECORDING --> MERGING : SetMerging（录制循环结束）
+    MERGING --> IDLE : FinishRecording（FinishSession 成功）
     RECORDING --> ERROR : FailRecording（PrepareSession 失败）
-    REMUXING --> ERROR : FailRecording（FinishSession 失败）
+    MERGING --> ERROR : FailRecording（FinishSession 失败）
     ERROR --> RECORDING : 下一次会话启动（StartRecording 覆盖）
 ```
 
@@ -361,13 +357,13 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> recording : PrepareSession（开播建目录时）
-    recording --> remuxing : FinishSession；或重启恢复（RecoverPending）
-    remuxing --> done : 所有分段转封装成功
-    remuxing --> partial : 至少一个分段失败（保留 flv）
-    partial --> done : RecoverPending 重试 flv_kept 的失败分段
+    recording --> merging : FinishSession；或重启恢复（RecoverPending）
+    merging --> done : 分段合并成功（验证后删源）
+    merging --> partial : 合并失败（保留源分段）
+    partial --> done : RecoverPending 重试（源分段齐全时）
 ```
 
-分段级 `remux_status`：`pending → ok / failed`（失败且 `flv_kept=true` 才可在下次启动时重试）。
+分段级 `flv_kept` 标记源文件是否保留；合并产物记在会话级 `merged_video` / `merged_danmaku`。旧版本的 `remuxing` 等未知状态在恢复时跳过（不兼容旧数据）。
 
 ---
 
@@ -415,19 +411,20 @@ erDiagram
         int64 end_time "收尾时间"
         int32 quality_qn "实际授予的清晰度档位"
         string quality_desc "清晰度描述（g_qn_desc 或内置表）"
-        string status "recording / remuxing / done / partial"
+        string status "recording / merging / done / partial"
+        string merged_video "合并产物文件名（可空）"
+        string merged_danmaku "合并弹幕文件名（可空）"
     }
 
     SEGMENT {
         int part "分段编号，会话内单调递增（扫描目录推导）"
-        string video "flv 或 mp4 文件名"
-        bool flv_kept "转封装失败时保留源 flv"
+        string video "flv 文件名"
+        bool flv_kept "合并失败或禁用合并时保留源文件"
         int64 wall_start "墙钟开始（unix）"
         int64 wall_end "墙钟结束（unix）"
         int64 ts_start "FLV 时间戳起点（ms）"
         int64 ts_end "FLV 时间戳终点（ms）"
         int64 bytes "分段字节数"
-        string remux_status "pending / ok / failed"
     }
 
     DANMAKU {

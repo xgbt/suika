@@ -15,6 +15,6 @@ recorder:
   cookie: ""
   record_root: ./recordings
   max_concurrent: 10
-  # 本机未安装 ffmpeg 时必须保持 false；装了 ffmpeg 后再改 true。
-  # 程序会在启动时探测 ffmpeg，开启转封装但 ffmpeg 缺失会直接启动失败。
-  remux_enabled: false
+  # 收尾时把一场会话的 FLV 分段合并为单个文件（纯 Go 实现，无需任何
+  # 外部工具）；设为 false 则保留散装分段。
+  merge_enabled: true

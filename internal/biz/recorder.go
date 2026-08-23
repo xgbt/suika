@@ -139,9 +139,9 @@ type RecorderRepo interface {
 	PrepareSession(ctx context.Context, session *RecordingSession) error
 	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入对应的 JSONL 文件，直到流结束或 ctx 被取消。
 	RecordSession(ctx context.Context, session *RecordingSession, stream *LiveStream, events <-chan *DanmakuEvent) (*RecordingResult, error)
-	// FinishSession 收尾 meta.json 并对已录分段执行转封装。
+	// FinishSession 收尾 meta.json 并合并已录分段。
 	FinishSession(ctx context.Context, session *RecordingSession) error
-	// RecoverPending 完成上次运行遗留的转封装工作。
+	// RecoverPending 完成上次运行遗留的合并工作。
 	RecoverPending(ctx context.Context) error
 }
 
@@ -201,9 +201,9 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 // 协程，由其决定开始或停止录制。
 func (uc *RecorderUsecase) Run(ctx context.Context) error {
 
-	// 收尾上次运行遗留的转封装工作，若失败则记录错误并继续运行。
+	// 收尾上次运行遗留的合并工作，若失败则记录错误并继续运行。
 	if err := uc.repo.RecoverPending(ctx); err != nil {
-		log.Error("recorder: recover pending remux", "err", err)
+		log.Error("recorder: recover pending merge", "err", err)
 	}
 
 	// 订阅 Room 注册表变更通知，返回一个通道和取消函数。
@@ -379,7 +379,7 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 
 		select {
 		// ctx 取消：优雅结束监控；若有活跃会话，先取消并等待其自然
-		// 结束，避免中途取消导致转封装失败。
+		// 结束，避免中途取消导致合并失败。
 		case <-ctx.Done():
 			if active != nil {
 				active.cancel()
@@ -436,7 +436,7 @@ func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info
 	return handle
 }
 
-// runSession 端到端负责一次会话：槽位、准备、录制循环、收尾/转封装。
+// runSession 端到端负责一次会话：槽位、准备、录制循环、收尾/合并。
 func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) {
 
 	// 0. 尝试获取录制槽位
@@ -463,9 +463,9 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	// *2. 录制循环：持续拉流直到连接结束，然后重新探测直播状态，要么重连（新分段），要么结束会话并保留已录内容。
 	uc.recordLoop(ctx, roomID, session, events)
 
-	// 3. 收尾脱离（可能已取消的）运行 context，保证关停期间转封装标记
+	// 3. 收尾脱离（可能已取消的）运行 context，保证关停期间合并标记
 	// 仍能落盘；遗留部分由下次启动时的 RecoverPending 接管。
-	uc.registry.SetRemuxing(roomID)
+	uc.registry.SetMerging(roomID)
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishGracePeriod)
 	defer cancel()
 	if err := uc.repo.FinishSession(fctx, session); err != nil {
