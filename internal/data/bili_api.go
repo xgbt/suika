@@ -32,6 +32,10 @@ var (
 	errHTTPRiskControl = stderrors.New("bilibili http-layer risk control")
 )
 
+// sourceQualityQN 是请求的直播流清晰度：10000 = 原画。不做成配置项：
+// 请求不到原画时平台会自动授予次高档位，没有理由请求更低的档。
+const sourceQualityQN = 10000
+
 // qnNames 将清晰度编号映射为展示名称（API 未返回 g_qn_desc 时兜底）。
 var qnNames = map[int32]string{
 	20000: "4K",
@@ -192,7 +196,7 @@ func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.Li
 func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string, biz.StreamQuality, error) {
 	endpoint := liveAPIBase + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
 		strconv.FormatInt(roomID, 10) +
-		"&protocol=0,1&format=0,1,2&codec=0,1&qn=" + strconv.Itoa(lc.data.qualityQN) + "&platform=web"
+		"&protocol=0,1&format=0,1,2&codec=0,1&qn=" + strconv.Itoa(sourceQualityQN) + "&platform=web"
 
 	var resp playInfoResponse
 	attempt := func(ctx context.Context) (int, error) {
@@ -207,7 +211,7 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 		return "", biz.StreamQuality{}, fmt.Errorf("getRoomPlayInfo code=%d message=%s", code, resp.Message)
 	}
 
-	return pickFLVStream(resp.Data.PlayURLInfo.PlayURL, lc.data.qualityQN, roomID)
+	return pickFLVStream(resp.Data.PlayURLInfo.PlayURL, sourceQualityQN, roomID)
 }
 
 // pickFLVStream 从播放信息中挑选最优 FLV 流地址与清晰度：AVC 编码优先，
@@ -266,7 +270,6 @@ func (lc *liveClient) DanmakuConn(ctx context.Context, roomID int64) (biz.Danmak
 		events:           make(chan *biz.DanmakuEvent, danmakuEventBuffer),
 		roomStateUpdates: make(chan *biz.RoomInfo, danmakuRoomStateUpdateBuffer),
 		closed:           make(chan struct{}),
-		recordInteract:   lc.data.recordInteractWord,
 	}
 	go conn.run(ctx)
 	return conn, nil

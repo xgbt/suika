@@ -90,11 +90,10 @@ internal/biz/
 internal/data/
   data.go                Data：db（gorm sqlite，单连接）/ apiClient(15s 超时) /
                          streamClient(无超时) / cookie / WBI signer / buvid store /
-                         解析后的 recorder 配置项（qualityQN / recordInteractWord /
-                         remuxEnabled / ffmpegPath）
+                         解析后的 recorder 配置项（remuxEnabled / ffmpegPath）
                          NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error)：
-                         打开 sqlite（openDatabase，只认 driver=sqlite，source 路径
-                         校验见 §7.1）→ AutoMigrate rooms 表 → 启动探测 ffmpeg
+                         打开 sqlite（openDatabase，source 路径校验见 §7.1）→
+                         AutoMigrate rooms 表 → 启动探测 ffmpeg
                          （remux 开启而缺失 → 启动失败）；cleanup 关闭数据库连接
   room.go                roomPO（rooms 表：streamer_name / room_title 列）/
                          toRoomPO(DO→PO) / toRoomDO(PO→DO)；
@@ -370,14 +369,15 @@ SIGTERM → kratos 触发各 server.Stop
      未录时收到"未开播"只取消不存在的场次（无副作用）。
 5. WS 保活：30s 心跳（op2）；读超时 90s（约 3 个心跳周期）杀半开连接，
    进入重连；重连指数退避 2s → 30s 封顶。
-6. 兜底轮询：每 `fallback_poll_interval`（默认 600s）±10% 抖动执行一次
+6. 兜底轮询：每 600s ±10% 抖动执行一次（间隔为代码常量）
    `GetRoomInfo`，发现"在播但无活动场次"立即启动录制，"未开播但有活动
    场次"则取消场次。轮询请求走风控层（§5）。
 
 ### 4.2 拉流
 
-- `getRoomPlayInfo`：`protocol=0,1 & format=0,1,2 & codec=0,1 & qn=<quality_qn>
-  & platform=web`。候选展开 stream×format×codec×url_info，过滤
+- `getRoomPlayInfo`：`protocol=0,1 & format=0,1,2 & codec=0,1 & qn=10000
+  & platform=web`（qn 固定请求原画；请求不到时平台自动授予次高档位）。
+  候选展开 stream×format×codec×url_info，过滤
   `base_url` 含 `.flv` 的候选（录制必须 FLV），avc 优先级 100、其他 90，
   取最高优先级 URL = `host + base_url + extra`。
 - 返回清晰度不足请求值时**接受最高可得档位**（自动降档，记 warn 日志，
@@ -401,14 +401,14 @@ HTTP body（原始字节，LiveClient 打开）
       ├─ headerCache 缓存 onMetaData / AVC sequence header / AAC sequence header
       ├─ 首个 tag 到达时 openNewSegment：part 号 = 目录扫描续号，
       │     新 part = FLV 文件头 + 缓存的三类头 tag + 后续 tag（可独立播放）
-      ├─ 切段判定 shouldSplit：段时长达 segment_minutes（默认 120，0=不切）
+      ├─ 切段判定 shouldSplit：段时长达 120 分钟（代码常量）
       │     且当前 tag 是视频关键帧；或超出 splitOverrun = 15s 强制切
       │     （时间戳保持流内原值，不重置；startTs = 该 part 首个正文 tag）
       ├─ 缓存时机：开/切段判定之后才更新缓存——触发新段的 tag 不会被
       │     重复注入（否则 openSegment 注入一次、泵送又写一次）
       ├─ 弹幕事件同步写当前 part 的 JSONL（无活动段时丢弃）
-      ├─ 健康巡检：每 health_check_interval（默认 60s）检查累计字节，
-      │     连续 health_check_fail_rounds（默认 3）轮无增长 → 中止本次连接
+      ├─ 健康巡检：每 30s 检查累计字节，
+      │     连续 3 轮无增长 → 中止本次连接
       │     （返回普通错误 → 走决策树普通重连分支）
       └─ 统计：pumpStats（atomic 文件路径/字节数），字节数跨重连续泵累加
           （baseBytes + 本次泵送量；PrepareSession 在新场次开始时清零）
@@ -434,11 +434,10 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
 | `SUPER_CHAT_MESSAGE` | `superchat` | price / text / duration |
 | `GUARD_BUY` | `guard` | level / num |
 | `ENTRY_EFFECT` | `entry_effect` | text（进场特效文案） |
-| `INTERACT_WORD` | `interact_word` | uid / uname（默认关闭） |
 
-`INTERACT_WORD` 与点赞类量级约为弹幕 10 倍、切片价值≈0，默认不录，
-开关为 `recorder.danmaku.record_interact_word`。过滤发生在 data 的
-`danmakuConn.dispatch`，biz 与 repo 只见已过滤事件。
+`INTERACT_WORD`（进场词）与点赞类量级约为弹幕 10 倍、切片价值≈0，
+不录制：`danmakuConn.dispatch` 直接忽略该命令，biz 与 repo 只见已过滤
+事件。
 
 投递语义：Events 通道缓冲 4096、RoomStateUpdates 缓冲 16，`emit` 均
 非阻塞——Events 缓冲满（只可能发生在无场次消费时）直接丢弃，永不阻塞
@@ -456,7 +455,7 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
   │       │   不记错误：监控已因下播事件取消了本场次）
   │       ├─ 已下播 → 正常收尾（主播刚下播、流已被撤属正常结束，
   │       │   不记 lastError、不按错误展示）
-  │       └─ 仍在播 → 按 cdn_transient_budget 指数退避重试；
+  │       └─ 仍在播 → 按 cdn_transient_budget（代码常量 5）指数退避重试；
   │           耗尽 → 保留已录内容收尾
   └─ 成功 → session.Quality = 实际档位 → repo.RecordSession 泵送
 泵送返回（EOF / 读错误 / 巡检中止 / 写失败 / ctx 取消）
@@ -467,11 +466,11 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
       └─ 仍在播：
           ├─ err 是 ErrStreamTransient（CDN 瞬态：打开失败/HTTP 非 2xx/
           │   FLV 头解析失败/读错误）
-          │   ├─ cdn_transient_budget（默认 5）未耗尽 →
+          │   ├─ cdn_transient_budget（5）未耗尽 →
           │   │   指数退避 min(2s << attempt, 60s) → 下一轮
           │   └─ 耗尽 → 保留已录内容收尾（记成功，非失败）
-          ├─ auto_reconnect = false → 收尾
-          ├─ 重连次数 < max_reconnect（默认 3）→ 等 reconnect_delay（默认 10s）→ 下一轮
+          ├─ auto_reconnect = false → 收尾（代码内恒为 true）
+          ├─ 重连次数 < max_reconnect（3）→ 等 reconnect_delay（10s）→ 下一轮
           └─ 配额耗尽 → 保留已录内容收尾
 ```
 
@@ -630,47 +629,37 @@ message Bootstrap {
   Recorder recorder = 3;
 }
 
+message Server {
+  message HTTP { string addr = 2; }   // 未设置走 kratos 默认
+  message GRPC { string addr = 2; }
+  HTTP http = 1;
+  GRPC grpc = 2;
+}
+
 message Data {
   message Database {
-    string driver = 1;   // 只接受 "sqlite"，其他值启动失败
     string source = 2;   // sqlite 文件路径；父目录缺失时自动创建
   }
-  message Redis { ... }  // 模板遗留占位，本服务未使用
   Database database = 1;
-  Redis redis = 2;
 }
 
 message Recorder {
   // 监控的房间在 sqlite 的 rooms 表里，经 Room CRUD API 管理，
   // 配置不持有房间（字段号 1 空置保留）。
-  message DanmakuOptions {
-    bool record_interact_word = 1;  // 默认 false
-  }
-  message ReconnectOptions {
-    optional bool auto_reconnect = 1;                      // 未设置默认 true
-    int32 max_reconnect = 2;                               // 0 → 默认 3
-    google.protobuf.Duration reconnect_delay = 3;          // 未设置默认 10s
-    int32 cdn_transient_budget = 4;                        // 0 → 默认 5
-    google.protobuf.Duration health_check_interval = 5;    // 未设置默认 60s
-    int32 health_check_fail_rounds = 6;                    // 0 → 默认 3
-  }
-  string cookie = 2;                                 // 含 SESSDATA；放 credentials.yaml
-  string record_root = 3;                            // 默认 ./recordings
-  google.protobuf.Duration fallback_poll_interval = 4; // 默认 600s
-  int32 quality_qn = 5;                              // 默认 10000；不足时自动降档
-  optional int32 segment_minutes = 6;                // 未设置默认 120；显式 0 = 不切段
-  int32 max_concurrent = 7;                          // 0 = 不限
-  optional bool remux_enabled = 8;                   // 未设置默认 true；显式 false = 只录 FLV
-  DanmakuOptions danmaku = 9;
-  ReconnectOptions reconnect = 10;
+  string cookie = 2;          // 含 SESSDATA；放 credentials.yaml
+  string record_root = 3;     // 默认 ./recordings
+  int32 max_concurrent = 7;   // 0 = 不限
+  optional bool remux_enabled = 8;  // 未设置默认 true；显式 false = 只录 FLV
 }
 ```
 
-`auto_reconnect` / `segment_minutes` / `remux_enabled` 用 `optional`，
-使"显式 false/0"与"未设置"可区分（proto 标量零值歧义）。
+配置治理原则：**只保留随部署环境变化的项**（凭据、路径、端口、并发上限、
+有无 ffmpeg）。行为调优不做配置，默认值写死在代码里（§7.2）；被移除的
+字段在 proto 中 `reserved` 其字段号与名称。`remux_enabled` 用
+`optional`，使"显式 false"与"未设置"可区分（proto 标量零值歧义）。
 
-**数据库**：`openDatabase` 只接受 `driver = "sqlite"`（其他值或 source
-为空都启动失败），source 即 sqlite 文件路径（config.yaml 配
+**数据库**：只支持 sqlite（driver 不做配置），`openDatabase` 在 source
+为空时启动失败；source 即 sqlite 文件路径（config.yaml 配
 `./data/suika.db`）；gorm 连接池固定单连接，避免嵌入式库上的
 SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 
@@ -682,29 +671,39 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 时创建。开库成功后 `NewData` 立即 AutoMigrate `rooms` 表。db 文件是
 运行期数据，不进 git（`/data/` 已加入 .gitignore）。
 
-### 7.2 默认值与应用位置
+### 7.2 代码默认值与应用位置
+
+配置项只剩四个有默认值的（其余必填或由环境决定）：
 
 | 配置项 | 代码默认 | 应用位置 |
 |---|---|---|
-| fallback_poll_interval | 600s | biz.NewRecorderUsecase |
-| auto_reconnect | true | biz（optional，nil→true） |
-| max_reconnect | 3 | biz |
-| reconnect_delay | 10s | biz |
-| cdn_transient_budget | 5 | biz |
-| max_concurrent | 0（不限） | biz |
 | record_root | ./recordings | data.NewRecorderRepo |
-| segment_minutes | 120 | data.NewRecorderRepo（optional，nil→120） |
-| health_check_interval | 60s | data.NewRecorderRepo |
-| health_check_fail_rounds | 3 | data.NewRecorderRepo |
-| quality_qn | 10000 | data.NewData |
+| max_concurrent | 0（不限） | biz.NewRecorderUsecase |
 | remux_enabled | true | data.NewData（optional，nil→true） |
-| record_interact_word | false | data.NewData |
+| server http/grpc addr | kratos 内置默认 | server.NewHTTPServer / NewGRPCServer |
 
-biz 层硬编码常量（不可配）：CDN 退避基数 2s、封顶 60s，监控重建间隔
-10s，FinishSession 脱离 grace 30s，轮询抖动 ±10%。data 层硬编码：
-切段关键帧等待上限 15s，弹幕事件缓冲 4096、房态更新缓冲 16，心跳
-30s、读超时 90s，WS 重连退避 2s→30s，apiClient 超时 15s；room repo
-的 ListRooms 对 `Limit ≤ 0` 兜底 20、`Offset < 0` 报
+行为调优不做配置，全部是代码常量：
+
+| 常量 | 值 | 所在层 |
+|---|---|---|
+| 兜底轮询间隔 | 600s（±10% 抖动） | biz |
+| 自动重连 | 恒开 | biz（ReconnectPolicy） |
+| 最大重连次数 | 3 | biz |
+| 重连延迟 | 10s | biz |
+| CDN 瞬时故障重试预算 | 5 | biz |
+| CDN 退避基数 / 封顶 | 2s / 60s | biz |
+| 监控重建（重拨）间隔 | 10s | biz |
+| FinishSession 脱离 grace | 30s | biz |
+| 分段时长 | 120 分钟 | data.NewRecorderRepo |
+| 健康检查间隔 / 失败轮数 | 30s / 3 轮 | data.NewRecorderRepo |
+| 请求清晰度 | 10000（原画；不足时平台自动降档） | data（bili_api） |
+| 切段关键帧等待上限 | 15s | data |
+| 弹幕事件缓冲 / 房态更新缓冲 | 4096 / 16 | data |
+| WS 心跳 / 读超时 | 30s / 90s | data |
+| WS 重连退避 | 2s→30s | data |
+| apiClient 超时 | 15s | data |
+
+另有 room repo 的 ListRooms 对 `Limit ≤ 0` 兜底 20、`Offset < 0` 报
 ErrRoomInvalidArgument。
 
 ### 7.3 凭证
@@ -721,15 +720,14 @@ recorder:
   cookie: "SESSDATA=xxx; buvid3=xxx; ..."
 ```
 
-### 7.4 现网 config.yaml 与代码默认的差异（有意为之）
+### 7.4 现网 config.yaml 说明
 
 - 配置里没有任何房间：房间清单在 sqlite（`data.database.source`）的
   rooms 表里，经 CRUD API 管理；全新安装首次启动时 rooms 表为空，
   recorder 记 warn 空转但对后续加房保持响应，CreateRoom 加房后立即
   开始监控（§8.1）；
 - `remux_enabled: false`（开发机未装 ffmpeg；装了再改 true）；
-- `max_concurrent: 2`、`health_check_interval: 30s` 为本地调过的值；
-- `fallback_poll_interval: 600s` 与默认相同，显式写出只为注释说明；
+- `max_concurrent: 10` 按机器性能调过；
 - `cookie: ""` 显式留空，真实值只进 credentials.yaml。
 
 ---
@@ -862,7 +860,7 @@ B 站直播间、5s 自动刷新）、offset token 栈式翻页、建/编辑弹�
 | WS 假死（半开连接） | 90s 读超时强制重连；兜底轮询（600s±10%）保底发现开播 |
 | 多主播同时开播 | 并行录制；`max_concurrent` 达上限时新开播排队等待（记日志） |
 | recorder 配置缺失/rooms 表为空 | NewData/NewRecorderRepo/NewRecorderUsecase 均容忍 nil recorder conf；rooms 表空 → Run 记 warn 空转但对后续变更保持响应；经 CRUD 加房后立即开始监控（§8.1） |
-| data.database 缺失或 driver 非 sqlite | NewData 启动失败：只接受 `driver: "sqlite"` 且 source 通过路径校验（§7.1）；sqlite 打不开同样启动失败 |
+| data.database.source 缺失或非法 | NewData 启动失败：source 非空且通过路径校验（§7.1）；sqlite 打不开同样启动失败 |
 | 录制中关闭房间的录制 | 优雅停止会话：关 FLV、刷弹幕、finalize meta、remux 若开启则跑完（30s grace），监控保留；再开启录制时若在播立即恢复录制（§8.1） |
 | 录制中删除房间 | 先优雅停止会话，再停止监控、删除房间记录；已录制文件保留，迟到的注册表状态写入自动忽略 |
 | 无活动场次时弹幕到达 | Events 缓冲（4096）满即丢弃，不阻塞 WS 读循环 |

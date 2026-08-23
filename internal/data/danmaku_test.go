@@ -323,23 +323,6 @@ func TestParseEntryEffectEvent(t *testing.T) {
 	}
 }
 
-func TestParseInteractEvent(t *testing.T) {
-	raw := json.RawMessage(`{"cmd":"INTERACT_WORD","data":{"uid":11,"uname":"路过的人"}}`)
-
-	ev := parseInteractEvent(raw, receivedAt)
-	if ev == nil {
-		t.Fatal("parseInteractEvent returned nil")
-	}
-	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventInteract, Raw: raw,
-		UID: 11, Uname: "路过的人",
-	}
-	assertEventEqual(t, ev, want)
-	if parseInteractEvent(json.RawMessage(`{"data":[]}`), receivedAt) != nil {
-		t.Fatal("want nil for malformed interact payload")
-	}
-}
-
 func TestToInt64(t *testing.T) {
 	if got := toInt64(float64(42)); got != 42 {
 		t.Fatalf("toInt64(float64) = %d, want 42", got)

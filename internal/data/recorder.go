@@ -21,9 +21,9 @@ import (
 
 const (
 	defaultRecordRoot     = "./recordings"   // 默认录制目录
-	defaultSegmentMinutes = 120              // 默认分段时长（分钟），为 0 时不切分
-	defaultHealthInterval = 60 * time.Second // 默认健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
-	defaultHealthRounds   = 3                // 默认健康检查失败轮数，连续失败达到该轮数则判定录制异常
+	defaultSegmentMinutes = 120              // 分段时长（分钟）
+	defaultHealthInterval = 30 * time.Second // 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
+	defaultHealthRounds   = 3                // 健康检查失败轮数，连续失败达到该轮数则判定录制异常
 	splitOverrun          = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 	maxTitleLen           = 64               // meta.json 中 title 字段的最大长度，超过则截断
 	maxNameLen            = 32               // meta.json 中 room_name 字段的最大长度，超过则截断
@@ -55,22 +55,8 @@ func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 		healthFailRounds: defaultHealthRounds,
 		stats:            make(map[int64]*pumpStats),
 	}
-	if c == nil {
-		return r
-	}
-	if c.GetRecordRoot() != "" {
+	if c != nil && c.GetRecordRoot() != "" {
 		r.recordRoot = c.GetRecordRoot()
-	}
-	if c.SegmentMinutes != nil {
-		r.segmentDuration = time.Duration(c.GetSegmentMinutes()) * time.Minute
-	}
-	if rc := c.GetReconnect(); rc != nil {
-		if rc.GetHealthCheckInterval() != nil {
-			r.healthInterval = rc.GetHealthCheckInterval().AsDuration()
-		}
-		if rc.GetHealthCheckFailRounds() > 0 {
-			r.healthFailRounds = int(rc.GetHealthCheckFailRounds())
-		}
 	}
 	return r
 }

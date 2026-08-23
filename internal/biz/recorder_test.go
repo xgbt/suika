@@ -10,9 +10,6 @@ import (
 	"time"
 
 	"suika/internal/conf"
-
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // fakeRepo 为决策树测试模拟 RecorderRepo 行为。
@@ -104,17 +101,13 @@ func newTestUsecase(t *testing.T, repo RecorderRepo, lc LiveClient, mutate func(
 
 func newTestUsecaseWithRooms(t *testing.T, rooms map[int64]*Room, repo RecorderRepo, lc LiveClient, mutate func(*RecorderUsecase)) *RecorderUsecase {
 	t.Helper()
-	c := &conf.Recorder{
-		Reconnect: &conf.Recorder_ReconnectOptions{
-			ReconnectDelay: durationpb.New(time.Millisecond),
-		},
-	}
 	roomRepo := &fakeRoomRepo{rooms: rooms}
 	reg, err := NewRoomRegistry(roomRepo)
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
-	uc := NewRecorderUsecase(c, reg, repo, lc)
+	uc := NewRecorderUsecase(&conf.Recorder{}, reg, repo, lc)
+	uc.rec.ReconnectDelay = time.Millisecond
 	uc.cdnBackoffBase = time.Millisecond
 	uc.redialDelay = time.Millisecond
 	if mutate != nil {
@@ -390,17 +383,8 @@ func TestNewRecorderUsecaseNilConfig(t *testing.T) {
 	}
 }
 
-func TestNewRecorderUsecaseConfigOverrides(t *testing.T) {
-	c := &conf.Recorder{
-		FallbackPollInterval: durationpb.New(30 * time.Second),
-		MaxConcurrent:        2,
-		Reconnect: &conf.Recorder_ReconnectOptions{
-			AutoReconnect:      proto.Bool(false),
-			MaxReconnect:       7,
-			ReconnectDelay:     durationpb.New(3 * time.Second),
-			CdnTransientBudget: 9,
-		},
-	}
+func TestNewRecorderUsecaseMaxConcurrent(t *testing.T) {
+	c := &conf.Recorder{MaxConcurrent: 2}
 	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{
 		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
 		2: {RoomID: 2, StreamerName: "b"},
@@ -410,12 +394,8 @@ func TestNewRecorderUsecaseConfigOverrides(t *testing.T) {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 	uc := NewRecorderUsecase(c, reg, &fakeRepo{}, &fakeLiveClient{})
-	if uc.pollInterval != 30*time.Second || uc.maxConcurrent != 2 {
-		t.Fatalf("unexpected: poll=%s max=%d", uc.pollInterval, uc.maxConcurrent)
-	}
-	want := ReconnectPolicy{AutoReconnect: false, MaxReconnect: 7, ReconnectDelay: 3 * time.Second, CDNTransientBudget: 9}
-	if uc.rec != want {
-		t.Fatalf("rec = %+v, want %+v", uc.rec, want)
+	if uc.maxConcurrent != 2 {
+		t.Fatalf("maxConcurrent = %d, want 2", uc.maxConcurrent)
 	}
 	if uc.slots == nil || cap(uc.slots) != 2 {
 		t.Fatalf("slots cap = %d, want 2", cap(uc.slots))

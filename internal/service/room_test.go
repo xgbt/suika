@@ -39,7 +39,6 @@ func newTestData(t *testing.T) *data.Data {
 	t.Helper()
 	confData := &conf.Data{
 		Database: &conf.Data_Database{
-			Driver: "sqlite",
 			Source: filepath.Join(t.TempDir(), "test.db"),
 		},
 	}

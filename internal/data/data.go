@@ -37,10 +37,8 @@ type Data struct {
 	buvids *buvidStore
 
 	// 录制器配置（已应用默认值；proto 零值与未设置无法区分）。
-	qualityQN          int
-	recordInteractWord bool
-	remuxEnabled       bool
-	ffmpegPath         string
+	remuxEnabled bool
+	ffmpegPath   string
 }
 
 // NewData 构建共享客户端。开启转封装但找不到 ffmpeg 时快速失败
@@ -60,22 +58,13 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 		apiClient:    apiClient,
 		streamClient: resty.New(),
 		cookie:       rc.GetCookie(),
-		qualityQN:    10000,
 		remuxEnabled: true,
 	}
 	d.signer = newWBISigner(apiClient, d.cookie)
 	d.buvids = newBuvidStore(apiClient)
 
-	if rc != nil {
-		if rc.GetQualityQn() > 0 {
-			d.qualityQN = int(rc.GetQualityQn())
-		}
-		if rc.GetDanmaku() != nil {
-			d.recordInteractWord = rc.GetDanmaku().GetRecordInteractWord()
-		}
-		if rc.RemuxEnabled != nil {
-			d.remuxEnabled = rc.GetRemuxEnabled()
-		}
+	if rc != nil && rc.RemuxEnabled != nil {
+		d.remuxEnabled = rc.GetRemuxEnabled()
 	}
 	if rc != nil && d.remuxEnabled {
 		ffmpegPath, err := exec.LookPath("ffmpeg")
@@ -101,10 +90,6 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 }
 
 func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
-	driver := c.GetDriver()
-	if driver != "sqlite" {
-		return nil, fmt.Errorf("data: unsupported database driver %q, only \"sqlite\" is supported", driver)
-	}
 	source := c.GetSource()
 	if source == "" {
 		return nil, fmt.Errorf("data: database source is empty")

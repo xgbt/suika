@@ -169,7 +169,7 @@ declared in `biz` and implemented in `data`:
 `RecorderUsecase` (biz/recorder.go) makes decisions only: its `Run` is a
 supervisor loop reconciling the registry's change notifications against
 per-room monitor goroutines, room monitoring (the danmaku WS is the primary
-live-detection channel; `fallback_poll_interval` polling is the backup),
+live-detection channel; fallback polling is the backup),
 session lifecycles, and the stream-drop/reconnect decision tree. Byte-level
 IO belongs to the seams.
 
@@ -305,8 +305,13 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
   `configs/credentials.yaml` (gitignored; copy
   `credentials.example.yaml`). Kratos merges every yaml in the `-conf`
   directory into one Bootstrap, so `config.yaml` keeps the sensitive
-  fields empty. The `redis` block in `config.yaml` is a vestigial
-  template placeholder — nothing reads it.
+  fields empty.
+- Config governance: `config.yaml` holds only deployment-varying items
+  (addrs, database path, record root, cookie placeholder, concurrency
+  cap, remux switch). Behavioral tuning (segment length, reconnect
+  policy, poll interval, stream quality) is code constants in `biz` /
+  `data`, not config fields — see `docs/design/bili-recorder.md` §7
+  before adding a new config field.
 
 ## Design docs
 

@@ -102,7 +102,7 @@ func TestNewDataInitializesRoomsTableWhenDBFileExists(t *testing.T) {
 
 	remuxEnabled := false
 	d, cleanup, err := NewData(
-		&conf.Data{Database: &conf.Data_Database{Driver: "sqlite", Source: dbPath}},
+		&conf.Data{Database: &conf.Data_Database{Source: dbPath}},
 		&conf.Recorder{RemuxEnabled: &remuxEnabled},
 	)
 	if err != nil {

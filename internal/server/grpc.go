@@ -16,14 +16,8 @@ func NewGRPCServer(c *conf.Server, room *service.RoomService) *grpc.Server {
 			recovery.Recovery(),
 		),
 	}
-	if c.Grpc.Network != "" {
-		opts = append(opts, grpc.Network(c.Grpc.Network))
-	}
-	if c.Grpc.Addr != "" {
-		opts = append(opts, grpc.Address(c.Grpc.Addr))
-	}
-	if c.Grpc.Timeout != nil {
-		opts = append(opts, grpc.Timeout(c.Grpc.Timeout.AsDuration()))
+	if addr := c.GetGrpc().GetAddr(); addr != "" {
+		opts = append(opts, grpc.Address(addr))
 	}
 	srv := grpc.NewServer(opts...)
 	v1.RegisterRoomServiceServer(srv, room)

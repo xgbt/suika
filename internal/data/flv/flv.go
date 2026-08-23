@@ -14,7 +14,6 @@ const (
 )
 
 const (
-	// HeaderSize 是 FLV 文件头的字节数。
 	HeaderSize     = 9
 	tagHeaderSize  = 11
 	prevTagSizeLen = 4

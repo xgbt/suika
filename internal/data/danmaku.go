@@ -50,7 +50,6 @@ type danmakuConn struct {
 	roomStateUpdates chan *biz.RoomInfo
 	closed           chan struct{}
 	closeOnce        sync.Once
-	recordInteract   bool
 }
 
 func (c *danmakuConn) Events() <-chan *biz.DanmakuEvent { return c.events }
@@ -251,10 +250,6 @@ func (c *danmakuConn) dispatch(ctx context.Context, raw json.RawMessage, receive
 		c.emit(parseGuardEvent(raw, receivedAt))
 	case "ENTRY_EFFECT":
 		c.emit(parseEntryEffectEvent(raw, receivedAt))
-	case "INTERACT_WORD":
-		if c.recordInteract {
-			c.emit(parseInteractEvent(raw, receivedAt))
-		}
 	}
 }
 
@@ -375,22 +370,6 @@ func parseEntryEffectEvent(raw json.RawMessage, receivedAt time.Time) *biz.Danma
 	return &biz.DanmakuEvent{
 		Ts: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
 		UID: m.Data.UID, Text: m.Data.CopyWriting,
-	}
-}
-
-func parseInteractEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
-	var m struct {
-		Data struct {
-			UID   int64  `json:"uid"`
-			Uname string `json:"uname"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil
-	}
-	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventInteract, Raw: raw,
-		UID: m.Data.UID, Uname: m.Data.Uname,
 	}
 }
 

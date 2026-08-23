@@ -18,7 +18,7 @@
 
 **解决的问题**：服务边界在哪、依赖什么基础设施。
 
-Suika 是**单进程、单机部署**：一个 `kratos.App` 内并行运行三个 `transport.Server` —— HTTP（:8000）、gRPC（:9000）与录制守护进程（`server.Daemon`）。没有 API 网关、没有消息队列；`config.yaml` 中的 `redis` 块是模板遗留占位，**代码中没有任何组件读取它**，故不入图。
+Suika 是**单进程、单机部署**：一个 `kratos.App` 内并行运行三个 `transport.Server` —— HTTP（:8000）、gRPC（:9000）与录制守护进程（`server.Daemon`）。没有 API 网关、没有消息队列，也不依赖其他基础设施。
 
 ```mermaid
 flowchart TB
@@ -52,7 +52,7 @@ flowchart TB
     DM -- "会话目录 / 分段 / meta.json 读写" --> REC
     DM -- "exec 转封装" --> FF
     DM -- "HTTPS（WBI 签名 + cookie + buvid，riskGuard 统一风控）" --> API
-    DM -- "HTTPS 长连接拉流（quality_qn 默认 10000 原画）" --> CDN
+    DM -- "HTTPS 长连接拉流（固定请求 10000 原画）" --> CDN
     DM -- "WSS：弹幕事件 + 房间状态事件（开播主探测通道）" --> DMWS
 ```
 
@@ -259,7 +259,7 @@ sequenceDiagram
         else 仍在播 且 ErrStreamTransient（404/连接重置）
             Note over Sess: CDN 瞬时预算--（默认 5）<br/>指数退避 2s→60s 后重连
         else 仍在播 且其他错误
-            Note over Sess: auto_reconnect 且次数<3：等 10s 重连<br/>否则带已录内容收尾
+            Note over Sess: 次数<3：等 10s 重连<br/>否则带已录内容收尾
         end
     end
 

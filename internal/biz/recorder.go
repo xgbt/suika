@@ -46,7 +46,6 @@ const (
 	EventSuperChat   = "superchat"
 	EventGuard       = "guard"
 	EventEntryEffect = "entry_effect"
-	EventInteract    = "interact_word"
 )
 
 // RoomInfo 是从 B 站获取的直播间元数据
@@ -187,23 +186,6 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 	if c == nil {
 		log.Warn("recorder configuration missing, running with zero rooms")
 		return uc
-	}
-	if c.GetFallbackPollInterval() != nil {
-		uc.pollInterval = c.GetFallbackPollInterval().AsDuration()
-	}
-	if rc := c.GetReconnect(); rc != nil {
-		if rc.AutoReconnect != nil {
-			uc.rec.AutoReconnect = rc.GetAutoReconnect()
-		}
-		if rc.GetMaxReconnect() > 0 {
-			uc.rec.MaxReconnect = int(rc.GetMaxReconnect())
-		}
-		if rc.GetReconnectDelay() != nil {
-			uc.rec.ReconnectDelay = rc.GetReconnectDelay().AsDuration()
-		}
-		if rc.GetCdnTransientBudget() > 0 {
-			uc.rec.CDNTransientBudget = int(rc.GetCdnTransientBudget())
-		}
 	}
 	uc.maxConcurrent = int(c.GetMaxConcurrent())
 	if uc.maxConcurrent > 0 {
