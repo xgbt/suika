@@ -1071,6 +1071,31 @@ func TestFinishedSessionCanAppendAfterRecordingIsReenabled(t *testing.T) {
 	}
 }
 
+func TestArchiveMergedSessionRollsBackVideoWhenDanmakuIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	const base = "session"
+	videoName := base + ".flv"
+	videoPath := filepath.Join(dir, videoName)
+	content := []byte("merged video")
+	if err := os.WriteFile(videoPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := &sessionMeta{
+		MergedVideo:   videoName,
+		MergedDanmaku: base + ".danmu.jsonl",
+	}
+
+	if err := archiveMergedSession(dir, base, meta); err == nil {
+		t.Fatal("archiveMergedSession succeeded with missing danmaku")
+	}
+	if got, err := os.ReadFile(videoPath); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("merged video was not rolled back: %q, %v", got, err)
+	}
+	if len(meta.Segments) != 0 || meta.MergedVideo != videoName {
+		t.Fatalf("meta changed after failed archive: %+v", meta)
+	}
+}
+
 // 多段合并：第 2 段重新注入的序列头时间戳平移到合并边界，全片时间戳
 // 单调不回跳；两段的弹幕按 part 顺序拼接。
 func TestFinishSessionMergeMultiSegmentRebasesBoundaryHeaders(t *testing.T) {

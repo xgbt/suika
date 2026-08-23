@@ -97,7 +97,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 	metaPath := filepath.Join(dir, base+".meta.json")
 	if meta, err := loadMeta(metaPath); err == nil {
 		if meta.Status == metaStatusDone && meta.MergedVideo != "" {
-			if err := reopenMergedSession(dir, base, meta); err != nil {
+			if err := archiveMergedSession(dir, base, meta); err != nil {
 				return err
 			}
 		}
@@ -428,27 +428,19 @@ func nextPartNumber(dir, base string) int {
 	return maxPart + 1
 }
 
-// reopenMergedSession 将已完成会话的合并产物恢复为历史分段，使同一直播
+// archiveMergedSession 将已完成会话的合并产物恢复为历史分段，使同一直播
 // 场次关闭录制后再次开启时，可以继续追加而不是覆盖旧产物。
-func reopenMergedSession(dir, base string, meta *sessionMeta) error {
-	part := 1
-	for _, seg := range meta.Segments {
-		part = max(part, seg.Part)
-	}
+func archiveMergedSession(dir, base string, meta *sessionMeta) error {
+	part := nextPartNumber(dir, base)
 	videoName := fmt.Sprintf("%s_part%d.flv", base, part)
 	videoPath := filepath.Join(dir, videoName)
-	for {
-		if _, err := os.Stat(videoPath); os.IsNotExist(err) {
-			break
-		}
-		part++
-		videoName = fmt.Sprintf("%s_part%d.flv", base, part)
-		videoPath = filepath.Join(dir, videoName)
-	}
-
 	mergedVideoPath := filepath.Join(dir, meta.MergedVideo)
+	fi, err := os.Stat(mergedVideoPath)
+	if err != nil {
+		return fmt.Errorf("archive merged session: %w", err)
+	}
 	if err := os.Rename(mergedVideoPath, videoPath); err != nil {
-		return fmt.Errorf("reopen merged session: %w", err)
+		return fmt.Errorf("archive merged session: %w", err)
 	}
 
 	danmuName := ""
@@ -456,7 +448,7 @@ func reopenMergedSession(dir, base string, meta *sessionMeta) error {
 		danmuName = fmt.Sprintf("%s_part%d.danmu.jsonl", base, part)
 		if err := os.Rename(filepath.Join(dir, meta.MergedDanmaku), filepath.Join(dir, danmuName)); err != nil {
 			_ = os.Rename(videoPath, mergedVideoPath)
-			return fmt.Errorf("reopen merged danmaku: %w", err)
+			return fmt.Errorf("archive merged danmaku: %w", err)
 		}
 	}
 
@@ -470,10 +462,6 @@ func reopenMergedSession(dir, base string, meta *sessionMeta) error {
 			tsStart = seg.TsStart
 		}
 		tsEnd = max(tsEnd, seg.TsEnd)
-	}
-	fi, err := os.Stat(videoPath)
-	if err != nil {
-		return err
 	}
 	meta.Segments = []segmentMeta{{
 		Part: part, Video: videoName, FLVKept: true, Danmaku: danmuName,
