@@ -88,12 +88,13 @@ internal/biz/
                          断流决策树（纯控制流，不做字节级 IO；无 proto、无存储 tag）
 
 internal/data/
-  data.go                Data：db（gorm sqlite，单连接）/ apiClient(15s 超时) /
-                         streamClient(无超时) / cookie / WBI signer / buvid store /
+  data.go                Data：db（gorm sqlite，单连接）/
+                         bili.Client（bili 子包：全部 B 站流量与登录态）/
                          解析后的 recorder 配置项（remuxEnabled / ffmpegPath）
                          NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error)：
                          打开 sqlite（openDatabase，source 路径校验见 §7.1）→
-                         AutoMigrate rooms 表 → 启动探测 ffmpeg
+                         AutoMigrate rooms/credentials 表 → 载入凭据 cookie →
+                         构建 bili.Client → 启动探测 ffmpeg
                          （remux 开启而缺失 → 启动失败）；cleanup 关闭数据库连接
   room.go                roomPO（rooms 表：streamer_name / room_title 列）/
                          toRoomPO(DO→PO) / toRoomDO(PO→DO)；
@@ -101,15 +102,20 @@ internal/data/
                          ListRooms / CreateRoom / UpdateRoom / DeleteRoom）、
                          ListQuery → SQL 等值过滤（固定 room_id ASC 排序）、
                          重复 room_id → ErrRoomAlreadyExists（sqlite 主键约束）
-  bili_api.go            liveClient 实现 biz.LiveClient：GetRoomInfo / OpenLiveStream /
+  bili/client.go         Client：与 B 站交互的共享长生命周期状态——
+                         apiClient(15s 超时) / streamClient(无超时) /
+                         passportHTTP(无 cookie jar)、唯一登录态
+                         （Cookie/SetCookie 热替换）、WBI 签名器与 buvid 存储；
+                         injectAntiRisk / signURL / fetchJSON 风控基础设施
+  bili/live.go           liveClient 实现 biz.LiveClient：GetRoomInfo / OpenLiveStream /
                          DanmakuConn 构造；getRoomPlayInfo 候选排序与降档
                          （pickFLVStream 纯函数）；风控编排统一委托 riskGuard
-  risk.go                riskGuard：全部 B 站 API 流量的风控编排深模块——
+  bili/risk.go           riskGuard：全部 B 站 API 流量的风控编排深模块——
                          冷却闸门、412/-352 刷新重试、兜底调用、错误分类与
                          每房间阶梯冷却；端点只构造请求、解析响应、翻译业务码
-  wbi.go                 WBI 签名（nav API 取密钥，1h 缓存，w_rid/wts）
-  buvid.go               buvid3/buvid4 指纹（spi，24h 缓存，cookie 注入替换语义）
-  danmaku.go             danmakuConn 实现 biz.DanmakuConn：二进制包协议、认证、
+  bili/wbi.go            WBI 签名（nav API 取密钥，1h 缓存，w_rid/wts）
+  bili/buvid.go          buvid3/buvid4 指纹（spi，24h 缓存，cookie 注入替换语义）
+  bili/danmaku.go        danmakuConn 实现 biz.DanmakuConn：二进制包协议、认证、
                          30s 心跳、90s 读超时、protover3 brotli / protover2 zlib、
                          断线指数退避重连、事件解析与过滤、cmd 分发；
                          房态命令（LIVE/PREPARING/ROUND/ROOM_CHANGE）触发
@@ -520,18 +526,18 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
 `Referer: https://live.bilibili.com/<room>` + `Origin` + cookie；
 HTTP 412/403/429 → `errHTTPRiskControl`。
 
-**WBI 签名**（`wbi.go`，移植 hikami-go）：`/x/web-interface/nav` 取
+**WBI 签名**（`bili/wbi.go`，移植 hikami-go）：`/x/web-interface/nav` 取
 img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；签名即
 按 key 排序的查询串（剔除 `!'()*`）+ mixin_key 取 MD5，附加 `w_rid`/`wts`。
 `getDanmuInfo`、`getInfoByRoom`、`getRoomPlayInfo` 都会先 WBI 签名；
 签名失败降级为不签名继续请求（记 warn）。
 
-**buvid 指纹**（`buvid.go`，移植 hikami-go）：`/x/frontend/finger/spi`
+**buvid 指纹**（`bili/buvid.go`，移植 hikami-go）：`/x/frontend/finger/spi`
 取 buvid3/buvid4，按 cookie 键缓存 24h；注入 cookie 时先删旧 buvid3/4
 再追加（B 站取同名第一个，替换语义保证新指纹生效）。buvid 获取失败
 降级为裸 cookie。
 
-**-352 / HTTP 风控处理**（统一由 `riskGuard` 编排，`risk.go`）：
+**-352 / HTTP 风控处理**（统一由 `riskGuard` 编排，`bili/risk.go`）：
 
 1. 风控命中（-352 或 HTTP 412/403/429）→ `refreshRisk()`（强刷 WBI 密钥 +
    作废 buvid 缓存）→ 原请求重试一次。
@@ -698,7 +704,7 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 | FinishSession 脱离 grace | 30s | biz |
 | 分段时长 | 120 分钟 | data.NewRecorderRepo |
 | 健康检查间隔 / 失败轮数 | 30s / 3 轮 | data.NewRecorderRepo |
-| 请求清晰度 | 10000（原画；不足时平台自动降档） | data（bili_api） |
+| 请求清晰度 | 10000（原画；不足时平台自动降档） | data/bili（live） |
 | 切段关键帧等待上限 | 15s | data |
 | 弹幕事件缓冲 / 房态更新缓冲 | 4096 / 16 | data |
 | WS 心跳 / 读超时 | 30s / 90s | data |
@@ -952,14 +958,14 @@ curl -X POST localhost:8000/v1/rooms/create \
 
 | 本服务组件 | 来源仓库 | 原始位置 | 移植方式 |
 |---|---|---|---|
-| WBI 签名 | hikami-go | `internal/biliutil/wbi.go` | Go 直接移植（data/wbi.go） |
-| buvid 指纹 | hikami-go | `internal/biliutil/buvid.go` | Go 直接移植（data/buvid.go） |
-| 开播检查/拉流/URL 拼装/候选排序 | hikami-go | `internal/live_record/bilibili.go` | Go 移植（data/bili_api.go） |
-| 弹幕 WS 协议（包头/认证/心跳/brotli） | hikami-go | `internal/live_record/danmaku.go` | 移植 + 扩展事件类型（data/danmaku.go） |
+| WBI 签名 | hikami-go | `internal/biliutil/wbi.go` | Go 直接移植（data/bili/wbi.go） |
+| buvid 指纹 | hikami-go | `internal/biliutil/buvid.go` | Go 直接移植（data/bili/buvid.go） |
+| 开播检查/拉流/URL 拼装/候选排序 | hikami-go | `internal/live_record/bilibili.go` | Go 移植（data/bili/live.go） |
+| 弹幕 WS 协议（包头/认证/心跳/brotli） | hikami-go | `internal/live_record/danmaku.go` | 移植 + 扩展事件类型（data/bili/danmaku.go） |
 | 断流决策树/预算/巡检 | hikami-go | `internal/live_record/manager.go` | 参考重写，决策移入 biz（biz/recorder.go） |
-| 风控阶梯冷却 | hikami-go | `internal/live_record/manager.go` | Go 直接移植（data/bili_api.go） |
+| 风控阶梯冷却 | hikami-go | `internal/live_record/manager.go` | Go 直接移植（data/bili/live.go） |
 | FLV tag 切段/头注入 | blrec | `blrec/flv/*`、`blrec/core/operators/*` | Go 重写（data/flv、data/recorder*.go） |
-| LIVE/PREPARING 事件驱动检测 | blrec | `blrec/bili/live_monitor.py` | Go 重写（biz + data/danmaku.go） |
+| LIVE/PREPARING 事件驱动检测 | blrec | `blrec/bili/live_monitor.py` | Go 重写（biz + data/bili/danmaku.go） |
 | remux 元数据注入 | blrec | `blrec/core/metadata_provider.py` | 思路照搬（data/remux.go） |
 
 hikami-go：Go 单机服务，录直播音频+弹幕 → ASR → AI 总结（刻意不保存
@@ -970,12 +976,12 @@ hikami-go：Go 单机服务，录直播音频+弹幕 → ASR → AI 总结（刻
 
 | 接口 | 用途 | 代码位置 |
 |---|---|---|
-| `GET api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=` | 房间/开播状态、标题、live_start_time、主播名 | bili_api.go roomStatus |
-| `GET api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=&protocol=0,1&format=0,1,2&codec=0,1&qn=&platform=web` | 流地址（候选排序取 FLV+avc 优先） | bili_api.go selectStreamURL |
-| `GET api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=&type=0` | 弹幕 token + 接入节点（WBI 签名） | danmaku.go danmuInfo |
-| `GET api.live.bilibili.com/room/v1/Danmu/getConf?room_id=&platform=pc&player=web` | 弹幕 token 降级通道（无 WBI） | danmaku.go danmuConf |
-| `GET api.bilibili.com/x/web-interface/nav` | WBI 密钥（兼判断登录态） | wbi.go fetchKeys |
-| `GET api.bilibili.com/x/frontend/finger/spi` | buvid3/buvid4 | buvid.go getBuvids |
-| `wss://<host>:<wss_port>/sub`（保底 `broadcastlv.chat.bilibili.com:2245`） | 弹幕事件流：16 字节头二进制包，op2 心跳 / op5 消息 / op7 认证 / op8 认证回复；protover 3=brotli、2=zlib | danmaku.go |
+| `GET api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=` | 房间/开播状态、标题、live_start_time、主播名 | bili/live.go roomStatus |
+| `GET api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=&protocol=0,1&format=0,1,2&codec=0,1&qn=&platform=web` | 流地址（候选排序取 FLV+avc 优先） | bili/live.go selectStreamURL |
+| `GET api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=&type=0` | 弹幕 token + 接入节点（WBI 签名） | bili/danmaku.go danmuInfo |
+| `GET api.live.bilibili.com/room/v1/Danmu/getConf?room_id=&platform=pc&player=web` | 弹幕 token 降级通道（无 WBI） | bili/danmaku.go danmuConf |
+| `GET api.bilibili.com/x/web-interface/nav` | WBI 密钥（兼判断登录态） | bili/wbi.go fetchKeys |
+| `GET api.bilibili.com/x/frontend/finger/spi` | buvid3/buvid4 | bili/buvid.go getBuvids |
+| `wss://<host>:<wss_port>/sub`（保底 `broadcastlv.chat.bilibili.com:2245`） | 弹幕事件流：16 字节头二进制包，op2 心跳 / op5 消息 / op7 认证 / op8 认证回复；protover 3=brotli、2=zlib | bili/danmaku.go |
 
 清晰度档位：20000=4K、10000=原画、400=蓝光、250=超清、150=高清、80=流畅。

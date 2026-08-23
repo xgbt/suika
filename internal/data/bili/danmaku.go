@@ -1,4 +1,4 @@
-package data
+package bili
 
 import (
 	"bytes"
@@ -23,20 +23,49 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// 以下常量分三组：通道缓冲容量、连接生命周期时序、弹幕二进制协议参数。
 const (
-	danmakuEventBuffer           = 4096
+	// danmakuEventBuffer 是弹幕事件通道（events）的缓冲容量。
+	// 缓冲满时新事件直接丢弃（见 emit），因此容量要足够大，
+	// 能吸收录制端短暂变慢（如切分段、remux）时的事件峰值。
+	danmakuEventBuffer = 4096
+
+	// danmakuRoomStateUpdateBuffer 是房间状态通道（roomStateUpdates）的缓冲容量。
+	// 消费方只关心最新状态，旧快照满时直接丢弃（见 pushRoomState），小缓冲足够。
 	danmakuRoomStateUpdateBuffer = 16
 
+	// danmakuHeartbeatInterval 是心跳包（op 2）的发送间隔。
+	// 弹幕服务器要求客户端定期发送心跳保活，长时间无心跳会被服务端断开。
 	danmakuHeartbeatInterval = 30 * time.Second
-	danmakuReadTimeout       = 90 * time.Second // 用于掐掉半开连接：错过三轮心跳仍无入站帧则强制重连
 
+	// danmakuReadTimeout 用于掐掉半开连接：错过三轮心跳仍无入站帧则强制重连。
+	// 取值为 3 × danmakuHeartbeatInterval。
+	danmakuReadTimeout = 90 * time.Second
+
+	// danmakuReconnectBase / danmakuReconnectMax 是重连退避的初始值与上限。
+	// 每次连接失败后退避翻倍（见 run），封顶以避免在服务端故障或
+	// 风控期间高频重连加重风险。
 	danmakuReconnectBase = 2 * time.Second
 	danmakuReconnectMax  = 30 * time.Second
 
+	// https://her-cat.com/posts/2021/04/01/workerman-to-access-bilibili-barrage-protocol/
+	// B 站弹幕 websocket 二进制协议常量（均为大端序）。
+	// 每个数据帧以 16 字节包头开始，布局见 packPacket / parseDanmakuPacket：
+	//   [0:4]   包总长（含包头）
+	//   [4:6]   包头长度（固定 16）
+	//   [6:8]   压缩协议版本（0/1=明文, 2=zlib, 3=brotli）
+	//   [8:12]  操作码
+	//   [12:16] 序列号（固定为 1）
 	packetHeaderLength = 16
+	// operationHeartbeat 客户端 → 服务器：心跳保活包（空载荷）。
+	// 服务器回以人气值包（op 3），本实现不关心，在 unpackMessages 中被跳过。
 	operationHeartbeat = 2
-	operationMessage   = 5
-	operationAuth      = 7
+	// operationMessage 服务器 → 客户端：弹幕与房间消息。
+	// 一帧内可能合并多个包，且可能整体被压缩，由 unpackMessages 递归解包。
+	operationMessage = 5
+	// operationAuth 客户端 → 服务器：进房认证包，JSON 载荷见 buildAuthBody。
+	operationAuth = 7
+	// operationAuthReply 服务器 → 客户端：认证结果，code=0 表示成功（见 waitAuthSuccess）。
 	operationAuthReply = 8
 )
 
@@ -56,11 +85,14 @@ func (c *danmakuConn) Events() <-chan *biz.DanmakuEvent { return c.events }
 
 func (c *danmakuConn) RoomStateUpdates() <-chan *biz.RoomInfo { return c.roomStateUpdates }
 
+// Close 标记连接关闭：后台的 run / readLoop / 各投递点都通过
+// closed 通道感知退出。幂等，可安全多次调用。
 func (c *danmakuConn) Close() error {
 	c.closeOnce.Do(func() { close(c.closed) })
 	return nil
 }
 
+// isClosed 以非阻塞方式检查连接是否已被 Close。
 func (c *danmakuConn) isClosed() bool {
 	select {
 	case <-c.closed:
@@ -140,6 +172,9 @@ func (c *danmakuConn) connectAndServe(ctx context.Context) error {
 	}
 }
 
+// dial 依次尝试打乱顺序后的主机列表；每个主机先试 protover 3（brotli），
+// 失败再退回 2（zlib）。随机顺序避免所有房间固定打同一台边缘节点。
+// 全部失败时返回最后一个错误。
 func (c *danmakuConn) dial(ctx context.Context, addresses []string, token, buvid string) (*websocket.Conn, error) {
 	var lastErr error
 	for _, address := range addresses {
@@ -159,10 +194,13 @@ func (c *danmakuConn) dial(ctx context.Context, addresses []string, token, buvid
 	return nil, lastErr
 }
 
+// dialAndAuth 完成一次「握手 + 认证」：带浏览器伪装头拨号到指定地址，
+// 发送认证包并等待服务器确认。任一步失败都会关闭底层连接并返回错误，
+// 由 dial 换下一地址/协议版本重试。
 func (c *danmakuConn) dialAndAuth(ctx context.Context, address, token string, protover int, buvid string) (*websocket.Conn, error) {
 	// cookie 快照同时用于握手头与认证包：登录后 getDanmuInfo 的 token
 	// 与账号绑定，认证包的 uid 必须与 cookie 身份一致。
-	cookie := c.lc.data.Cookie()
+	cookie := c.lc.client.Cookie()
 	header := http.Header{
 		"User-Agent": {biliUserAgent},
 		"Origin":     {"https://live.bilibili.com"},
@@ -187,6 +225,10 @@ func (c *danmakuConn) dialAndAuth(ctx context.Context, address, token string, pr
 	return conn, nil
 }
 
+// readLoop 循环读取入站帧、解包并分发，每收到一帧就刷新读超时。
+// 返回的错误由 connectAndServe 上报给 run 触发重连；返回 nil 表示
+// 连接已被主动关闭。在独立 goroutine 中运行，与心跳写入并发
+// （gorilla/websocket 允许一读一写并发）。
 func (c *danmakuConn) readLoop(conn *websocket.Conn) error {
 	if err := conn.SetReadDeadline(time.Now().Add(danmakuReadTimeout)); err != nil {
 		return err
@@ -270,6 +312,9 @@ func (c *danmakuConn) emit(ev *biz.DanmakuEvent) {
 
 // --- 事件解析 ---
 
+// parseDanmakuEvent 解析 DANMU_MSG：弹幕文本、发送者、模式与颜色。
+// 载荷形状是数组（info[0]=弹幕元数据, info[1]=文本, info[2]=用户信息），
+// 字段缺失或形状不符时返回 nil（该事件被丢弃）。
 func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
 		Info []any `json:"info"`
@@ -299,6 +344,7 @@ func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEv
 	return ev
 }
 
+// parseGiftEvent 解析 SEND_GIFT（礼物）事件。
 func parseGiftEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
 		Data struct {
@@ -320,6 +366,7 @@ func parseGiftEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent
 	}
 }
 
+// parseSuperChatEvent 解析 SUPER_CHAT_MESSAGE（醒目留言）事件。
 func parseSuperChatEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
 		Data struct {
@@ -342,6 +389,7 @@ func parseSuperChatEvent(raw json.RawMessage, receivedAt time.Time) *biz.Danmaku
 	}
 }
 
+// parseGuardEvent 解析 GUARD_BUY（舰长/提督/总督购买）事件。
 func parseGuardEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
 		Data struct {
@@ -360,6 +408,7 @@ func parseGuardEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEven
 	}
 }
 
+// parseEntryEffectEvent 解析 ENTRY_EFFECT（高等级用户进场特效）事件。
 func parseEntryEffectEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
 		Data struct {
@@ -376,6 +425,8 @@ func parseEntryEffectEvent(raw json.RawMessage, receivedAt time.Time) *biz.Danma
 	}
 }
 
+// toInt64 把 B 站载荷中类型不稳定的数字字段统一转成 int64：
+// JSON 数字解析为 float64，部分字段则是数字字符串；其余类型返回 0。
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case float64:
@@ -393,6 +444,9 @@ func toInt64(v any) int64 {
 
 // --- 弹幕 websocket 二进制协议（移植自 hikami-go）---
 
+// buildAuthBody 构造认证包（op 7）的 JSON 载荷：
+// uid 与房间绑定、token 来自 getDanmuInfo、protover 声明压缩协议、
+// buvid 为设备指纹。platform/type 模拟 web 播放器的固定取值。
 func buildAuthBody(roomID int64, token string, protover int, buvid, cookie string) []byte {
 	body := map[string]any{
 		"uid":      danmakuAuthUID(cookie),
@@ -418,6 +472,9 @@ func danmakuAuthUID(cookie string) int64 {
 	return uid
 }
 
+// waitAuthSuccess 等待并校验认证回复（op 8）：读取第一个入站帧，
+// 确认操作码为认证回复且 code=0。5 秒内无回复视为认证失败。
+// 成功后清空读超时，交给 readLoop 接管超时控制。
 func waitAuthSuccess(conn *websocket.Conn) error {
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return err
@@ -447,6 +504,8 @@ func waitAuthSuccess(conn *websocket.Conn) error {
 	return nil
 }
 
+// parseDanmakuPacket 解析单个数据帧的包头，返回操作码与包体切片。
+// 仅用于认证握手阶段（waitAuthSuccess）；常规消息流走 unpackMessages。
 func parseDanmakuPacket(data []byte) (uint32, []byte, error) {
 	if len(data) < packetHeaderLength {
 		return 0, nil, stderrors.New("invalid danmaku packet length")
@@ -460,6 +519,8 @@ func parseDanmakuPacket(data []byte) (uint32, []byte, error) {
 	return operation, data[headerLength:packetLength], nil
 }
 
+// packPacket 按弹幕协议打包一个数据帧（16 字节包头 + 载荷），
+// 用于发送心跳（空载荷）和认证包。序列号字段固定填 1。
 func packPacket(operation uint32, protocolVersion uint16, body []byte) []byte {
 	length := packetHeaderLength + len(body)
 	packet := make([]byte, length)
@@ -472,6 +533,10 @@ func packPacket(operation uint32, protocolVersion uint16, body []byte) []byte {
 	return packet
 }
 
+// unpackMessages 把一帧字节流还原成逐条的 JSON 消息：
+// 一帧可能首尾相连地合并多个包（循环切片）；压缩包（协议版本
+// 2=zlib / 3=brotli）先解压，解压结果本身又是同样的包序列，
+// 因此递归解包。非消息包（如人气值包）直接跳过。
 func unpackMessages(data []byte) ([]json.RawMessage, error) {
 	var messages []json.RawMessage
 	for len(data) >= packetHeaderLength {
@@ -529,6 +594,7 @@ func brotliInflate(data []byte) ([]byte, error) {
 	return io.ReadAll(brotli.NewReader(bytes.NewReader(data)))
 }
 
+// shuffledStrings 返回打乱顺序的副本（不改原切片），供 dial 使用。
 func shuffledStrings(items []string) []string {
 	shuffled := append([]string(nil), items...)
 	rand.Shuffle(len(shuffled), func(i, j int) {
@@ -539,6 +605,8 @@ func shuffledStrings(items []string) []string {
 
 // --- getDanmuInfo（token + 主机列表），带 -352 重试与旧接口兜底 ---
 
+// danmuInfo 是弹幕连接所需的认证三要素：
+// token（进房鉴权）、addresses（wss 主机列表）、buvid（设备指纹 buvid3）。
 type danmuInfo struct {
 	token     string
 	addresses []string
@@ -549,7 +617,7 @@ type danmuInfo struct {
 func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, error) {
 	var info *danmuInfo
 	attempt := func(ctx context.Context) (int, error) {
-		cookie := lc.data.injectAntiRisk(ctx)
+		cookie := lc.client.injectAntiRisk(ctx)
 		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getDanmuInfo?id=" + strconv.FormatInt(roomID, 10) + "&type=0"
 		var raw struct {
 			Code    int    `json:"code"`
@@ -562,7 +630,7 @@ func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, 
 				} `json:"host_list"`
 			} `json:"data"`
 		}
-		if err := lc.data.fetchJSON(ctx, lc.data.signURL(endpoint), roomID, cookie, &raw); err != nil {
+		if err := lc.client.fetchJSON(ctx, lc.client.signURL(endpoint), roomID, cookie, &raw); err != nil {
 			return 0, err
 		}
 		parsed := &danmuInfo{token: raw.Data.Token}
@@ -606,8 +674,11 @@ func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, 
 	return info, nil
 }
 
+// danmuConf 调用旧版 getConf 接口，字段形状与 getDanmuInfo 不同
+// （host_server_list / wss_port），但语义相同。它不走 WBI 签名，
+// 作为 getDanmuInfo 被风控（-352）时的兜底。
 func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, error) {
-	cookie := lc.data.injectAntiRisk(ctx)
+	cookie := lc.client.injectAntiRisk(ctx)
 	endpoint := liveAPIBase + "/room/v1/Danmu/getConf?room_id=" + strconv.FormatInt(roomID, 10) + "&platform=pc&player=web"
 	var raw struct {
 		Code int    `json:"code"`
@@ -620,7 +691,7 @@ func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, 
 			} `json:"host_server_list"`
 		} `json:"data"`
 	}
-	if err := lc.data.fetchJSON(ctx, endpoint, roomID, cookie, &raw); err != nil {
+	if err := lc.client.fetchJSON(ctx, endpoint, roomID, cookie, &raw); err != nil {
 		return nil, err
 	}
 	if raw.Code != 0 {
@@ -642,11 +713,11 @@ func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, 
 // danmuBuvid 返回弹幕认证载荷使用的 buvid3：优先取当前生效 cookie 中的，
 // 其次回退到指纹存储。
 func (lc *liveClient) danmuBuvid(ctx context.Context) string {
-	cookie := lc.data.Cookie()
+	cookie := lc.client.Cookie()
 	if buvid := cookieValue(cookie, "buvid3"); buvid != "" {
 		return buvid
 	}
-	b3, _, err := lc.data.buvids.getBuvids(ctx, cookie)
+	b3, _, err := lc.client.buvids.getBuvids(ctx, cookie)
 	if err != nil {
 		log.Warn("get buvid3 for danmaku failed, continuing without", "err", err)
 		return ""
@@ -654,6 +725,7 @@ func (lc *liveClient) danmuBuvid(ctx context.Context) string {
 	return b3
 }
 
+// cookieValue 从 Cookie 头字符串中提取指定名称的值，不存在时返回空串。
 func cookieValue(cookieHeader, name string) string {
 	for item := range strings.SplitSeq(cookieHeader, ";") {
 		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)

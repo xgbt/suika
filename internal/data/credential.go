@@ -17,8 +17,8 @@ const credentialSingletonID int64 = 1
 
 // credentialPO 持久化 B 站登录凭据。
 type credentialPO struct {
-	ID           int64     `gorm:"primaryKey"`
-	Cookie       string    `gorm:"not null"`
+	ID           int64  `gorm:"primaryKey"`
+	Cookie       string `gorm:"not null"`
 	RefreshToken string
 	CreateTime   time.Time `gorm:"autoCreateTime"`
 	UpdateTime   time.Time `gorm:"autoUpdateTime"`
@@ -83,7 +83,7 @@ func (r *credentialRepo) SaveCredential(ctx context.Context, cred *biz.Credentia
 	if err != nil {
 		return err
 	}
-	r.data.setCookie(po.Cookie)
+	r.data.bili.SetCookie(po.Cookie)
 	return nil
 }
 
@@ -92,6 +92,6 @@ func (r *credentialRepo) DeleteCredential(ctx context.Context) error {
 	if err := r.data.db.WithContext(ctx).Where("id = ?", credentialSingletonID).Delete(&credentialPO{}).Error; err != nil {
 		return err
 	}
-	r.data.setCookie("")
+	r.data.bili.SetCookie("")
 	return nil
 }

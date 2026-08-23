@@ -7,13 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
+	"suika/internal/biz"
 	"suika/internal/conf"
+	"suika/internal/data/bili"
 
 	"github.com/go-kratos/kratos/v3/log"
-	"github.com/go-resty/resty/v2"
 	"github.com/google/wire"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -21,53 +20,30 @@ import (
 
 var ProviderSet = wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient)
 
-// Data 持有长生命周期的存储/平台客户端（模板惯例）。对录制器而言，
-// 它们是携带 cookie 的 HTTP 客户端、共享的风控助手（WBI 签名器、
-// buvid 存储），以及持久化 Room 列表和登录凭据的嵌入式数据库。
+// Data 持有长生命周期的存储/平台客户端（模板惯例）：共享的 sqlite
+// 句柄、与 B 站平台交互的共享客户端（bili 子包），以及录制器配置。
 type Data struct {
 	// db 是共享的 gorm 句柄（sqlite）。
 	db *gorm.DB
 
-	// apiClient 用于短小的 B 站 API 调用。
-	apiClient *resty.Client
-	// streamClient 拉取直播流；不设超时，因为读取是长生命周期的，
-	// 取消经请求 context 传递。
-	streamClient *resty.Client
-	// passportHTTP 专用于 B 站登录/账号平台接口；必须无 cookie jar，
-	// 避免登录响应的 Set-Cookie 串染房间 API 请求。
-	passportHTTP *resty.Client
-
-	// cookie 是当前生效的唯一登录态，读写必须经 Cookie()/setCookie()。
-	cookieMu sync.RWMutex
-	cookie   string
-
-	signer *wbiSigner
-	buvids *buvidStore
+	// bili 是与 B 站平台交互的共享客户端：携带 cookie 的 HTTP 客户端、
+	// 当前生效的登录态与风控助手（WBI 签名器、buvid 存储）。
+	bili *bili.Client
 
 	// 录制器配置（已应用默认值；proto 零值与未设置无法区分）。
 	remuxEnabled bool
 	ffmpegPath   string
 }
 
-// Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。
-// 录制器的所有并发读取点都必须经此取值（读快照）。
-func (d *Data) Cookie() string {
-	d.cookieMu.RLock()
-	defer d.cookieMu.RUnlock()
-	return d.cookie
-}
+// NewLiveClient 提供 biz.LiveClient；B 站直播流量全部实现在 bili 子包。
+func NewLiveClient(d *Data) biz.LiveClient { return bili.NewLiveClient(d.bili) }
 
-// setCookie 热替换生效的 cookie（扫码登录成功/登出时由凭据仓储调用）。
-// 替换后丢弃旧 cookie 的 buvid 缓存，避免旧指纹被继续注入。
-func (d *Data) setCookie(cookie string) {
-	d.cookieMu.Lock()
-	old := d.cookie
-	d.cookie = cookie
-	d.cookieMu.Unlock()
-	if old != "" && old != cookie {
-		d.buvids.invalidate(old)
-	}
-}
+// NewPassportClient 提供 biz.PassportClient；实现位于 bili 子包。
+func NewPassportClient(d *Data) biz.PassportClient { return bili.NewPassportClient(d.bili) }
+
+// Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。
+// 登录态由 bili 客户端持有，这里只是读快照的委托。
+func (d *Data) Cookie() string { return d.bili.Cookie() }
 
 // NewData 构建共享客户端。开启转封装但找不到 ffmpeg 时快速失败
 // （设计如此：启动期探测）。
@@ -80,10 +56,6 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 		return nil, nil, fmt.Errorf("data: auto-migrate tables: %w", err)
 	}
 
-	apiClient := resty.New().SetTimeout(15 * time.Second)
-	// passport 调用不需要携带也不会保留 cookie，禁用 jar。
-	passportHTTP := resty.New().SetTimeout(15 * time.Second).SetCookieJar(nil)
-
 	// 登录凭据只来自数据库（recorder.cookie 已退役）。
 	cookie, err := loadCredentialCookie(db)
 	if err != nil {
@@ -92,14 +64,9 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 
 	d := &Data{
 		db:           db,
-		apiClient:    apiClient,
-		streamClient: resty.New(),
-		passportHTTP: passportHTTP,
-		cookie:       cookie,
+		bili:         bili.NewClient(cookie),
 		remuxEnabled: true,
 	}
-	d.signer = newWBISigner(apiClient, d.Cookie)
-	d.buvids = newBuvidStore(apiClient)
 
 	if rc != nil && rc.RemuxEnabled != nil {
 		d.remuxEnabled = rc.GetRemuxEnabled()

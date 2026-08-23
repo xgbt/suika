@@ -59,7 +59,7 @@ flowchart TB
 要点：
 
 - **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份 `api/room/v1/room.proto` 契约。
-- 所有 B 站流量收敛在 `LiveClient` 一个缝（`data/bili_api.go`、`danmaku.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。
+- 所有 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`、`danmaku.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。
 - 录制产物是**文件系统**而非数据库；`meta.json` 是录制历史的唯一事实源，重启后由 `RecoverPending` 扫描恢复。
 
 ---
@@ -100,7 +100,7 @@ flowchart TB
     subgraph DATA["internal/data —— PO 与全部 IO"]
         RR["roomRepo · roomPO → rooms 表<br/>toRoomPO / toRoomDO"]
         RREPO["recorderRepo<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · remux"]
-        LC["liveClient<br/>bili_api · danmaku · wbi · buvid · risk"]
+        LC["liveClient<br/>bili/ 子包：live · danmaku · wbi · buvid · risk"]
     end
 
     DTO["api/room/v1<br/>proto DTO（RoomService 契约）"]

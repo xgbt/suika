@@ -1,4 +1,4 @@
-package data
+package bili
 
 import (
 	"context"
@@ -44,9 +44,9 @@ type passportClient struct {
 	navURL      string
 }
 
-func NewPassportClient(d *Data) biz.PassportClient {
+func NewPassportClient(c *Client) biz.PassportClient {
 	return &passportClient{
-		httpClient:  d.passportHTTP,
+		httpClient:  c.passportHTTP,
 		generateURL: defaultQRGenerateURL,
 		pollURL:     defaultQRPollURL,
 		navURL:      defaultAccountNavURL,

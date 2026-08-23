@@ -102,7 +102,7 @@ func TestCredentialRepoDeleteIdempotent(t *testing.T) {
 	}
 }
 
-// TestDataCookieConcurrent 在 -race 下验证 Cookie()/setCookie() 的并发安全。
+// TestDataCookieConcurrent 在 -race 下验证 Cookie()/SetCookie() 的并发安全。
 func TestDataCookieConcurrent(t *testing.T) {
 	d := newTestCredentialData(t)
 
@@ -120,7 +120,7 @@ func TestDataCookieConcurrent(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for j := 0; j < 2000; j++ {
-			d.setCookie("SESSDATA=v")
+			d.bili.SetCookie("SESSDATA=v")
 		}
 	}()
 	wg.Wait()

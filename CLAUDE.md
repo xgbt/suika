@@ -152,9 +152,10 @@ declared in `biz` and implemented in `data`:
 
 - `LiveClient` — the platform seam; ALL live-room Bilibili traffic goes
   through it (room info, stream URLs, danmaku websocket). Implemented in
-  `data` by `bili_api.go` / `danmaku.go` plus the risk-control helpers
-  `wbi.go` (WBI signing) and `buvid.go`. All risk orchestration lives in
-  the single `riskGuard` module (`risk.go`): cooldown gates, 412/403/429 and
+  the `data/bili/` subpackage by `live.go` / `danmaku.go` plus the
+  risk-control helpers `wbi.go` (WBI signing) and `buvid.go`. All risk
+  orchestration lives in the single `riskGuard` module (`risk.go`):
+  cooldown gates, 412/403/429 and
   -352 refresh-and-retry, legacy-API fallback, error classification, and
   the per-room cooldown ladder. Endpoint code only builds requests,
   parses responses, and translates business codes — never retries or
@@ -168,13 +169,13 @@ declared in `biz` and implemented in `data`:
 - `PassportClient` — the account platform seam; QR-login and nav traffic
   (passport.bilibili.com / api.bilibili.com) goes through it, explicitly
   outside `riskGuard` (no WBI signing, no retry). Implemented in
-  `data/passport.go`. Login cookies are captured from the poll response's
+  `data/bili/passport.go`. Login cookies are captured from the poll response's
   Set-Cookie headers.
 - `CredentialRepo` — the credential storage seam; persists the single
   Bilibili login cookie in the `credentials` table and, on
-  save/delete, hot-swaps the in-memory cookie held by `*Data` so the
-  recorder picks up a new login without restart. Implemented in
-  `data/credential.go`. See ADR-0003.
+  save/delete, hot-swaps the in-memory cookie held by the `bili.Client`
+  inside `*Data` so the recorder picks up a new login without restart.
+  Implemented in `data/credential.go`. See ADR-0003.
 
 `RecorderUsecase` (biz/recorder.go) makes decisions only: its `Run` is a
 supervisor loop reconciling the registry's change notifications against
