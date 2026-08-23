@@ -15,7 +15,6 @@ import {
   App,
   Badge,
   Empty,
-  Spin,
 } from 'antd';
 import {
   PlusOutlined,
@@ -100,7 +99,6 @@ export default function RoomList() {
   const { message, modal } = App.useApp();
 
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [loading, setLoading] = useState(false);
   const [nextPageToken, setNextPageToken] = useState<string>('');
   const [pageTokenStack, setPageTokenStack] = useState<string[]>(['']);
   const [currentPage, setCurrentPage] = useState(0);
@@ -115,8 +113,7 @@ export default function RoomList() {
   const PAGE_SIZE = 20;
   const REFRESH_INTERVAL_MS = 2000;
 
-  const loadPage = useCallback(async (token: string) => {
-    setLoading(true);
+  const loadPage = useCallback(async (token: string, showError = true) => {
     try {
       const res = await roomsApi.list({ page_size: PAGE_SIZE, page_token: token || undefined });
       const nextRooms = res.rooms ?? [];
@@ -135,9 +132,9 @@ export default function RoomList() {
       });
       setNextPageToken(res.next_page_token ?? '');
     } catch (e: unknown) {
-      message.error((e as Error).message ?? '加载失败');
-    } finally {
-      setLoading(false);
+      if (showError) {
+        message.error((e as Error).message ?? '加载失败');
+      }
     }
   }, [message]);
 
@@ -152,7 +149,7 @@ export default function RoomList() {
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
-      loadPage(tokenRef.current);
+      void loadPage(tokenRef.current, false);
     }, REFRESH_INTERVAL_MS);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -260,7 +257,7 @@ export default function RoomList() {
           <Button icon={<PlusOutlined />} type="primary" onClick={openCreate}>
             添加房间
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>
+          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             刷新
           </Button>
         </Space>
@@ -275,7 +272,7 @@ export default function RoomList() {
         </Space>
       </div>
 
-      <Spin spinning={loading}>
+      <div>
         {rooms.length === 0 ? (
           <Card className="room-card-empty" bordered={false}>
             <Empty description="当前页暂无房间" />
@@ -386,7 +383,7 @@ export default function RoomList() {
             })}
           </div>
         )}
-      </Spin>
+      </div>
 
       <Modal
         title={modalMode === 'create' ? '添加房间' : '编辑房间'}

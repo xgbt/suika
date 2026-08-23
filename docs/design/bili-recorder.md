@@ -355,8 +355,10 @@ SIGTERM → kratos 触发各 server.Stop
    则降级到旧接口 `getConf`（无需 WBI）；两者都失败 → 该房间进风控冷却。
    节点列表为空时用保底地址 `wss://broadcastlv.chat.bilibili.com:2245/sub`。
 2. 拨号：节点列表**随机打乱**，每个节点依次尝试 protover 3（brotli）、
-   2（zlib）；op7 认证包携带 `uid=0 / roomid / protover / platform=web /
-   type=2 / key=token / buvid`（buvid 优先取 cookie 里的 buvid3，缺则 spi 现取）；
+   2（zlib）；op7 认证包携带 `uid / roomid / protover / platform=web /
+   type=2 / key=token / buvid`（uid 取生效 cookie 的 DedeUserID，未登录
+   为 0：登录后 token 与账号绑定，uid 不一致会被服务器断连；buvid 优先
+   取 cookie 里的 buvid3，缺则 spi 现取）；
    等 op8 认证回复（5s 超时，`code==0` 才算成功）。
 3. **每次（重）连接成功后先调 `getInfoByRoom` 重建房态**（`pushRoomState`），
    结果以 `*RoomInfo` 投递到 `RoomStateUpdates` 通道，覆盖断线/休眠期间

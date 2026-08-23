@@ -337,3 +337,57 @@ func TestToInt64(t *testing.T) {
 		t.Fatalf("toInt64(nil) = %d, want 0", got)
 	}
 }
+
+// --- 认证载荷 ---
+
+// 登录后 getDanmuInfo 返回的 token 与账号绑定，弹幕服务器要求认证包
+// uid 与 cookie 身份一致，否则直接断开连接（表现为 close 1006）。
+// 回归测试保证认证包 uid 跟随当前生效的登录态。
+func TestBuildAuthBodyUIDFollowsCookie(t *testing.T) {
+	cookie := "SESSDATA=fake-sessdata; bili_jct=fake-jct; DedeUserID=123456; DedeUserID__ckMd5=fake-md5; sid=fake-sid"
+	var body struct {
+		UID    int64  `json:"uid"`
+		RoomID int64  `json:"roomid"`
+		Key    string `json:"key"`
+		Buvid  string `json:"buvid"`
+	}
+	if err := json.Unmarshal(buildAuthBody(42, "token-x", 3, "buvid3-x", cookie), &body); err != nil {
+		t.Fatalf("unmarshal auth body: %v", err)
+	}
+	if body.UID != 123456 {
+		t.Fatalf("uid = %d, want 123456（登录态认证包必须携带 DedeUserID）", body.UID)
+	}
+	if body.RoomID != 42 || body.Key != "token-x" || body.Buvid != "buvid3-x" {
+		t.Fatalf("auth body fields wrong: %+v", body)
+	}
+}
+
+func TestBuildAuthBodyUIDAnonymousWithoutCookie(t *testing.T) {
+	var body struct {
+		UID int64 `json:"uid"`
+	}
+	if err := json.Unmarshal(buildAuthBody(42, "token-x", 3, "buvid3-x", ""), &body); err != nil {
+		t.Fatalf("unmarshal auth body: %v", err)
+	}
+	if body.UID != 0 {
+		t.Fatalf("uid = %d, want 0（未登录时保持匿名）", body.UID)
+	}
+}
+
+func TestDanmakuAuthUID(t *testing.T) {
+	cases := []struct {
+		name   string
+		cookie string
+		want   int64
+	}{
+		{"空 cookie", "", 0},
+		{"无 DedeUserID", "SESSDATA=x; sid=y", 0},
+		{"DedeUserID 非数字", "DedeUserID=abc", 0},
+		{"正常登录 cookie", "SESSDATA=x; DedeUserID=42; sid=y", 42},
+	}
+	for _, tc := range cases {
+		if got := danmakuAuthUID(tc.cookie); got != tc.want {
+			t.Errorf("%s: danmakuAuthUID = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}

@@ -160,19 +160,22 @@ func (c *danmakuConn) dial(ctx context.Context, addresses []string, token, buvid
 }
 
 func (c *danmakuConn) dialAndAuth(ctx context.Context, address, token string, protover int, buvid string) (*websocket.Conn, error) {
+	// cookie 快照同时用于握手头与认证包：登录后 getDanmuInfo 的 token
+	// 与账号绑定，认证包的 uid 必须与 cookie 身份一致。
+	cookie := c.lc.data.Cookie()
 	header := http.Header{
 		"User-Agent": {biliUserAgent},
 		"Origin":     {"https://live.bilibili.com"},
 		"Referer":    {fmt.Sprintf("https://live.bilibili.com/%d", c.roomID)},
 	}
-	if cookie := c.lc.data.Cookie(); cookie != "" {
+	if cookie != "" {
 		header.Set("Cookie", cookie)
 	}
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, address, header)
 	if err != nil {
 		return nil, err
 	}
-	auth := buildAuthBody(c.roomID, token, protover, buvid)
+	auth := buildAuthBody(c.roomID, token, protover, buvid, cookie)
 	if err := conn.WriteMessage(websocket.BinaryMessage, packPacket(operationAuth, 1, auth)); err != nil {
 		conn.Close()
 		return nil, err
@@ -390,9 +393,9 @@ func toInt64(v any) int64 {
 
 // --- 弹幕 websocket 二进制协议（移植自 hikami-go）---
 
-func buildAuthBody(roomID int64, token string, protover int, buvid string) []byte {
+func buildAuthBody(roomID int64, token string, protover int, buvid, cookie string) []byte {
 	body := map[string]any{
-		"uid":      0,
+		"uid":      danmakuAuthUID(cookie),
 		"roomid":   roomID,
 		"protover": protover,
 		"platform": "web",
@@ -402,6 +405,17 @@ func buildAuthBody(roomID int64, token string, protover int, buvid string) []byt
 	}
 	data, _ := json.Marshal(body)
 	return data
+}
+
+// danmakuAuthUID 返回弹幕认证包使用的 uid：登录后 getDanmuInfo 返回的
+// token 与账号绑定，弹幕服务器要求认证包 uid 与 cookie 身份一致，
+// 否则直接断开连接；未登录（或 cookie 缺 DedeUserID）时为 0（匿名）。
+func danmakuAuthUID(cookie string) int64 {
+	uid, err := strconv.ParseInt(cookieValue(cookie, "DedeUserID"), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return uid
 }
 
 func waitAuthSuccess(conn *websocket.Conn) error {
