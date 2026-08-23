@@ -146,6 +146,7 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.StreamQuality, error) {
 	bestURL := ""
 	bestPriority := -1
+	selectedQn := 0
 	for _, stream := range pu.Stream {
 		for _, format := range stream.Format {
 			for _, codec := range format.Codec {
@@ -163,6 +164,7 @@ func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.Strea
 					if priority > bestPriority {
 						bestPriority = priority
 						bestURL = urlInfo.Host + codec.BaseURL + urlInfo.Extra
+						selectedQn = codec.CurrentQn
 					}
 				}
 			}
@@ -172,18 +174,21 @@ func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.Strea
 		return "", biz.StreamQuality{}, fmt.Errorf("no FLV stream candidate for room %d", roomID)
 	}
 
-	granted := pu.CurrentQn
+	granted := selectedQn
 	if granted == 0 {
-		granted = requestedQN
+		granted = pu.CurrentQn
 	}
-	desc := qnNames[int32(granted)]
-	for _, qd := range pu.GQnDesc {
-		if qd.Qn == granted {
-			desc = qd.Desc
-			break
+	desc := ""
+	if granted != 0 {
+		desc = qnNames[int32(granted)]
+		for _, qd := range pu.GQnDesc {
+			if qd.Qn == granted {
+				desc = qd.Desc
+				break
+			}
 		}
 	}
-	if granted != requestedQN {
+	if granted != 0 && granted != requestedQN {
 		log.Warn("stream quality downgraded", "room", roomID, "requested", requestedQN, "granted", granted)
 	}
 	return bestURL, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
@@ -260,6 +265,7 @@ type formatLine struct {
 
 type codecLine struct {
 	CodecName string    `json:"codec_name"`
+	CurrentQn int       `json:"current_qn"`
 	BaseURL   string    `json:"base_url"`
 	URLInfo   []hostURL `json:"url_info"`
 }

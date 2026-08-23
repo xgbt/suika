@@ -41,8 +41,8 @@ function formatSpeed(bytesPerSecond: number): string {
 
 const RECORD_STATUS_MAP: Record<RecordStatus, React.ReactNode> = {
   [RecordStatus.RECORD_STATUS_UNSPECIFIED]: <Tag>未知</Tag>,
-  [RecordStatus.RECORD_STATUS_IDLE]: <Tag color="default">空闲</Tag>,
-  [RecordStatus.RECORD_STATUS_RECORDING]: <Badge status="processing" color="green" text={<Text type="success">录制中</Text>} />,
+  [RecordStatus.RECORD_STATUS_IDLE]: <span className="status-pill status-pill-idle">空闲</span>,
+  [RecordStatus.RECORD_STATUS_RECORDING]: <span className="status-pill status-pill-recording">录制中</span>,
   [RecordStatus.RECORD_STATUS_REMUXING]: <Badge status="processing" color="blue" text={<Text type="secondary">合并中</Text>} />,
   [RecordStatus.RECORD_STATUS_ERROR]: <Tag color="error">错误</Tag>,
 };
@@ -241,7 +241,6 @@ export default function RoomList() {
               const speedHistory = speedHistoryByRoom[room.room_id] ?? [0];
               const isLive = room.live_status === LiveStatus.LIVE_STATUS_LIVE;
               const isRecording = room.record_status === RecordStatus.RECORD_STATUS_RECORDING;
-              const livePillClassName = isRecording ? 'live-pill live-pill-strong' : 'live-pill live-pill-light';
               return (
                 <Card key={room.room_id} className={`room-card ${isLive ? 'room-card-live' : ''}`} bordered={false}>
                   <div className="room-card-head">
@@ -258,7 +257,7 @@ export default function RoomList() {
                             房间 #{room.room_id}
                           </button>
                         </Popconfirm>
-                        {isLive ? <span className={livePillClassName}>LIVE</span> : null}
+                        {isLive ? <span className="live-indicator" aria-label="直播中" title="直播中" /> : null}
                       </div>
                       <div className="room-name">{room.streamer_name || '未命名主播'}</div>
                     </div>
@@ -280,7 +279,11 @@ export default function RoomList() {
                   <div className="room-title">{room.room_title || '暂无房间标题'}</div>
 
                   <div className="room-status-row">
-                    {RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>}
+                    {isRecording && room.granted_qn ? (
+                      <Tooltip title={`QN ${room.granted_qn}${room.granted_qn_desc ? ` · ${room.granted_qn_desc}` : ''}`}>
+                        <span aria-label="查看当前录制清晰度">{RECORD_STATUS_MAP[room.record_status]}</span>
+                      </Tooltip>
+                    ) : (RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>)}
                     <span className="room-toggle">
                       <span className="room-toggle-label">录制开关</span>
                       <Switch

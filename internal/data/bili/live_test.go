@@ -93,7 +93,24 @@ func TestPickFLVStreamQualityFromGQnDesc(t *testing.T) {
 	}
 }
 
-func TestPickFLVStreamQualityFallbackToRequested(t *testing.T) {
+func TestPickFLVStreamQualityFromSelectedCodec(t *testing.T) {
+	pu := playURL{
+		GQnDesc: []qnDesc{{Qn: 250, Desc: "超清"}},
+		Stream: []streamLine{{Format: []formatLine{{Codec: []codecLine{
+			{CodecName: "avc", CurrentQn: 250, BaseURL: "/live/a.flv", URLInfo: []hostURL{{Host: "https://cdn-1"}}},
+		}}}}},
+	}
+
+	_, quality, err := pickFLVStream(pu, 10000, 1)
+	if err != nil {
+		t.Fatalf("pickFLVStream: %v", err)
+	}
+	if quality.Qn != 250 || quality.Desc != "超清" {
+		t.Fatalf("quality = %+v, want {250 超清} from selected codec", quality)
+	}
+}
+
+func TestPickFLVStreamQualityUnknownWhenCurrentQnMissing(t *testing.T) {
 	pu := playURL{
 		CurrentQn: 0,
 		Stream: []streamLine{{Format: []formatLine{{Codec: []codecLine{
@@ -105,8 +122,8 @@ func TestPickFLVStreamQualityFallbackToRequested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pickFLVStream: %v", err)
 	}
-	if quality.Qn != 10000 || quality.Desc != "原画" {
-		t.Fatalf("quality = %+v, want {10000 原画} via qnNames fallback", quality)
+	if quality.Qn != 0 || quality.Desc != "" {
+		t.Fatalf("quality = %+v, want unknown quality when current_qn is missing", quality)
 	}
 }
 

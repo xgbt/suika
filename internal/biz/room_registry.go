@@ -13,11 +13,12 @@ import (
 
 // roomState 是 RoomRegistry 内部维护的房间条目，包含房间基础信息和可变运行状态。
 type roomState struct {
-	room             Room         // 房间基础信息
-	liveStatus       LiveStatus   // 当前直播状态
-	recordStatus     RecordStatus // 当前录制状态
-	sessionStartedAt time.Time    // 当前录制会话开始时间
-	lastError        string       // 最近一次监控或录制错误
+	room             Room          // 房间基础信息
+	liveStatus       LiveStatus    // 当前直播状态
+	recordStatus     RecordStatus  // 当前录制状态
+	quality          StreamQuality // B 站当前授予的直播流清晰度
+	sessionStartedAt time.Time     // 当前录制会话开始时间
+	lastError        string        // 最近一次监控或录制错误
 }
 
 // RoomRegistry 持有房间列表及其运行时状态，是房间配置的唯一事实源：
@@ -163,6 +164,7 @@ func (reg *RoomRegistry) runtime(roomID int64) *RoomRuntime {
 		Room:             st.room,
 		LiveStatus:       st.liveStatus,
 		RecordStatus:     st.recordStatus,
+		Quality:          st.quality,
 		SessionStartedAt: st.sessionStartedAt,
 		LastError:        st.lastError,
 	}
@@ -203,9 +205,15 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 func (reg *RoomRegistry) StartRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
 		st.recordStatus = RecordStatusRecording
+		st.quality = StreamQuality{}
 		st.sessionStartedAt = time.Now()
 		st.lastError = ""
 	})
+}
+
+// SetStreamQuality 记录当前录制会话实际获得的 B 站流清晰度。
+func (reg *RoomRegistry) SetStreamQuality(roomID int64, quality StreamQuality) {
+	reg.setState(roomID, func(st *roomState) { st.quality = quality })
 }
 
 // SetRemuxing 将房间会话标记为收尾中（正在转封装）。
@@ -225,6 +233,7 @@ func (reg *RoomRegistry) FailRecording(roomID int64, err error) {
 func (reg *RoomRegistry) FinishRecording(roomID int64) {
 	reg.setState(roomID, func(st *roomState) {
 		st.recordStatus = RecordStatusIdle
+		st.quality = StreamQuality{}
 		st.sessionStartedAt = time.Time{}
 	})
 }

@@ -343,6 +343,13 @@ components:
                 downloadSpeedBps:
                     readOnly: true
                     type: string
+                grantedQn:
+                    readOnly: true
+                    type: integer
+                    format: int32
+                grantedQnDesc:
+                    readOnly: true
+                    type: string
         room.v1.UpdateRoomRequest:
             required:
                 - room

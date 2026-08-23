@@ -522,6 +522,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 
 		// 2. 录制
 		session.Quality = stream.Quality
+		uc.registry.SetStreamQuality(roomID, stream.Quality)
 		result, recErr := uc.repo.RecordSession(ctx, session, stream, events)
 		if result != nil {
 			log.Info("pump ended", "room", roomID, "bytes", result.BytesWritten, "parts", result.Parts, "err", recErr)

@@ -30,6 +30,8 @@ export interface Room {
   current_file: string;
   bytes_written: number;
   download_speed_bps: number;
+  granted_qn: number;
+  granted_qn_desc: string;
   session_started_at?: string;
   last_error: string;
   create_time?: string;

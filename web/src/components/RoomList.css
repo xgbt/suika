@@ -106,28 +106,39 @@
 	max-width: 100%;
 }
 
-.live-pill {
+
+.live-indicator {
+	display: inline-flex;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #57b578;
+	box-shadow: 0 0 0 3px rgba(87, 181, 120, 0.16);
+}
+
+.status-pill {
 	display: inline-flex;
 	align-items: center;
-	padding: 1px 7px;
+	justify-content: center;
 	height: 18px;
+	padding: 1px 9px;
 	border-radius: 999px;
-	font-size: 9px;
+	font-size: 10px;
 	font-weight: 700;
-	letter-spacing: 0.2px;
-	transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+	letter-spacing: 0;
 }
 
-.live-pill-light {
-	color: #1f6f35;
-	background: #e9f7ee;
-	border: 1px solid #8ed4a5;
+.status-pill-idle {
+	border: 1px solid rgba(123, 137, 128, 0.22);
+	background: #f1f3f1;
+	color: #5f6661;
 }
 
-.live-pill-strong {
-	color: #145429;
-	background: #d8f1e1;
+.status-pill-recording {
 	border: 1px solid #57b578;
+	background: #d8f1e1;
+	color: #145429;
+	cursor: help;
 }
 
 .room-name {

@@ -88,6 +88,8 @@ message Room {
   string streamer_name = 12 [(google.api.field_behavior) = OUTPUT_ONLY];
   string room_title = 13 [(google.api.field_behavior) = OUTPUT_ONLY];
   int64 download_speed_bps = 14 [(google.api.field_behavior) = OUTPUT_ONLY];
+  int32 granted_qn = 15 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string granted_qn_desc = 16 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 message CreateRoomRequest {
