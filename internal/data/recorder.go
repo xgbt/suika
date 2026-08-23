@@ -138,6 +138,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	}
 	defer stream.Body.Close()
 
+	// 获取会话目录和文件名前缀
 	dir, base, err := r.sessionPaths(session)
 	if err != nil {
 		return nil, err
@@ -147,11 +148,13 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	}
 	metaPath := filepath.Join(dir, base+".meta.json")
 
+	// 读取 FLV 文件头
 	header, err := flv.ParseHeader(stream.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
 
+	// 记录当前会话的写入进度
 	stats := r.statsFor(session.RoomID)
 	baseBytes := stats.bytes.Load()
 	stats.file.Store("")

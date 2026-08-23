@@ -71,6 +71,7 @@ type Tag struct {
 // ReadTag 读取一个 tag（11 字节头、载荷、尾部 PreviousTagSize）。
 // 仅当流在读到任何头字节之前干净结束时才返回 io.EOF。
 func ReadTag(r io.Reader) (*Tag, error) {
+	// 读取 tag 头部
 	var head [tagHeaderSize]byte
 	if _, err := io.ReadFull(r, head[:]); err != nil {
 		if err == io.ErrUnexpectedEOF {
@@ -78,9 +79,11 @@ func ReadTag(r io.Reader) (*Tag, error) {
 		}
 		return nil, err
 	}
+	// 解析 tag 头部, 计算得到 dataSize 和时间戳
 	dataSize := int(head[1])<<16 | int(head[2])<<8 | int(head[3])
 	ts := int64(head[7])<<24 | int64(head[4])<<16 | int64(head[5])<<8 | int64(head[6])
 
+	// 读取 tag payload 和尾部 PreviousTagSize
 	data := make([]byte, dataSize)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return nil, fmt.Errorf("flv: read tag data: %w", err)
