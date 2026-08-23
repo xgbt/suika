@@ -1,6 +1,7 @@
 package server
 
 import (
+	accountv1 "suika/api/account/v1"
 	v1 "suika/api/room/v1"
 	"suika/internal/conf"
 	"suika/internal/service"
@@ -10,7 +11,7 @@ import (
 )
 
 // NewGRPCServer 创建 gRPC 服务器。
-func NewGRPCServer(c *conf.Server, room *service.RoomService) *grpc.Server {
+func NewGRPCServer(c *conf.Server, room *service.RoomService, account *service.AccountService) *grpc.Server {
 	var opts = []grpc.ServerOption{
 		grpc.Middleware(
 			recovery.Recovery(),
@@ -21,5 +22,6 @@ func NewGRPCServer(c *conf.Server, room *service.RoomService) *grpc.Server {
 	}
 	srv := grpc.NewServer(opts...)
 	v1.RegisterRoomServiceServer(srv, room)
+	accountv1.RegisterAccountServiceServer(srv, account)
 	return srv
 }

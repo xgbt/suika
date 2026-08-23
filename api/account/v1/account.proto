@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package account.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "suika/api/account/v1;v1";
+option java_multiple_files = true;
+option java_package = "account.v1";
+option objc_class_prefix = "APIAccountV1";
+
+// AccountService 管理录制器充当的 B 站账号：扫码登录获取凭据、
+// 查询登录状态、登出。凭据持久化在数据库中，是唯一登录态来源。
+service AccountService {
+  // CreateQRLogin 生成扫码登录二维码（B 站侧有效期 180 秒）。
+  rpc CreateQRLogin(CreateQRLoginRequest) returns (CreateQRLoginResponse) {
+    option (google.api.http) = {
+      post: "/v1/account/qr-login/create"
+      body: "*"
+    };
+  }
+
+  // PollQRLogin 轮询扫码状态；确认成功时服务端持久化凭据并即时生效。
+  rpc PollQRLogin(PollQRLoginRequest) returns (PollQRLoginResponse) {
+    option (google.api.http) = {
+      post: "/v1/account/qr-login/poll"
+      body: "*"
+    };
+  }
+
+  // GetAccountStatus 查询当前登录账号（以数据库凭据向 B 站核验）。
+  rpc GetAccountStatus(GetAccountStatusRequest) returns (GetAccountStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/account/status/get"
+      body: "*"
+    };
+  }
+
+  // Logout 本地登出：删除数据库凭据并清除内存登录态，不调用 B 站登出接口。
+  rpc Logout(LogoutRequest) returns (LogoutResponse) {
+    option (google.api.http) = {
+      post: "/v1/account/logout"
+      body: "*"
+    };
+  }
+}
+
+// QRLoginStatus 扫码登录的轮询状态。
+enum QRLoginStatus {
+  QR_LOGIN_STATUS_UNSPECIFIED = 0;
+  // 尚未扫码。
+  QR_LOGIN_STATUS_NOT_SCANNED = 1;
+  // 已扫码、待手机端确认。
+  QR_LOGIN_STATUS_SCANNED = 2;
+  // 二维码已过期。
+  QR_LOGIN_STATUS_EXPIRED = 3;
+  // 确认成功，凭据已保存。
+  QR_LOGIN_STATUS_CONFIRMED = 4;
+}
+
+// AccountState 账号登录状态。
+enum AccountState {
+  ACCOUNT_STATE_UNSPECIFIED = 0;
+  // 数据库中没有凭据。
+  ACCOUNT_STATE_LOGGED_OUT = 1;
+  // 有凭据且 B 站确认在线。
+  ACCOUNT_STATE_LOGGED_IN = 2;
+  // 有凭据但 B 站报告未登录（凭据失效），需要重新扫码。
+  ACCOUNT_STATE_EXPIRED = 3;
+}
+
+// AccountInfo 账号登录信息。
+message AccountInfo {
+  AccountState state = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // 登录账号的昵称；未登录时为空。
+  string uname = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // 登录账号的 mid；未登录时为 0。
+  int64 mid = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message CreateQRLoginRequest {}
+
+message CreateQRLoginResponse {
+  // 二维码内容（URL），客户端渲染为二维码供 B 站 App 扫描。
+  string url = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // 轮询凭证。
+  string qrcode_key = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // 二维码失效时刻（生成时刻 + 180 秒）。
+  google.protobuf.Timestamp expire_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message PollQRLoginRequest {
+  string qrcode_key = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message PollQRLoginResponse {
+  QRLoginStatus status = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message GetAccountStatusRequest {}
+
+message GetAccountStatusResponse {
+  AccountInfo account = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message LogoutRequest {}
+
+message LogoutResponse {
+  google.protobuf.Empty empty = 1;
+}

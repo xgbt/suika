@@ -81,18 +81,20 @@ func (x *Bootstrap) GetRecorder() *Recorder {
 	return nil
 }
 
-// Recorder configures the Bilibili live recorder: where recordings land,
-// the credentials to fetch them with, and the deployment-dependent knobs.
-// Behavioral tuning (segment length, reconnect policy, poll intervals,
-// stream quality) is deliberately not configurable; those defaults live in
-// code (biz/data layers). Rooms to watch live in the sqlite database
-// (rooms table), not in config files.
-// Sensitive credentials (cookie) belong in configs/credentials.yaml,
-// which is merged into Bootstrap by the config file source and gitignored.
+// Recorder configures the Bilibili live recorder: where recordings land
+// and the deployment-dependent knobs. Behavioral tuning (segment length,
+// reconnect policy, poll intervals, stream quality) is deliberately not
+// configurable; those defaults live in code (biz/data layers). Rooms to
+// watch live in the sqlite database (rooms table), not in config files.
+// The login credential is obtained via web QR login and stored in the
+// sqlite database (credentials table); it is the only cookie source.
 type Recorder struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Full cookie header including SESSDATA, required for source quality.
-	// Keep in configs/credentials.yaml (gitignored), never in config.yaml.
+	// Deprecated: the login cookie is no longer read from config. It is
+	// obtained via web QR login and persisted in the database. This field
+	// is retained (and ignored) for backwards compatibility.
+	//
+	// Deprecated: Marked as deprecated in conf/conf.proto.
 	Cookie string `protobuf:"bytes,2,opt,name=cookie,proto3" json:"cookie,omitempty"`
 	// Directory recordings are written under. Default ./recordings.
 	RecordRoot string `protobuf:"bytes,3,opt,name=record_root,json=recordRoot,proto3" json:"record_root,omitempty"`
@@ -136,6 +138,7 @@ func (*Recorder) Descriptor() ([]byte, []int) {
 	return file_conf_conf_proto_rawDescGZIP(), []int{1}
 }
 
+// Deprecated: Marked as deprecated in conf/conf.proto.
 func (x *Recorder) GetCookie() string {
 	if x != nil {
 		return x.Cookie
@@ -401,9 +404,9 @@ const file_conf_conf_proto_rawDesc = "" +
 	"\tBootstrap\x12*\n" +
 	"\x06server\x18\x01 \x01(\v2\x12.kratos.api.ServerR\x06server\x12$\n" +
 	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\x120\n" +
-	"\brecorder\x18\x03 \x01(\v2\x14.kratos.api.RecorderR\brecorder\"\x93\x02\n" +
-	"\bRecorder\x12\x16\n" +
-	"\x06cookie\x18\x02 \x01(\tR\x06cookie\x12\x1f\n" +
+	"\brecorder\x18\x03 \x01(\v2\x14.kratos.api.RecorderR\brecorder\"\x97\x02\n" +
+	"\bRecorder\x12\x1a\n" +
+	"\x06cookie\x18\x02 \x01(\tB\x02\x18\x01R\x06cookie\x12\x1f\n" +
 	"\vrecord_root\x18\x03 \x01(\tR\n" +
 	"recordRoot\x12%\n" +
 	"\x0emax_concurrent\x18\a \x01(\x05R\rmaxConcurrent\x12(\n" +

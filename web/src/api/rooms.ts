@@ -1,5 +1,7 @@
 // Room API types matching room.proto
 
+import { request } from './request';
+
 export const LiveStatus = {
   LIVE_STATUS_UNSPECIFIED: 0,
   LIVE_STATUS_PREPARING: 1,
@@ -32,19 +34,6 @@ export interface Room {
   last_error: string;
   create_time?: string;
   update_time?: string;
-}
-
-async function request<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }));
-    throw new Error(err.message ?? res.statusText);
-  }
-  return res.json();
 }
 
 export interface ListRoomsParams {

@@ -1,6 +1,7 @@
 import { ConfigProvider, Layout, Typography, App as AntApp, theme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import RoomList from './components/RoomList';
+import AccountBar from './components/AccountBar';
 import './App.css';
 
 const { Header, Content } = Layout;
@@ -30,6 +31,9 @@ function App() {
             <Title level={4} className="app-title">
               Suika 直播录制管理
             </Title>
+            <div className="app-header-right">
+              <AccountBar />
+            </div>
           </Header>
           <Content className="app-content-wrap">
             <div className="app-content-card">

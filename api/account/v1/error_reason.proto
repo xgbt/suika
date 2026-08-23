@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package account.v1;
+
+option go_package = "suika/api/account/v1;v1";
+option java_multiple_files = true;
+option java_package = "account.v1";
+option objc_class_prefix = "APIAccountV1";
+
+enum ErrorReason {
+  ERROR_REASON_UNSPECIFIED = 0;
+  ERROR_REASON_INTERNAL = 1;
+  ERROR_REASON_NOT_FOUND = 2;
+  ERROR_REASON_INVALID_ARGUMENT = 3;
+  ERROR_REASON_ALREADY_EXISTS = 4;
+  // 平台（B 站 passport/nav）不可用或拒绝请求，区别于服务自身故障。
+  ERROR_REASON_UNAVAILABLE = 5;
+}

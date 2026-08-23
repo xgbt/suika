@@ -10,8 +10,8 @@ data:
   database:
     source: ./data/suika.db
 recorder:
-  # 显式留空，真实值只进 credentials.yaml（gitignored，见
-  # credentials.example.yaml）。
+  # 已废弃：登录凭据由 Web 扫码登录写入数据库（credentials 表），
+  # 此字段不再被读取，保留仅为向后兼容。
   cookie: ""
   record_root: ./recordings
   max_concurrent: 10

@@ -9,6 +9,7 @@
 .app-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   margin: 14px auto 0;
   width: min(1220px, calc(100% - 24px));
@@ -18,6 +19,11 @@
   border: 1px solid rgba(123, 137, 128, 0.22);
   box-shadow: 0 10px 20px rgba(29, 29, 31, 0.08);
   padding: 0 18px;
+}
+
+.app-header-right {
+  display: flex;
+  align-items: center;
 }
 
 .app-title {

@@ -3,9 +3,85 @@
 
 openapi: 3.0.3
 info:
-    title: RoomService API
+    title: ""
     version: 0.0.1
 paths:
+    /v1/account/logout:
+        post:
+            tags:
+                - AccountService
+            description: Logout 本地登出：删除数据库凭据并清除内存登录态，不调用 B 站登出接口。
+            operationId: AccountService_Logout
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/account.v1.LogoutRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/account.v1.LogoutResponse'
+    /v1/account/qr-login/create:
+        post:
+            tags:
+                - AccountService
+            description: CreateQRLogin 生成扫码登录二维码（B 站侧有效期 180 秒）。
+            operationId: AccountService_CreateQRLogin
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/account.v1.CreateQRLoginRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/account.v1.CreateQRLoginResponse'
+    /v1/account/qr-login/poll:
+        post:
+            tags:
+                - AccountService
+            description: PollQRLogin 轮询扫码状态；确认成功时服务端持久化凭据并即时生效。
+            operationId: AccountService_PollQRLogin
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/account.v1.PollQRLoginRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/account.v1.PollQRLoginResponse'
+    /v1/account/status/get:
+        post:
+            tags:
+                - AccountService
+            description: GetAccountStatus 查询当前登录账号（以数据库凭据向 B 站核验）。
+            operationId: AccountService_GetAccountStatus
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/account.v1.GetAccountStatusRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/account.v1.GetAccountStatusResponse'
     /v1/rooms/create:
         post:
             tags:
@@ -98,6 +174,71 @@ paths:
                                 $ref: '#/components/schemas/room.v1.UpdateRoomResponse'
 components:
     schemas:
+        account.v1.AccountInfo:
+            type: object
+            properties:
+                state:
+                    readOnly: true
+                    type: integer
+                    format: enum
+                uname:
+                    readOnly: true
+                    type: string
+                    description: 登录账号的昵称；未登录时为空。
+                mid:
+                    readOnly: true
+                    type: string
+                    description: 登录账号的 mid；未登录时为 0。
+            description: AccountInfo 账号登录信息。
+        account.v1.CreateQRLoginRequest:
+            type: object
+            properties: {}
+        account.v1.CreateQRLoginResponse:
+            type: object
+            properties:
+                url:
+                    readOnly: true
+                    type: string
+                    description: 二维码内容（URL），客户端渲染为二维码供 B 站 App 扫描。
+                qrcodeKey:
+                    readOnly: true
+                    type: string
+                    description: 轮询凭证。
+                expireTime:
+                    readOnly: true
+                    type: string
+                    description: 二维码失效时刻（生成时刻 + 180 秒）。
+                    format: date-time
+        account.v1.GetAccountStatusRequest:
+            type: object
+            properties: {}
+        account.v1.GetAccountStatusResponse:
+            type: object
+            properties:
+                account:
+                    readOnly: true
+                    allOf:
+                        - $ref: '#/components/schemas/account.v1.AccountInfo'
+        account.v1.LogoutRequest:
+            type: object
+            properties: {}
+        account.v1.LogoutResponse:
+            type: object
+            properties: {}
+        account.v1.PollQRLoginRequest:
+            required:
+                - qrcodeKey
+            type: object
+            properties:
+                qrcodeKey:
+                    type: string
+        account.v1.PollQRLoginResponse:
+            type: object
+            properties:
+                status:
+                    readOnly: true
+                    type: integer
+                    format: enum
         room.v1.CreateRoomRequest:
             required:
                 - room
@@ -217,4 +358,8 @@ components:
                 room:
                     $ref: '#/components/schemas/room.v1.Room'
 tags:
+    - name: AccountService
+      description: |-
+        AccountService 管理录制器充当的 B 站账号：扫码登录获取凭据、
+         查询登录状态、登出。凭据持久化在数据库中，是唯一登录态来源。
     - name: RoomService

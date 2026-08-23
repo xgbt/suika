@@ -165,8 +165,8 @@ func (c *danmakuConn) dialAndAuth(ctx context.Context, address, token string, pr
 		"Origin":     {"https://live.bilibili.com"},
 		"Referer":    {fmt.Sprintf("https://live.bilibili.com/%d", c.roomID)},
 	}
-	if c.lc.data.cookie != "" {
-		header.Set("Cookie", c.lc.data.cookie)
+	if cookie := c.lc.data.Cookie(); cookie != "" {
+		header.Set("Cookie", cookie)
 	}
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, address, header)
 	if err != nil {
@@ -625,13 +625,14 @@ func (lc *liveClient) danmuConf(ctx context.Context, roomID int64) (*danmuInfo, 
 	return info, nil
 }
 
-// danmuBuvid 返回弹幕认证载荷使用的 buvid3：优先取配置 cookie 中的，
+// danmuBuvid 返回弹幕认证载荷使用的 buvid3：优先取当前生效 cookie 中的，
 // 其次回退到指纹存储。
 func (lc *liveClient) danmuBuvid(ctx context.Context) string {
-	if buvid := cookieValue(lc.data.cookie, "buvid3"); buvid != "" {
+	cookie := lc.data.Cookie()
+	if buvid := cookieValue(cookie, "buvid3"); buvid != "" {
 		return buvid
 	}
-	b3, _, err := lc.data.buvids.getBuvids(ctx, lc.data.cookie)
+	b3, _, err := lc.data.buvids.getBuvids(ctx, cookie)
 	if err != nil {
 		log.Warn("get buvid3 for danmaku failed, continuing without", "err", err)
 		return ""

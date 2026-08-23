@@ -46,20 +46,21 @@ var qnNames = map[int32]string{
 	80:    "流畅",
 }
 
-// injectAntiRisk 返回注入了新鲜 buvid3/buvid4 指纹的配置 cookie；
+// injectAntiRisk 返回注入了新鲜 buvid3/buvid4 指纹的当前生效 cookie；
 // 失败时退化为原 cookie。
 func (d *Data) injectAntiRisk(ctx context.Context) string {
-	b3, b4, err := d.buvids.getBuvids(ctx, d.cookie)
+	cookie := d.Cookie()
+	b3, b4, err := d.buvids.getBuvids(ctx, cookie)
 	if err != nil {
 		log.Warn("get buvids failed, continuing without buvid", "err", err)
-		return d.cookie
+		return cookie
 	}
 
 	if b3 == "" && b4 == "" {
-		return d.cookie
+		return cookie
 	}
 
-	return injectBuvids(d.cookie, b3, b4)
+	return injectBuvids(cookie, b3, b4)
 }
 
 // refreshRisk 在风控重试前刷新 WBI 密钥并丢弃缓存的 buvid。
@@ -67,7 +68,7 @@ func (d *Data) refreshRisk() {
 	if err := d.signer.refreshKeys(); err != nil {
 		log.Warn("wbi key refresh failed, retrying with existing keys", "err", err)
 	}
-	d.buvids.invalidate(d.cookie)
+	d.buvids.invalidate(d.Cookie())
 }
 
 // signURL 对 endpoint 做 WBI 签名；失败时退化为未签名 URL。
@@ -171,8 +172,8 @@ func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.Li
 		SetHeader("User-Agent", biliUserAgent).
 		SetHeader("Referer", liveReferer(roomID)).
 		SetDoNotParseResponse(true)
-	if lc.data.cookie != "" {
-		req.SetHeader("Cookie", lc.data.cookie)
+	if cookie := lc.data.Cookie(); cookie != "" {
+		req.SetHeader("Cookie", cookie)
 	}
 	resp, err := req.Get(streamURL)
 	if err != nil {

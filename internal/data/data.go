@@ -1,11 +1,13 @@
 package data
 
 import (
+	stderrors "errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"suika/internal/conf"
@@ -17,11 +19,11 @@ import (
 	"gorm.io/gorm"
 )
 
-var ProviderSet = wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo)
+var ProviderSet = wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient)
 
 // Data 持有长生命周期的存储/平台客户端（模板惯例）。对录制器而言，
 // 它们是携带 cookie 的 HTTP 客户端、共享的风控助手（WBI 签名器、
-// buvid 存储），以及持久化 Room 列表的嵌入式数据库。
+// buvid 存储），以及持久化 Room 列表和登录凭据的嵌入式数据库。
 type Data struct {
 	// db 是共享的 gorm 句柄（sqlite）。
 	db *gorm.DB
@@ -31,14 +33,40 @@ type Data struct {
 	// streamClient 拉取直播流；不设超时，因为读取是长生命周期的，
 	// 取消经请求 context 传递。
 	streamClient *resty.Client
+	// passportHTTP 专用于 B 站登录/账号平台接口；必须无 cookie jar，
+	// 避免登录响应的 Set-Cookie 串染房间 API 请求。
+	passportHTTP *resty.Client
 
-	cookie string
+	// cookie 是当前生效的唯一登录态，读写必须经 Cookie()/setCookie()。
+	cookieMu sync.RWMutex
+	cookie   string
+
 	signer *wbiSigner
 	buvids *buvidStore
 
 	// 录制器配置（已应用默认值；proto 零值与未设置无法区分）。
 	remuxEnabled bool
 	ffmpegPath   string
+}
+
+// Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。
+// 录制器的所有并发读取点都必须经此取值（读快照）。
+func (d *Data) Cookie() string {
+	d.cookieMu.RLock()
+	defer d.cookieMu.RUnlock()
+	return d.cookie
+}
+
+// setCookie 热替换生效的 cookie（扫码登录成功/登出时由凭据仓储调用）。
+// 替换后丢弃旧 cookie 的 buvid 缓存，避免旧指纹被继续注入。
+func (d *Data) setCookie(cookie string) {
+	d.cookieMu.Lock()
+	old := d.cookie
+	d.cookie = cookie
+	d.cookieMu.Unlock()
+	if old != "" && old != cookie {
+		d.buvids.invalidate(old)
+	}
 }
 
 // NewData 构建共享客户端。开启转封装但找不到 ffmpeg 时快速失败
@@ -48,19 +76,29 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := db.AutoMigrate(&roomPO{}); err != nil {
-		return nil, nil, fmt.Errorf("data: auto-migrate rooms table: %w", err)
+	if err := db.AutoMigrate(&roomPO{}, &credentialPO{}); err != nil {
+		return nil, nil, fmt.Errorf("data: auto-migrate tables: %w", err)
 	}
 
 	apiClient := resty.New().SetTimeout(15 * time.Second)
+	// passport 调用不需要携带也不会保留 cookie，禁用 jar。
+	passportHTTP := resty.New().SetTimeout(15 * time.Second).SetCookieJar(nil)
+
+	// 登录凭据只来自数据库（recorder.cookie 已退役）。
+	cookie, err := loadCredentialCookie(db)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	d := &Data{
 		db:           db,
 		apiClient:    apiClient,
 		streamClient: resty.New(),
-		cookie:       rc.GetCookie(),
+		passportHTTP: passportHTTP,
+		cookie:       cookie,
 		remuxEnabled: true,
 	}
-	d.signer = newWBISigner(apiClient, d.cookie)
+	d.signer = newWBISigner(apiClient, d.Cookie)
 	d.buvids = newBuvidStore(apiClient)
 
 	if rc != nil && rc.RemuxEnabled != nil {
@@ -76,8 +114,11 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 			log.Warn("ffprobe not found; remux verification limited to output existence")
 		}
 	}
-	if rc != nil && d.cookie == "" {
-		log.Warn("recorder: no cookie configured; source quality may be unavailable")
+	if rc != nil && rc.GetCookie() != "" {
+		log.Warn("recorder: config field recorder.cookie is deprecated and ignored; the credential is managed in the database via web QR login")
+	}
+	if cookie == "" {
+		log.Warn("data: no bilibili credential in the database; log in from the web UI to enable source quality")
 	}
 
 	cleanup := func() {
@@ -87,6 +128,19 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 		}
 	}
 	return d, cleanup, nil
+}
+
+// loadCredentialCookie 启动时读取凭据单例行；无行返回空串。
+func loadCredentialCookie(db *gorm.DB) (string, error) {
+	var po credentialPO
+	err := db.First(&po, credentialSingletonID).Error
+	if stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("data: load credential: %w", err)
+	}
+	return po.Cookie, nil
 }
 
 func openDatabase(c *conf.Data_Database) (*gorm.DB, error) {
