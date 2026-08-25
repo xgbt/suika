@@ -154,9 +154,6 @@ type ReconnectPolicy struct {
 	CDNTransientBudget int           // CDN 瞬时故障的重试预算，超过预算则不再重连
 }
 
-// RecorderUsecase 编排房间监控、会话生命周期和断流决策树。它只做
-// 决策：所有平台 IO 由 LiveClient 执行，所有存储 IO 由 RecorderRepo
-// 执行。房间配置与直播/录制状态存放在共享的 RoomRegistry 中。
 type RecorderUsecase struct {
 	registry            *RoomRegistry
 	repo                RecorderRepo
@@ -169,11 +166,6 @@ type RecorderUsecase struct {
 	stableResetAfter    time.Duration   // 泵送稳定录制超过该时长后重置重连预算；测试中会调小。
 }
 
-// recorderRepo 职责按文件拆分：recorder_supervisor.go 监督循环（Run/
-// reconcile/monitorHandle），recorder_monitor.go 单房间监控分发
-// （watchRoom），recorder_session.go 会话生命周期（launchSession/
-// runSession），recorder_reconnect.go 断流决策树（recordLoop/
-// probeLive）。session_policy.go 是会话启停策略状态机（ADR-0001）。
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
 	uc := &RecorderUsecase{
 		registry:     reg,
@@ -194,7 +186,6 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 	return uc
 }
 
-// sleepCtx 在 ctx 被取消前阻塞 d 时长，若 ctx 被取消则返回 ctx.Err()。
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()
