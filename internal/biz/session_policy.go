@@ -87,7 +87,7 @@ func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) policyDecision {
 }
 
 // RecordEnabledFlipped 处理房间录制开关状态的重评估信号（由监控的
-// roomChanged 分支从注册表读取后投递）。值与当前状态一致时重算结果
+// reevaluate 分支从注册表读取后投递）。值与当前状态一致时重算结果
 // 不变，从而吸收合并或重复的信号。
 func (p *sessionPolicy) RecordEnabledFlipped(recordEnabled bool) policyDecision {
 	p.recordEnabled = recordEnabled

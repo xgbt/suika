@@ -236,23 +236,6 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 	}
 }
 
-// monitorHandle 是监督循环管理的一个房间监控协程句柄
-// roomChanged 表示合并式重评估信号（如 record_enabled 翻转），由监督循环送达 runMonitorConnection。
-type monitorHandle struct {
-	recordEnabled bool          // 当前房间的录制开关状态，监督循环维护；runMonitorConnection 只读。
-	roomChanged   chan struct{} // 重评估信号 channel, 当管理后台操作 record_enabled 时发送信号，runMonitorConnection 监听并执行决策。
-	cancel        context.CancelFunc
-	done          chan struct{}
-}
-
-// signal 向 roomChanged 投递一个重评估信号，若通道已满则丢弃
-func (h *monitorHandle) signal() {
-	select {
-	case h.roomChanged <- struct{}{}:
-	default:
-	}
-}
-
 // reconcile 按注册表快照调和监控协程集合：为新增房间启动监控；停止并
 // 移除已删除房间的监控（移入 retired 自行优雅收尾，不阻塞调和）；
 // record_enabled 翻转的房间投递重评估信号。
@@ -289,17 +272,15 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 		// 启动监控协程并登记到 monitors
 		if !ok {
 			monitor = uc.launchMonitor(ctx, roomID)
-			monitor.recordEnabled = room.RecordEnabled
+			monitor.lastRecordEnabled = room.RecordEnabled
 			monitors[roomID] = monitor
 			continue
 		}
 
 		// 已存在房间监控状态变动，通过发送信号的方式, 让监控协程重新评估是否需要启动/停止录制会话。
-		if monitor.recordEnabled != room.RecordEnabled {
-			monitor.recordEnabled = room.RecordEnabled
-			monitor.signal()
+		if monitor.lastRecordEnabled != room.RecordEnabled {
+			monitor.lastRecordEnabled = room.RecordEnabled
+			monitor.reEvaluate()
 		}
 	}
 }
-
-

@@ -11,26 +11,42 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
+// monitorHandle 是 supervisor 管理单个房间 Monitor 的生命周期句柄。
+type monitorHandle struct {
+	lastRecordEnabled bool          // supervisor 上次调和时记录的录制开关状态。
+	reEvaluateCh      chan struct{} // 请求 Monitor 重新读取房间状态并评估 Session 策略。
+	cancel            context.CancelFunc
+	done              chan struct{}
+}
+
+// reEvaluate 请求 Monitor 重新评估录制策略；重复请求会合并。
+func (h *monitorHandle) reEvaluate() {
+	select {
+	case h.reEvaluateCh <- struct{}{}:
+	default:
+	}
+}
+
 // launchMonitor 异步启动指定房间的监控，并返回其生命周期句柄。
 func (uc *RecorderUsecase) launchMonitor(ctx context.Context, roomID int64) *monitorHandle {
 	mctx, cancel := context.WithCancel(ctx)
 	h := &monitorHandle{
-		roomChanged: make(chan struct{}, 1),
-		cancel:      cancel,
-		done:        make(chan struct{}),
+		reEvaluateCh: make(chan struct{}, 1),
+		cancel:       cancel,
+		done:         make(chan struct{}),
 	}
 	go func() {
 		defer close(h.done)
-		uc.runMonitor(mctx, h.roomChanged, roomID)
+		uc.runMonitor(mctx, h.reEvaluateCh, roomID)
 	}()
 	return h
 }
 
 // runMonitor 维持房间的弹幕连接，断开后重拨，直到 ctx 被取消。
-func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChanged <-chan struct{}, roomID int64) {
+func (uc *RecorderUsecase) runMonitor(ctx context.Context, reevaluateCh <-chan struct{}, roomID int64) {
 	for ctx.Err() == nil {
 		// 单次连接结束后重新拨号，直到 ctx 被取消。
-		if err := uc.runMonitorConnection(ctx, roomChanged, roomID); err != nil && ctx.Err() == nil {
+		if err := uc.runMonitorConnection(ctx, reevaluateCh, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.roomRegistry.NoteError(roomID, err)
 		}
@@ -44,9 +60,9 @@ func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChanged <-chan st
 // 它本身不做会话启停判断，相关策略集中在 sessionPolicy：
 // 各 select 分支把输入投递给策略（房间信息到达前先应用到注册表），并执
 // 行返回的决策——Start 启动会话协程，Stop 取消活跃会话。会话是否启动受
-// 房间 record_enabled 门控；roomChanged 信号只承担重评估的投递，监控本身
+// 房间 record_enabled 门控；reevaluate 信号只承担重评估的投递，监控本身
 // 不受影响。无活跃会话时排空弹幕事件；有活跃会话时由 RecordSession 独占消费事件通道。
-func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
+func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, reevaluateCh <-chan struct{}, roomID int64) error {
 	// 弹幕连接：开播检测主通道，录制期间同时提供弹幕事件。
 	danmakuConn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
@@ -107,7 +123,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChanged
 			}
 			poll.Reset(uc.nextPollDelay())
 		// 管理后台变更了房间记录：重读最新录制开关投递给策略
-		case <-roomChanged:
+		case <-reevaluateCh:
 			room := uc.roomRegistry.Room(roomID)
 			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
 		}
