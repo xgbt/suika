@@ -188,6 +188,9 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			}
 
 			tag := tr.tag
+			// 下载速度统计基于实际接收流量（receiveBytes），而非块裁决后的落盘字节（writtenBytes），
+			// 避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
+			loop.receiveBytes += int64(len(tag.Data)) + tagEnvelopeOverhead
 			if loop.seg == nil {
 				// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃
 				// （头标签仍照常入缓存，供开段注入），保证段首即关键帧、
@@ -254,18 +257,18 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 		// 下载速度采样
 		case <-speedSampler.C:
 			now := time.Now()
-			delta := max(loop.sessionBytes-lastSample, 0)
+			delta := max(loop.receiveBytes-lastSample, 0)
 			elapsed := now.Sub(lastSampleAt)
 			if elapsed <= 0 {
 				continue
 			}
 			stats.setDownloadSpeed(int64(float64(delta) / elapsed.Seconds()))
-			lastSample = loop.sessionBytes
+			lastSample = loop.receiveBytes
 			lastSampleAt = now
 		// 健康检查：在 healthInterval 内未见新数据则计为一次失败，连续 failRounds 次则判定录制异常。
 		case <-health.C:
-			if loop.sessionBytes > loop.lastGrowth {
-				loop.lastGrowth = loop.sessionBytes
+			if loop.writtenBytes > loop.lastGrowth {
+				loop.lastGrowth = loop.writtenBytes
 				loop.failRounds = 0
 				continue
 			}
@@ -313,7 +316,8 @@ type recordSessionLoop struct {
 	seg     *segmentFile
 
 	result       biz.RecordingResult
-	sessionBytes int64
+	receiveBytes int64 // 本次会话累计接收字节（网络接收口径，用于下载速度采样）
+	writtenBytes int64 // 本次会话累计写盘字节（落盘口径，用于 bytes_written 与健康检查）
 	lastGrowth   int64
 	failRounds   int
 }
@@ -358,7 +362,7 @@ func (l *recordSessionLoop) openNewSegment() error {
 	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
 	// FLV 文件头本身不计，与既有口径一致。
 	l.headers.forEachReinject(func(ht *flv.Tag) {
-		l.addBytes(int64(len(ht.Data)) + tagEnvelopeOverhead)
+		l.addWrittenBytes(int64(len(ht.Data)) + tagEnvelopeOverhead)
 	})
 
 	l.repo.appendSegmentMeta(l.meta, seg)
@@ -406,17 +410,17 @@ func (l *recordSessionLoop) drainPending() {
 
 func (l *recordSessionLoop) writeTag(tag *flv.Tag, persistError bool) error {
 	n, err := l.seg.writeTag(tag)
-	l.addBytes(n)
+	l.addWrittenBytes(n)
 	if err != nil && persistError {
 		l.repo.appendMetaError(l.meta, "record", err)
 	}
 	return err
 }
 
-func (l *recordSessionLoop) addBytes(n int64) {
-	l.sessionBytes += n
-	l.result.BytesWritten = l.sessionBytes
-	l.stats.setBytesWritten(l.baseBytes + l.sessionBytes)
+func (l *recordSessionLoop) addWrittenBytes(n int64) {
+	l.writtenBytes += n
+	l.result.BytesWritten = l.writtenBytes
+	l.stats.setBytesWritten(l.baseBytes + l.writtenBytes)
 }
 
 // FinishSession 收尾 meta.json 并合并所有已录分段。
@@ -447,7 +451,6 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Recording
 	}
 	return r.finalizeSession(ctx, metaPath, meta)
 }
-
 
 // archiveMergedSession 将已完成会话的合并产物恢复为历史分段，使同一直播
 // 场次关闭录制后再次开启时，可以继续追加而不是覆盖旧产物。

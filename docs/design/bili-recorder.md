@@ -160,7 +160,7 @@ internal/data/
   recorder_session.go    sessionMeta / segmentMeta / danmuLine PO：meta.json
                          读写（tmp+rename 原子写）、分段簿记
                          （append/finishSegmentMeta）、errors 追加
-  recorder_stats.go      pumpStats（原子 file/bytes）与 SessionStats 读取
+  recorder_stats.go      pumpStats（原子 file/bytes/speed）与 SessionStats 读取
   merge.go               纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
                          边界平移序列头时间戳）、弹幕 JSONL 拼接、
                          临时文件+字节数校验+原子改名，验证后才删源
@@ -863,7 +863,9 @@ ErrRoomInvalidArgument。
   + 运行时字段（live_status / record_status / current_file /
   bytes_written / download_speed_bps / granted_qn / granted_qn_desc /
   session_started_at / last_error，全部标注
-  OUTPUT_ONLY）。**运行时字段只在 Get/List 响应中由 registry 合并返回；
+  OUTPUT_ONLY）。其中 `bytes_written` 为落盘写入口径（writtenBytes），
+  `download_speed_bps` 为网络接收口径（receiveBytes）按秒采样。
+  **运行时字段只在 Get/List 响应中由 registry 合并返回；
   Create/Update 的响应里是默认值**（LIVE_STATUS_UNSPECIFIED /
   IDLE / 零值；Delete 返回 Empty），也不参与查询过滤。
 - 五个 RPC 同时注册 HTTP 与 gRPC；中间件沿用 recovery + validate

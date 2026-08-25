@@ -438,4 +438,4 @@ erDiagram
 
 - `SESSION` / `SEGMENT` / `DANMAKU` 三个实体对应 `meta.json` 的 `sessionMeta` / `segmentMeta` 结构与弹幕 JSONL 行（`danmuLine`），由 `data` 层独占读写，**没有外键约束**——关联键是目录路径与文件名约定，而非数据库引用。
 - `rooms` 表的 `streamer_name` / `room_title` 会被录制守护进程经 `RoomRegistry.ApplyRoomInfo` 用平台非空值覆盖回写；回写失败只记 warn，不影响内存快照。
-- 运行时的写入进度（`current_file` / `bytes_written` / `download_speed_bps`）不在任何持久层，来自 `recorderRepo` 内存中的 `pumpStats` 原子计数，仅在 `record_status=RECORDING` 时 best-effort 提供给查询。授予清晰度（`granted_qn` / `granted_qn_desc`）同样不落库：由录制器拉流成功后经 `SetStreamQuality` 写入 `RoomRegistry`，会话开始/结束时清零。
+- 运行时的写入进度（`current_file` / `bytes_written` / `download_speed_bps`）不在任何持久层，来自 `recorderRepo` 内存中的 `pumpStats` 原子计数，仅在 `record_status=RECORDING` 时 best-effort 提供给查询；其中 `bytes_written` 是落盘写入口径（writtenBytes），`download_speed_bps` 是网络接收口径（receiveBytes）按秒采样。授予清晰度（`granted_qn` / `granted_qn_desc`）同样不落库：由录制器拉流成功后经 `SetStreamQuality` 写入 `RoomRegistry`，会话开始/结束时清零。
