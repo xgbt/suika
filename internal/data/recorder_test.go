@@ -883,6 +883,96 @@ func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
 	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeq, audioSeq, key100, audio110, inter120})
 }
 
+// TestRecordSessionSplitsOnSeqHeaderChange 验证流中途序列头变化（CDN 换
+// 源、主播改码率）触发强制切段：视频与音频序列头各变化一次，产生三段；
+// 每段从缓存注入当时的旧头标签，新序列头作为首个正文标签写入。
+func TestRecordSessionSplitsOnSeqHeaderChange(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeqA := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeqA := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
+	videoSeqB := &flv.Tag{Type: flv.TagVideo, Timestamp: 50, Data: []byte{0x17, 0x00, 0, 0, 0, 9, 9, 9}}
+	key60 := &flv.Tag{Type: flv.TagVideo, Timestamp: 60, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
+	inter80 := &flv.Tag{Type: flv.TagVideo, Timestamp: 80, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
+	audioSeqB := &flv.Tag{Type: flv.TagAudio, Timestamp: 90, Data: []byte{0xAF, 0x00, 0x11, 0x90}}
+	key100 := &flv.Tag{Type: flv.TagVideo, Timestamp: 100, Data: []byte{0x17, 0x01, 0, 0, 0, 0xEE}}
+	tags := []*flv.Tag{metaTag, videoSeqA, audioSeqA, key0, inter40, videoSeqB, key60, inter80, audioSeqB, key100}
+
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if result.Parts != 3 {
+		t.Fatalf("parts = %d, want 3 (split on video and audio seq header changes)", result.Parts)
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, part1 := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
+	assertTagsEqual(t, part1, []*flv.Tag{metaTag, videoSeqA, audioSeqA, key0, inter40})
+
+	// part2 由视频序列头变化触发：注入变化前的缓存头，新序列头为首个正文标签。
+	_, part2 := readSegmentTags(t, filepath.Join(dir, base+"_part2.flv"))
+	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeqA, audioSeqA, videoSeqB, key60, inter80})
+
+	// part3 由音频序列头变化触发：此时缓存的视频序列头已是 B。
+	_, part3 := readSegmentTags(t, filepath.Join(dir, base+"_part3.flv"))
+	assertTagsEqual(t, part3, []*flv.Tag{metaTag, videoSeqB, audioSeqA, audioSeqB, key100})
+}
+
+// TestRecordSessionRepeatedSeqHeaderDoesNotSplit 验证重复出现的相同序列头
+// （字节一致）不触发切段：只有解码配置真正变化才值得切。
+func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	videoSeqRepeat := &flv.Tag{Type: flv.TagVideo, Timestamp: 20, Data: videoSeq.Data}
+	audioSeqRepeat := &flv.Tag{Type: flv.TagAudio, Timestamp: 30, Data: audioSeq.Data}
+	key40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xBB}}
+	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, videoSeqRepeat, audioSeqRepeat, key40}
+
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if result.Parts != 1 {
+		t.Fatalf("parts = %d, want 1 (identical seq headers must not split)", result.Parts)
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, part1 := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
+	assertTagsEqual(t, part1, tags)
+}
+
 // --- FinishSession / 收尾合并 ---
 
 // seedMergeSession 准备一个会话目录：meta.json + 每个 part 一个分段

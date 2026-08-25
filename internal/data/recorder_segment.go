@@ -2,6 +2,7 @@ package data
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
@@ -18,6 +19,20 @@ type headerCache struct {
 	metadata *flv.Tag
 	videoSeq *flv.Tag
 	audioSeq *flv.Tag
+}
+
+// headerChanged 判断 tag 是否携带与缓存不同的序列头：流中途的序列头变
+// 化（CDN 换源、主播改码率）意味着后续帧的解码配置与此前不同，继续写
+// 入旧分段会把两种配置拼进同一个文件。此时应强制切段；首次见到某类序列
+// 头（缓存为 nil）不算变化。
+func headerChanged(cache *headerCache, tag *flv.Tag) bool {
+	switch {
+	case tag.IsAVCSequenceHeader():
+		return cache.videoSeq != nil && !bytes.Equal(cache.videoSeq.Data, tag.Data)
+	case tag.IsAACSequenceHeader():
+		return cache.audioSeq != nil && !bytes.Equal(cache.audioSeq.Data, tag.Data)
+	}
+	return false
 }
 
 // segmentFile 代表一个录制分段文件，包含视频和弹幕文件，以及写入状态

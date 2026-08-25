@@ -253,6 +253,18 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 					r.appendMetaError(metaPath, "record", err)
 					return &result, err
 				}
+			} else if headerChanged(&cache, tag) {
+				// 流中途序列头变化（CDN 换源、主播改码率）：继续写入旧分
+				// 段会把两种解码配置拼进同一个文件，强制切段。新段按既有
+				// 规则从缓存注入旧头标签，新序列头作为首个正文标签紧随其
+				// 后写入，播放器以最新的序列头为准。
+				log.Warn("sequence header changed, splitting segment",
+					"room", session.RoomID, "part", seg.part)
+				closeSegment()
+				if err := openNewSegment(); err != nil {
+					r.appendMetaError(metaPath, "record", err)
+					return &result, err
+				}
 			}
 			// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个
 			// 标签不能从缓存重注入，否则会被写两次（openSegment 写一次、

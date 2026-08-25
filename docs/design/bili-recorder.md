@@ -464,8 +464,12 @@ HTTP body（原始字节，LiveClient 打开）
       ├─ 切段判定 shouldSplit：段时长达 120 分钟（代码常量）
       │     且当前 tag 是视频关键帧；或超出 splitOverrun = 15s 强制切
       │     （时间戳保持流内原值，不重置；startTs = 该 part 首个正文 tag）
+      ├─ 序列头变化强制切段：流中途 AVC/AAC 序列头与缓存字节不同
+      │     （CDN 换源、主播改码率）→ 立即切段，避免两种解码配置拼进
+      │     同一文件；重复出现的相同序列头不切（参照 biliup/BREC 做法）
       ├─ 缓存时机：开/切段判定之后才更新缓存——触发新段的 tag 不会被
-      │     重复注入（否则 openSegment 注入一次、泵送又写一次）
+      │     重复注入（否则 openSegment 注入一次、泵送又写一次）；序列头
+      │     变化触发的新段注入旧头，新序列头作为首个正文标签紧随其后
       ├─ 弹幕事件同步写当前 part 的 JSONL（无活动段时丢弃）
       ├─ 健康巡检：每 30s 检查累计字节，
       │     连续 3 轮无增长 → 中止本次连接
@@ -938,6 +942,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | 场景 | 行为 |
 |---|---|
 | 断流（仍在播） | 决策树重连，新 part（§4.5）；本腿稳定录制 ≥5 分钟则重置预算，长直播不累计耗尽；预算耗尽则保内容收尾 |
+| 流中途序列头变化 | 强制切段：旧段照常收尾，新段注入缓存旧头 + 新序列头为首个正文标签（§4.3） |
 | 单次探测说下播 | probeLive 需连续 3 次确认（间隔 3s）才结束场次；探测失败不计数，6 次无定论记错误结束（§4.5） |
 | 正常 EOF 但仍在播 | 视同断流重连（CDN 掐长连接是常态） |
 | 文件/tag 停止增长 | 巡检连续 3 轮无增长 → 中止 → 决策树普通重连分支 |
@@ -964,7 +969,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 161 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
+共 163 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
@@ -974,7 +979,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | biz | `account_test.go`（5） | fake PassportClient + CredentialRepo 脚本化：轮询确认才持久化凭据、未确认状态不落库、参数校验、账号状态（无凭据=已登出）、本地登出 |
 | service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（MergeEnabled=false 关闭收尾合并），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、坏 page_token）、**平台刷新回填 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
 | service | `account_test.go`（5） | 真 sqlite 端到端：QR 登录创建/轮询全流程、凭据跨重启持久化、空 qrcode_key 校验、过期凭据的状态行为、平台错误传播（503） |
-| data | `recorder_test.go`（28） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
+| data | `recorder_test.go`（30） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、**序列头变化强制切段（视频/音频各一次变头共三段；重复相同序列头不切）**、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `credential_test.go`（5） | 空库读取、单例行 upsert、Save/Delete 热替换 `Data.Cookie`、删除幂等、并发读 Cookie 安全 |
 | data/bili | `live_test.go`（8） | pickFLVStream 纯函数：avc 优先 / 同优先级首个 / 过滤非 FLV 与空 URL、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |
