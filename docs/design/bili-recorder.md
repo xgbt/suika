@@ -463,8 +463,16 @@ HTTP body（原始字节，LiveClient 打开）
       ├─ tag 读取 goroutine：flv.ReadTag 逐个送入 chan（缓冲 512）
       ├─ 泵送开始时把实际清晰度写回 meta.json（quality 字段）
       ├─ headerCache 缓存 onMetaData / AVC sequence header / AAC sequence header
-      ├─ 首个 tag 到达时 openNewSegment：part 号 = 目录扫描续号，
+      ├─ 分段在首个视频关键帧处开启（纯音频流豁免，ADR-0005）：
+      │     关键帧之前的正文标签丢弃，头标签照常入缓存；
+      │     part 号 = 目录扫描续号，
       │     新 part = FLV 文件头 + 缓存的三类头 tag + 后续 tag（可独立播放）
+      ├─ dupGuard 块去重（ADR-0006）：按视频关键帧分块（兜底边界：25s
+      │     时间戳间隔 / 60s 块跨度 / 64MB 缓冲），整块缓冲后裁决落盘；
+      │     内容指纹（FNV-1a，不含时间戳）命中最近 16 块窗口 → 整块丢弃，
+      │     连续 10 块重复 → 判定 CDN 循环吐流，包装为 ErrStreamTransient
+      │     中止，决策树换流地址重连（换 CDN 节点）；
+      │     块裁决先于切段判定，强切/流结束先落盘缓冲块，不丢在途数据
       ├─ 切段判定 shouldSplit（两个独立触发，都优先等关键帧）：
       │     1) 大小：已写字节达上限 2.5 GiB（代码常量，对齐 biliup 默认）
       │        且当前 tag 是关键帧；超出上限 1/10 裕度仍无关键帧则强切；
@@ -482,7 +490,8 @@ HTTP body（原始字节，LiveClient 打开）
       │     连续 3 轮无增长 → 中止本次连接
       │     （返回普通错误 → 走决策树普通重连分支）
       └─ 统计：pumpStats（atomic 文件路径/字节数），字节数跨重连续泵累加
-          （baseBytes + 本次泵送量；PrepareSession 在新场次开始时清零）
+          （baseBytes + 本次泵送量；PrepareSession 在新场次开始时清零；
+          注入的头标签计入字节数，FLV 文件头不计）
 ```
 
 为什么用纯 Go 录制而不依赖外部工具：切段必须发生在 FLV tag 层（重启外部进程拿不到
@@ -800,6 +809,8 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 | 健康检查间隔 / 失败轮数 | 10s / 3 轮 | data.NewRecorderRepo |
 | 请求清晰度 | 10000（原画；不足时平台自动降档） | data/bili（live） |
 | 切段关键帧等待上限 | 15s | data |
+| 去重指纹窗口 / 连续重复断开阈值 | 16 块 / 10 块 | data |
+| 去重块边界兜底（时间戳间隔 / 块跨度 / 缓冲上限） | 25s / 60s / 64MB | data |
 | 弹幕事件缓冲 / 房态更新缓冲 | 4096 / 16 | data |
 | WS 心跳 / 读超时 | 30s / 90s | data |
 | WS 重连退避 | 2s→30s | data |
@@ -961,6 +972,8 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | 断流（仍在播） | 决策树重连，新 part（§4.5）；本腿稳定录制 ≥5 分钟则重置预算，长直播不累计耗尽；预算耗尽则保内容收尾 |
 | 房间只有 HEVC/AV1 流 | 无 AVC 候选 → 非瞬时错误，决策树记 lastError 结束场次，不重试（§4.2、ADR-0004） |
 | 流中途序列头变化 | 强制切段：旧段照常收尾，新段注入缓存旧头 + 新序列头为首个正文标签（§4.3） |
+| 开播/重连落在 GOP 中途 | 分段等待首个视频关键帧再开启，关键帧前正文标签丢弃、头标签经缓存注入（§4.3、ADR-0005）；流迟迟不给关键帧 → 健康巡检 ~30s 中止 |
+| CDN 循环吐流（重复数据） | 块指纹去重：重复块整块丢弃不落盘，连续 10 块重复 → 包装为 ErrStreamTransient 中止，决策树换流地址重连（§4.3、ADR-0006） |
 | 单次探测说下播 | probeLive 需连续 3 次确认（间隔 3s）才结束场次；探测失败不计数，6 次无定论记错误结束（§4.5） |
 | 正常 EOF 但仍在播 | 视同断流重连（CDN 掐长连接是常态） |
 | 文件/tag 停止增长 | 巡检连续 3 轮无增长 → 中止 → 决策树普通重连分支 |
@@ -987,7 +1000,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 172 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
+共 182 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
@@ -997,7 +1010,8 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | biz | `account_test.go`（5） | fake PassportClient + CredentialRepo 脚本化：轮询确认才持久化凭据、未确认状态不落库、参数校验、账号状态（无凭据=已登出）、本地登出 |
 | service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（MergeEnabled=false 关闭收尾合并），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、坏 page_token）、**平台刷新回填 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
 | service | `account_test.go`（5） | 真 sqlite 端到端：QR 登录创建/轮询全流程、凭据跨重启持久化、空 qrcode_key 校验、过期凭据的状态行为、平台错误传播（503） |
-| data | `recorder_test.go`（35） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定（时长 + **大小双触发：阈值/关键帧/裕度强切各分支**）、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、**并发泵送分配不同 part**、新段头注入且不重复写（单段/切段各一）、**序列头变化强制切段（视频/音频各一次变头共三段；重复相同序列头不切）**、**大小上限端到端切分（段体积与关键帧切点断言）**、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、**合并产物后再开录的回滚追加（含弹幕缺失回滚）**、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
+| data | `recorder_test.go`（40） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定（时长 + **大小双触发：阈值/关键帧/裕度强切各分支**）、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、**并发泵送分配不同 part**、新段头注入且不重复写（单段/切段各一）、**序列头变化强制切段（视频/音频各一次变头共三段；重复相同序列头不切）**、**大小上限端到端切分（段体积与关键帧切点断言）**、**新段等待首个视频关键帧（关键帧前正文丢弃、头标签注入、音频流豁免，ADR-0005）**、**CDN 循环吐流去重（重复块丢弃/连续上限断流/强切先落盘缓冲块，ADR-0006）**、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、**合并产物后再开录的回滚追加（含弹幕缺失回滚）**、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
+| data | `recorder_dedup_test.go`（5） | dupGuard 单元：重复块丢弃与连续计数、块边界（关键帧/头标签/时间戳间隔）、空块裁决、连续上限断开、takeAll 不计指纹 |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `credential_test.go`（5） | 空库读取、单例行 upsert、Save/Delete 热替换 `Data.Cookie`、删除幂等、并发读 Cookie 安全 |
 | data/bili | `live_test.go`（11） | pickFLVStream 纯函数：**仅接受 avc（hevc/av1 候选被跳过、无 avc 则无候选报错，ADR-0004）** / 多个 avc 行取首个 / 过滤非 FLV 与空 URL、**排除 `.mcdn.` P2P 主机（普通 CDN 优先；候选全为 P2P 时退回全量）**、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |

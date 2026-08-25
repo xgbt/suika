@@ -60,8 +60,15 @@ func touchFiles(t *testing.T, dir string, names ...string) {
 
 func buildFLVStream(t *testing.T, tags ...*flv.Tag) []byte {
 	t.Helper()
+	return buildFLVStreamWithHeader(t, &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}, tags...)
+}
+
+// buildFLVStreamWithHeader 用给定的文件头构造字节流（纯音频等场景需要
+// 自定义头标志）。
+func buildFLVStreamWithHeader(t *testing.T, header *flv.FileHeader, tags ...*flv.Tag) []byte {
+	t.Helper()
 	var buf bytes.Buffer
-	buf.Write((&flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}).Bytes())
+	buf.Write(header.Bytes())
 	for _, tag := range tags {
 		buf.Write(tag.AppendTo(nil))
 	}
@@ -717,7 +724,9 @@ func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
 	}
 
 	metaTag, videoSeq, audioSeq := mergeTestTags()
-	streamBytes := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	// 段在首个视频关键帧处开启，fixture 必须带关键帧才会产出分段。
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	streamBytes := buildFLVStream(t, metaTag, videoSeq, audioSeq, key0)
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	for range 2 {
@@ -779,6 +788,10 @@ func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
 
 	var wantBytes int64
 	for _, tag := range tags {
+		wantBytes += int64(len(tag.AppendTo(nil)))
+	}
+	// part2 重注入的三个头标签同样是实际写入字节。
+	for _, tag := range []*flv.Tag{metaTag, videoSeq, audioSeq} {
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 
@@ -1070,6 +1083,254 @@ func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
 			t.Fatalf("segment %d first body tag after injected headers is not a keyframe", seg.Part)
 		}
 	}
+}
+
+// TestRecordSessionWaitsForFirstKeyframe 验证新场次的首个分段只在第一个视
+// 频关键帧处开启：关键帧之前的正文标签被丢弃（流内重连后的新段同理），
+// 头标签照常入缓存并在开段时注入，保证段首即关键帧、独立可解码。
+func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	earlyInter1 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x27, 0x01, 0, 0, 0, 0x01}}
+	earlyInter2 := &flv.Tag{Type: flv.TagVideo, Timestamp: 20, Data: []byte{0x27, 0x01, 0, 0, 0, 0x02}}
+	key40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	inter60 := &flv.Tag{Type: flv.TagVideo, Timestamp: 60, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
+
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t,
+			metaTag, videoSeq, audioSeq, earlyInter1, earlyInter2, key40, inter60))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if result.Parts != 1 {
+		t.Fatalf("parts = %d, want 1", result.Parts)
+	}
+
+	want := []*flv.Tag{metaTag, videoSeq, audioSeq, key40, inter60}
+	var wantBytes int64
+	for _, tag := range want {
+		wantBytes += int64(len(tag.AppendTo(nil)))
+	}
+	if result.BytesWritten != wantBytes {
+		t.Fatalf("bytes = %d, want %d (pre-keyframe tags must not count)", result.BytesWritten, wantBytes)
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, got := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
+	assertTagsEqual(t, got, want)
+}
+
+// TestRecordSessionAudioOnlyOpensWithoutKeyframe 验证纯音频流的豁免：文件
+// 头无视频轨时没有关键帧可等，首个标签即开段。
+func TestRecordSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	audio20 := &flv.Tag{Type: flv.TagAudio, Timestamp: 20, Data: []byte{0xAF, 0x01, 0x09}}
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body: io.NopCloser(bytes.NewReader(buildFLVStreamWithHeader(t,
+			&flv.FileHeader{Version: 1, HasAudio: true, HasVideo: false},
+			audioSeq, audio20))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if result.Parts != 1 {
+		t.Fatalf("parts = %d, want 1", result.Parts)
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, got := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
+	assertTagsEqual(t, got, []*flv.Tag{audioSeq, audio20})
+}
+
+// TestRecordSessionDropsDuplicateBlocks 验证 CDN 循环吐流的去重：内容指纹
+// （类型+载荷）重复的块整块丢弃不落盘，唯一块正常写入；未达断开上限时
+// 会话正常收尾。
+func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	blockA := []*flv.Tag{
+		{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}},
+		{Type: flv.TagVideo, Timestamp: 20, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}},
+	}
+	blockB := []*flv.Tag{
+		{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}},
+		{Type: flv.TagVideo, Timestamp: 60, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}},
+	}
+	// 循环重放：类型与载荷和 blockA/B 一致，时间戳继续前进。
+	replayA := []*flv.Tag{
+		{Type: flv.TagVideo, Timestamp: 80, Data: blockA[0].Data},
+		{Type: flv.TagVideo, Timestamp: 100, Data: blockA[1].Data},
+	}
+	replayB := []*flv.Tag{
+		{Type: flv.TagVideo, Timestamp: 120, Data: blockB[0].Data},
+		{Type: flv.TagVideo, Timestamp: 140, Data: blockB[1].Data},
+	}
+	// 尾部唯一块：给重放块一个边界裁决点（EOF 的排水不做去重裁决）。
+	tail := []*flv.Tag{
+		{Type: flv.TagVideo, Timestamp: 160, Data: []byte{0x17, 0x01, 0, 0, 0, 0xEE}},
+		{Type: flv.TagVideo, Timestamp: 180, Data: []byte{0x27, 0x01, 0, 0, 0, 0xFF}},
+	}
+
+	tags := append([]*flv.Tag{metaTag, videoSeq, audioSeq},
+		append(append(append(append(
+			blockA, blockB...), replayA...), replayB...), tail...)...)
+
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if err != nil {
+		t.Fatalf("RecordSession: %v (streak 2 must stay below disconnect threshold)", err)
+	}
+	if result.Parts != 1 {
+		t.Fatalf("parts = %d, want 1", result.Parts)
+	}
+
+	want := append([]*flv.Tag{metaTag, videoSeq, audioSeq},
+		append(append(blockA, blockB...), tail...)...)
+	var wantBytes int64
+	for _, tag := range want {
+		wantBytes += int64(len(tag.AppendTo(nil)))
+	}
+	if result.BytesWritten != wantBytes {
+		t.Fatalf("bytes = %d, want %d (dropped blocks must not count)", result.BytesWritten, wantBytes)
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, got := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
+	assertTagsEqual(t, got, want)
+}
+
+// TestRecordSessionDisconnectsOnCDNLoop 验证连续重复块达到上限时泵送以
+// ErrStreamTransient 中止，交由断流决策树换流地址重连（换 CDN 节点）。
+func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	// 同一内容反复重放：首次出现正常落盘，之后每块都是重复。
+	loopKey := []byte{0x17, 0x01, 0, 0, 0, 0xAA}
+	loopInter := []byte{0x27, 0x01, 0, 0, 0, 0xBB}
+
+	tags := []*flv.Tag{metaTag, videoSeq, audioSeq}
+	for i := range dupDisconnectStreak + 2 {
+		base := int64(i) * 100
+		tags = append(tags,
+			&flv.Tag{Type: flv.TagVideo, Timestamp: base, Data: loopKey},
+			&flv.Tag{Type: flv.TagVideo, Timestamp: base + 20, Data: loopInter},
+		)
+	}
+
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if !errors.Is(err, biz.ErrStreamTransient) {
+		t.Fatalf("err = %v, want ErrStreamTransient on CDN loop disconnect", err)
+	}
+	if result.Parts != 1 {
+		t.Fatalf("parts = %d, want 1", result.Parts)
+	}
+
+	want := []*flv.Tag{metaTag, videoSeq, audioSeq,
+		{Type: flv.TagVideo, Timestamp: 0, Data: loopKey},
+		{Type: flv.TagVideo, Timestamp: 20, Data: loopInter},
+	}
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, got := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
+	assertTagsEqual(t, got, want)
+}
+
+// TestRecordSessionSplitOverrunFlushesPendingBlock 验证强制切分（时长超限
+// 且仍无关键帧）会先裁决缓冲块：在途数据不能因为关段而丢失。
+func TestRecordSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
+	key40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xBB}}
+	// ts=20050 距开播 20.05s，超过 50ms+15s 的强切线，且不是关键帧。
+	overrun := &flv.Tag{Type: flv.TagVideo, Timestamp: 20_050, Data: []byte{0x27, 0x01, 0, 0, 0, 0xCC}}
+	keyAfter := &flv.Tag{Type: flv.TagVideo, Timestamp: 20_090, Data: []byte{0x17, 0x01, 0, 0, 0, 0xDD}}
+	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, key40, overrun, keyAfter}
+
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if result.Parts != 2 {
+		t.Fatalf("parts = %d, want 2 (overrun force split)", result.Parts)
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// part1 必须含强切前缓冲的 key40，不能丢。
+	_, part1 := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
+	assertTagsEqual(t, part1, []*flv.Tag{metaTag, videoSeq, audioSeq, key0, key40})
+	_, part2 := readSegmentTags(t, filepath.Join(dir, base+"_part2.flv"))
+	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeq, audioSeq, overrun, keyAfter})
 }
 
 // --- FinishSession / 收尾合并 ---

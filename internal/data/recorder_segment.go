@@ -35,6 +35,19 @@ func headerChanged(cache *headerCache, tag *flv.Tag) bool {
 	return false
 }
 
+// cacheHeaderTag 把头标签（onMetaData / AVC 序列头 / AAC 序列头）存入
+// cache；非头标签不改变缓存。
+func cacheHeaderTag(cache *headerCache, tag *flv.Tag) {
+	switch {
+	case tag.IsMetadata():
+		cache.metadata = tag
+	case tag.IsAVCSequenceHeader():
+		cache.videoSeq = tag
+	case tag.IsAACSequenceHeader():
+		cache.audioSeq = tag
+	}
+}
+
 // segmentFile 代表一个录制分段文件，包含视频和弹幕文件，以及写入状态
 type segmentFile struct {
 	part      int           // 分段编号，从 1 开始

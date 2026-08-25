@@ -187,6 +187,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 
 	var (
 		cache        headerCache
+		guard        dupGuard
 		seg          *segmentFile
 		result       biz.RecordingResult
 		sessionBytes int64
@@ -215,6 +216,17 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 		seg = newSeg
 		result.Parts++
 		stats.file.Store(seg.videoPath)
+		// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
+		// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
+		// FLV 文件头本身不计，与既有口径一致。
+		for _, ht := range []*flv.Tag{cache.metadata, cache.videoSeq, cache.audioSeq} {
+			if ht == nil {
+				continue
+			}
+			sessionBytes += int64(len(ht.Data)) + tagEnvelopeOverhead
+		}
+		result.BytesWritten = sessionBytes
+		stats.bytes.Store(baseBytes + sessionBytes)
 		r.appendSegmentMeta(metaPath, seg)
 		log.Info("segment opened", "room", session.RoomID, "part", part, "file", seg.videoPath)
 		return nil
@@ -232,16 +244,60 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 		seg = nil
 	}
 
+	// flushBlock 结束当前缓冲块并裁决：指纹唯一 → 整块写入当前分段；
+	// 重复 → 整块丢弃并重置健康失败轮数（流还活着，只是在循环）；连续
+	// 重复达到上限 → 返回包装为 ErrStreamTransient 的错误，由断流决策树
+	// 换流地址重连（换 CDN 节点）。写错误记入 meta.json。
+	flushBlock := func() error {
+		buf, disconnect := guard.close()
+		if disconnect {
+			return fmt.Errorf("%w: cdn looping duplicate stream data", biz.ErrStreamTransient)
+		}
+		if buf == nil {
+			failRounds = 0
+			log.Warn("duplicate stream block dropped", "room", session.RoomID, "streak", guard.streak)
+			return nil
+		}
+		for _, bt := range buf {
+			n, werr := seg.writeTag(bt)
+			sessionBytes += n
+			result.BytesWritten = sessionBytes
+			stats.bytes.Store(baseBytes + sessionBytes)
+			if werr != nil {
+				r.appendMetaError(metaPath, "record", werr)
+				return werr
+			}
+		}
+		return nil
+	}
+
+	// drainPending 把未关闭的缓冲块原样写入（不做重复裁决），用于流结
+	// 束/中止时尽量保留已收到的数据。
+	drainPending := func() {
+		for _, bt := range guard.takeAll() {
+			n, werr := seg.writeTag(bt)
+			sessionBytes += n
+			result.BytesWritten = sessionBytes
+			stats.bytes.Store(baseBytes + sessionBytes)
+			if werr != nil {
+				log.Warn("drain pending block failed", "room", session.RoomID, "err", werr)
+				return
+			}
+		}
+	}
+
 	for {
 		select {
 		// 关闭录制开关、停机、房间被删除
 		case <-ctx.Done():
+			drainPending()
 			closeSegment()
 			return &result, ctx.Err()
 		// 读取 tag
 		case tr := <-tagCh:
 			// 读取 tag 失败，可能是流断开或其他瞬时错误
 			if tr.err != nil {
+				drainPending()
 				closeSegment()
 				// EOF 表示流干净结束
 				if tr.err == io.EOF {
@@ -252,13 +308,33 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			}
 
 			tag := tr.tag
-			// 如果当前还没有分段文件，或者该 tag 触发了切分条件，则关闭当前分段并打开新分段
 			if seg == nil {
+				// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃
+				// （头标签仍照常入缓存，供开段注入），保证段首即关键帧、
+				// 独立可解码；纯音频流没有视频关键帧，豁免等待。
+				if header.HasVideo && !tag.IsVideoKeyframe() {
+					cacheHeaderTag(&cache, tag)
+					continue
+				}
 				if err := openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
 					return &result, err
 				}
-			} else if r.shouldSplit(seg, tag) {
+			} else if guard.boundary(tag) {
+				// 块边界：先裁决缓冲块落盘，切段判定才能用上最新的段状态。
+				if err := flushBlock(); err != nil {
+					closeSegment()
+					return &result, err
+				}
+			}
+
+			// 切段判定在块裁决之后；强切路径（超限/序列头变化）同样要先
+			// 结束缓冲块，避免关段时把在途数据留在缓冲里丢失。
+			if r.shouldSplit(seg, tag) {
+				if err := flushBlock(); err != nil {
+					closeSegment()
+					return &result, err
+				}
 				closeSegment()
 				if err := openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
@@ -271,6 +347,10 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 				// 后写入，播放器以最新的序列头为准。
 				log.Warn("sequence header changed, splitting segment",
 					"room", session.RoomID, "part", seg.part)
+				if err := flushBlock(); err != nil {
+					closeSegment()
+					return &result, err
+				}
 				closeSegment()
 				if err := openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
@@ -280,23 +360,8 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个
 			// 标签不能从缓存重注入，否则会被写两次（openSegment 写一次、
 			// 下面的拉流写入又一次）。切分前已见过的头标签仍会完整重注入。
-			switch {
-			case tag.IsMetadata():
-				cache.metadata = tag
-			case tag.IsAVCSequenceHeader():
-				cache.videoSeq = tag
-			case tag.IsAACSequenceHeader():
-				cache.audioSeq = tag
-			}
-			n, err := seg.writeTag(tag)
-			sessionBytes += n
-			result.BytesWritten = sessionBytes
-			stats.bytes.Store(baseBytes + sessionBytes)
-			if err != nil {
-				closeSegment()
-				r.appendMetaError(metaPath, "record", err)
-				return &result, err
-			}
+			cacheHeaderTag(&cache, tag)
+			guard.add(tag)
 		// 弹幕/礼物等事件写入
 		case ev := <-events:
 			if seg == nil {
