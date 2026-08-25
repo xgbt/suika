@@ -288,7 +288,6 @@ App.Run
                  │    └─ 30s 心跳 ticker
                  ├─ 兜底轮询 timer（默认 600s ±10% 抖动）
                  └─ 开播且 record_enabled 时 → launchSession goroutine（sessionHandle：cancel + done）
-                     ├─ acquireSlot（max_concurrent 并发槽）
                      ├─ registry.StartRecording + repo.PrepareSession
                      ├─ recordLoop：OpenLiveStream → repo.RecordSession 泵送 → 断流决策树
                      │    └─ RecordSession 内部：tag 读取 goroutine（chan 缓冲 512）
@@ -361,24 +360,21 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
 `runSession` 端到端拥有一个场次（由 `launchSession` 派生可取消 ctx 并
 起 goroutine，`sessionHandle{cancel, done}` 供 watchRoom 管理）：
 
-1. **acquireSlot**：`max_concurrent > 0` 时占并发槽；槽满则排队等待
-   （记日志），ctx 取消则放弃。`max_concurrent = 0` 表示不限。
-2. **组装 RecordingSession**：`registry.Room(roomID)` 取库存快照，
+1. **组装 RecordingSession**：`registry.Room(roomID)` 取库存快照，
    `RoomName = firstNonEmpty(库存 streamer_name, API 主播名, roomID)`，
    `Title`、`LiveStartTime` 取触发开播的房态快照（场次中途标题变化
    不改名；`LiveStartTime` 决定目录，重连续录落回同一场次）。
-3. **StartRecording**：置 `RecordStatusRecording`、清零授予清晰度、刷新
+2. **StartRecording**：置 `RecordStatusRecording`、清零授予清晰度、刷新
    sessionStartedAt、清 lastError。
-4. **PrepareSession**：创建（或重启后重定位）场次目录与 meta.json，
+3. **PrepareSession**：创建（或重启后重定位）场次目录与 meta.json，
    并把该房间的在途 stats（当前文件/字节数）清零——否则新场次的字节
    会累加到上一场的计数上。失败 → `FailRecording` 返回。
-5. **recordLoop**：见 §4.5。
-6. **收尾**：先置 `RecordStatusMerging`，再用
+4. **recordLoop**：见 §4.5。
+5. **收尾**：先置 `RecordStatusMerging`，再用
    `context.WithoutCancel(ctx)` + `finishGracePeriod = 30s` 的脱离 ctx
    执行 `FinishSession`，   未完成的合并由下次启动 `RecoverPending` 补跑。成功 →
    `FinishRecording`（回 `RecordStatusIdle`、清 sessionStartedAt），失败 →
    `FailRecording`。
-7. **releaseSlot**（defer）。
 
 录制中房间状态为 `RecordStatusRecording`；Get/List 只对该状态的房间追加
 `SessionStatsRepo.SessionStats`（当前 part 路径 + 累计字节，原子计数，零额外采集）。
@@ -755,12 +751,11 @@ message Recorder {
   string cookie = 2 [deprecated = true];  // 已废弃：凭据来自扫码登录写入
                                           // credentials 表，此字段不再被读取
   string record_root = 3;     // 默认 ./recordings
-  int32 max_concurrent = 7;   // 0 = 不限
   optional bool merge_enabled = 8;  // 未设置默认 true；显式 false = 保留散装分段
 }
 ```
 
-配置治理原则：**只保留随部署环境变化的项**（路径、端口、并发上限、
+配置治理原则：**只保留随部署环境变化的项**（路径、端口、
 收尾是否合并；凭据不再是配置项，见 §7.3）。行为调优不做配置，默认值写死在代码里（§7.2）；被移除的
 字段在 proto 中 `reserved` 其字段号与名称。`merge_enabled` 用
 `optional`，使"显式 false"与"未设置"可区分（proto 标量零值歧义）。
@@ -780,12 +775,11 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 
 ### 7.2 代码默认值与应用位置
 
-配置项只剩四个有默认值的（其余必填或由环境决定）：
+配置项只剩三个有默认值的（其余必填或由环境决定）：
 
 | 配置项 | 代码默认 | 应用位置 |
 |---|---|---|
 | record_root | ./recordings | data.NewRecorderRepo |
-| max_concurrent | 0（不限） | biz.NewRecorderUsecase |
 | merge_enabled | true | data.NewData（optional，nil→true） |
 | server http/grpc addr | kratos 内置默认 | server.NewHTTPServer / NewGRPCServer |
 
@@ -845,7 +839,6 @@ ErrRoomInvalidArgument。
   recorder 记 warn 空转但对后续加房保持响应，CreateRoom 加房后立即
   开始监控（§8.1）；
 - `merge_enabled: true`（收尾合并分段；设 false 则保留散装分段）；
-- `max_concurrent: 10` 按机器性能调过；
 - `cookie: ""` 废弃占位，不再被读取（凭据来自扫码登录，§7.3）。
 
 ---
@@ -984,7 +977,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | 合并失败（分段损坏/缺失） | 不删源分段，meta 记 merge 错误、置 partial，下次启动经 RecoverPending 重试 |
 | cookie 过期 | 拉流降档（qn 自动降档 + meta 记录 + warn 日志）；运维动作：Web 重新扫码登录（热替换即时生效，§7.3） |
 | WS 假死（半开连接） | 90s 读超时强制重连；兜底轮询（600s±10%）保底发现开播 |
-| 多主播同时开播 | 并行录制；`max_concurrent` 达上限时新开播排队等待（记日志） |
+| 多主播同时开播 | 各房间录制会话直接并行运行，不受录制槽位限制 |
 | recorder 配置缺失/rooms 表为空 | NewData/NewRecorderRepo/NewRecorderUsecase 均容忍 nil recorder conf；rooms 表空 → Run 记 warn 空转但对后续变更保持响应；经 CRUD 加房后立即开始监控（§8.1） |
 | data.database.source 缺失或非法 | NewData 启动失败：source 非空且通过路径校验（§7.1）；sqlite 打不开同样启动失败 |
 | 录制中关闭房间的录制 | 优雅停止会话：关 FLV、刷弹幕、finalize meta、合并若开启则跑完（30s grace），监控保留；再开启录制时若在播立即恢复录制（§8.1） |

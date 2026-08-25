@@ -171,7 +171,6 @@ type RecorderUsecase struct {
 	redialDelay         time.Duration   // 监控重拨的停顿；测试中会调小。
 	offlineConfirmDelay time.Duration   // 下播确认相邻两次探测的间隔；测试中会调小。
 	stableResetAfter    time.Duration   // 泵送稳定录制超过该时长后重置重连预算；测试中会调小。
-	slots               chan struct{}   // 录制槽位；nil 表示不限制并发
 }
 
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
@@ -190,13 +189,6 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 		redialDelay:         monitorRedialDelay,
 		offlineConfirmDelay: defaultOfflineConfirmDelay,
 		stableResetAfter:    defaultStableResetAfter,
-	}
-	if c == nil {
-		log.Warn("recorder configuration missing, running with zero rooms")
-		return uc
-	}
-	if maxConcurrent := int(c.GetMaxConcurrent()); maxConcurrent > 0 {
-		uc.slots = make(chan struct{}, maxConcurrent)
 	}
 	return uc
 }
@@ -432,7 +424,7 @@ func (uc *RecorderUsecase) executeDecision(ctx context.Context, roomID int64, co
 	return active
 }
 
-// launchSession 启动录制会话协程，独占完整的录制循环、FinishSession和槽位释放。
+// launchSession 启动录制会话协程，独占完整的录制循环和 FinishSession。
 func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) *sessionHandle {
 	sctx, cancel := context.WithCancel(ctx)
 	handle := &sessionHandle{cancel: cancel, done: make(chan struct{})}
@@ -443,15 +435,8 @@ func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info
 	return handle
 }
 
-// runSession 端到端负责一次会话：槽位、准备、录制循环、收尾/合并。
+// runSession 端到端负责一次会话：准备、录制循环、收尾/合并。
 func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) {
-
-	// 0. 尝试获取录制槽位
-	if err := uc.acquireSlot(ctx, roomID); err != nil {
-		return
-	}
-	defer uc.releaseSlot()
-
 	// 1. 准备会话目录和 meta.json
 	room := uc.registry.Room(roomID)
 	session := &RecordingSession{
@@ -625,38 +610,6 @@ func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, o
 	log.Error("probe live status failed, ending session", "room", roomID, "err", lastErr)
 	uc.registry.NoteError(roomID, lastErr)
 	return false, false
-}
-
-// acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消
-func (uc *RecorderUsecase) acquireSlot(ctx context.Context, roomID int64) error {
-
-	// 未配置 maxConcurrent，则不限制并发
-	if uc.slots == nil {
-		return nil
-	}
-
-	// 尝试非阻塞获取槽位，若已满则阻塞等待,或直到 ctx 被取消
-	select {
-	case uc.slots <- struct{}{}:
-		return nil
-	default:
-		log.Warn("recording slots full, queueing", "room", roomID, "max", cap(uc.slots))
-	}
-
-	// 阻塞等待槽位或 ctx 被取消
-	select {
-	case uc.slots <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// releaseSlot 释放一个录制槽位
-func (uc *RecorderUsecase) releaseSlot() {
-	if uc.slots != nil {
-		<-uc.slots
-	}
 }
 
 // cdnBackoff 返回 CDN 瞬时故障的重试延迟，随尝试次数指数增长，最大不超过 cdnBackoffMax。

@@ -251,7 +251,6 @@ sequenceDiagram
     participant CDN as 直播 CDN
     participant FS as recordings/ 文件目录
 
-    Sess->>Sess: acquireSlot（max_concurrent 配置上限，0=不限；满则阻塞等待）
     Sess->>G: StartRecording(roomID)
     Sess->>RR: PrepareSession(session)
     RR->>FS: mkdir 会话目录；写 meta.json（status=recording）
@@ -281,7 +280,6 @@ sequenceDiagram
     RR->>FS: 全部分段合并为单个 FLV、弹幕拼接（merge_enabled=true；<br/>临时文件+字节数校验+原子改名；成功后删源分段，失败保留源并置 partial）
     RR->>FS: meta.json status=done（合并成功）/ partial（合并失败）
     Sess->>G: FinishRecording(roomID)
-    Sess->>Sess: releaseSlot
 ```
 
 ### 3.4 房间查询：运行时状态合并（同步读链）

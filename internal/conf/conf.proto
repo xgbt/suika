@@ -23,16 +23,14 @@ message Recorder {
   string cookie = 2 [deprecated = true];
   // Directory recordings are written under. Default ./recordings.
   string record_root = 3;
-  // Maximum rooms recorded concurrently; 0 means unlimited.
-  int32 max_concurrent = 7;
   // Merge the recorded FLV segments of a finished session into a single
   // FLV file (pure Go, no external tools). Optional so an explicit false
   // (keep the separate segments) is distinguishable from unset (unset
   // defaults to true).
   optional bool merge_enabled = 8;
-  reserved 1, 4, 5, 6, 9, 10;
+    reserved 1, 4, 5, 6, 7, 9, 10;
   reserved "fallback_poll_interval", "quality_qn", "segment_minutes",
-      "danmaku", "reconnect", "remux_enabled";
+      "danmaku", "reconnect", "remux_enabled", "max_concurrent";
 }
 
 message Server {

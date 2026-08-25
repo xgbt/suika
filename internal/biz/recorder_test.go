@@ -483,22 +483,6 @@ func TestNewRecorderUsecaseNilConfig(t *testing.T) {
 	}
 }
 
-func TestNewRecorderUsecaseMaxConcurrent(t *testing.T) {
-	c := &conf.Recorder{MaxConcurrent: 2}
-	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{
-		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
-		2: {RoomID: 2, StreamerName: "b"},
-	}}
-	reg, err := NewRoomRegistry(roomRepo)
-	if err != nil {
-		t.Fatalf("NewRoomRegistry() error = %v", err)
-	}
-	uc := NewRecorderUsecase(c, reg, &fakeRepo{}, &fakeLiveClient{})
-	if uc.slots == nil || cap(uc.slots) != 2 {
-		t.Fatalf("slots cap = %d, want 2", cap(uc.slots))
-	}
-}
-
 func TestNextPollDelayWithinBand(t *testing.T) {
 	base := 600 * time.Second
 	uc := &RecorderUsecase{pollInterval: base}
