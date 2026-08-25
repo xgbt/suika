@@ -1,0 +1,129 @@
+package biz
+
+import (
+	"context"
+	"fmt"
+	"math/rand/v2"
+	"time"
+
+	"github.com/go-kratos/kratos/v3/log"
+)
+
+// monitorRoom 维持房间的弹幕连接，断开即重拨，直到 ctx 被取消。
+func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) {
+	// 当 ctx 被取消时，monitorRoom 会立即返回，监控协程结束
+	for ctx.Err() == nil {
+		// 通过弹幕链接监控房间，若弹幕连接错误，则重拨连接
+		if err := uc.watchRoom(ctx, roomChanged, roomID); err != nil && ctx.Err() == nil {
+			log.Error("room monitor failed", "room", roomID, "err", err)
+			uc.registry.NoteError(roomID, err)
+		}
+		if sleepCtx(ctx, uc.redialDelay) != nil {
+			return
+		}
+	}
+}
+
+// watchRoom 是单个房间的监控分发器：持有弹幕连接、回退轮询定时器和会话
+// 句柄，本身不含任何会话启停判断。启停策略集中在 sessionPolicy：
+// 各 select 分支把输入投递给策略（房间信息到达前先应用到注册表），并执
+// 行返回的决策——Start 启动会话协程，Stop 取消活跃会话。会话是否启动受
+// 房间 record_enabled 门控；roomChanged 信号只承担重评估的投递，监控本身
+// 不受影响。无活跃会话时弹幕事件由 watchRoom 排空丢弃；有活跃会话时
+// RecordSession 独占消费事件通道。
+func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
+	// 弹幕连接：开播检测主通道，录制期间同时提供弹幕事件。
+	danmakuConn, err := uc.liveClient.DanmakuConn(ctx, roomID)
+	if err != nil {
+		return fmt.Errorf("open danmaku conn: %w", err)
+	}
+	defer danmakuConn.Close()
+
+	// 回退轮询：开播检测备用通道；抖动避免多房间同时发请求。
+	poll := time.NewTimer(uc.nextPollDelay())
+	defer poll.Stop()
+
+	policy := newSessionPolicy(uc.registry.Room(roomID).RecordEnabled)
+	var active *sessionHandle
+
+	// roomInfoArrived 是弹幕推送与回退轮询两路房间信息的共同动作：
+	// 先应用到注册表，再投递给策略决策。
+	roomInfoArrived := func(roomInfo *RoomInfo) {
+		uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+		active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
+	}
+
+	for {
+		// events / done 借助 nil 通道互斥启用：无活跃会话时 watchRoom
+		// 排空弹幕事件通道；有活跃会话时录制协程独占消费事件，
+		// watchRoom 只监听其结束信号。
+		var events <-chan *DanmakuEvent
+		var done chan struct{}
+		if active == nil {
+			events = danmakuConn.Events()
+		} else {
+			done = active.done
+		}
+
+		select {
+		// ctx 取消：优雅结束监控；若有活跃会话，先取消并等待其自然
+		// 结束，避免中途取消导致合并失败。
+		case <-ctx.Done():
+			if active != nil {
+				active.cancel()
+				<-active.done
+			}
+			return nil
+		// 无活跃会话：丢弃弹幕事件，防止陈旧事件积压混入下一个会话的录制
+		case <-events:
+		// 录制会话已结束
+		case <-done:
+			active = uc.executeDecision(ctx, roomID, danmakuConn, nil, policy.SessionFinished())
+		// 弹幕连接推送了房间状态变化
+		case roomInfo := <-danmakuConn.RoomStateUpdates():
+			roomInfoArrived(roomInfo)
+		// 轮询: 主动请求房间信息
+		case <-poll.C:
+			roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
+			if err != nil && ctx.Err() == nil {
+				log.Warn("fallback poll failed", "room", roomID, "err", err)
+				uc.registry.NoteError(roomID, err)
+			} else if err == nil {
+				roomInfoArrived(roomInfo)
+			}
+			poll.Reset(uc.nextPollDelay())
+		// 管理后台变更了房间记录：重读最新录制开关投递给策略
+		case <-roomChanged:
+			room := uc.registry.Room(roomID)
+			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
+		}
+	}
+}
+
+// executeDecision 执行会话策略的决策并返回（可能更新的）活跃会话句柄：
+// Start 以决策携带的房间信息启动会话协程；Stop 取消活跃会话（策略保证
+// Stop 只在会话录制中产生）；None 不做任何事。
+func (uc *RecorderUsecase) executeDecision(ctx context.Context, roomID int64, conn DanmakuConn, active *sessionHandle, decision policyDecision) *sessionHandle {
+	switch decision.kind {
+	case decisionStart:
+		return uc.launchSession(ctx, roomID, decision.info, conn.Events())
+	case decisionStop:
+		active.cancel()
+	}
+	return active
+}
+
+// nextPollDelay 返回下一次回退轮询的延迟：pollInterval 加均匀抖动
+// （± 1/pollJitterFraction 的一半），避免多房间的轮询在同一时刻打到
+// 平台接口。
+func (uc *RecorderUsecase) nextPollDelay() time.Duration {
+	d := uc.pollInterval
+	if d <= 0 {
+		return d
+	}
+	span := int64(d) / pollJitterFraction
+	if span <= 0 {
+		return d
+	}
+	return d + time.Duration(rand.Int64N(span)) - time.Duration(span/2)
+}
