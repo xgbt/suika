@@ -171,8 +171,7 @@ type RecorderUsecase struct {
 	redialDelay         time.Duration   // 监控重拨的停顿；测试中会调小。
 	offlineConfirmDelay time.Duration   // 下播确认相邻两次探测的间隔；测试中会调小。
 	stableResetAfter    time.Duration   // 泵送稳定录制超过该时长后重置重连预算；测试中会调小。
-	maxConcurrent       int             // 最大并发录制会话数，若 <= 0 则表示不限制录制会话并发
-	slots               chan struct{}   // 录制槽位，若 maxConcurrent <= 0 则不限制并发
+	slots               chan struct{}   // 录制槽位；nil 表示不限制并发
 }
 
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
@@ -196,9 +195,8 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 		log.Warn("recorder configuration missing, running with zero rooms")
 		return uc
 	}
-	uc.maxConcurrent = int(c.GetMaxConcurrent())
-	if uc.maxConcurrent > 0 {
-		uc.slots = make(chan struct{}, uc.maxConcurrent)
+	if maxConcurrent := int(c.GetMaxConcurrent()); maxConcurrent > 0 {
+		uc.slots = make(chan struct{}, maxConcurrent)
 	}
 	return uc
 }
@@ -642,7 +640,7 @@ func (uc *RecorderUsecase) acquireSlot(ctx context.Context, roomID int64) error 
 	case uc.slots <- struct{}{}:
 		return nil
 	default:
-		log.Warn("recording slots full, queueing", "room", roomID, "max", uc.maxConcurrent)
+		log.Warn("recording slots full, queueing", "room", roomID, "max", cap(uc.slots))
 	}
 
 	// 阻塞等待槽位或 ctx 被取消

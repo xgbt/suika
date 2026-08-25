@@ -494,9 +494,6 @@ func TestNewRecorderUsecaseMaxConcurrent(t *testing.T) {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 	uc := NewRecorderUsecase(c, reg, &fakeRepo{}, &fakeLiveClient{})
-	if uc.maxConcurrent != 2 {
-		t.Fatalf("maxConcurrent = %d, want 2", uc.maxConcurrent)
-	}
 	if uc.slots == nil || cap(uc.slots) != 2 {
 		t.Fatalf("slots cap = %d, want 2", cap(uc.slots))
 	}
