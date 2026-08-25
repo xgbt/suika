@@ -27,6 +27,14 @@ const (
 	splitOverrun          = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 	maxTitleLen           = 64               // meta.json 中 title 字段的最大长度，超过则截断
 	maxNameLen            = 32               // meta.json 中 room_name 字段的最大长度，超过则截断
+
+	// defaultMaxSegmentBytes 分段大小上限（2.5 GiB，对齐 biliup 默认值）：
+	// 原画长直播的单段体积和崩溃时的损失半径由此封顶，与时长上限取或。
+	defaultMaxSegmentBytes int64 = 2_684_354_560
+	// sizeSplitOverrunDivisor 大小切分等待关键帧的强切裕度：超出阈值
+	// 1/该值 仍未等到关键帧则强制切分（GOP 增量相对 GiB 级阈值可忽略，
+	// 裕度只是无关键帧病态流的保险）。
+	sizeSplitOverrunDivisor = 10
 )
 
 // recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与收尾合并。
@@ -35,8 +43,10 @@ type recorderRepo struct {
 
 	// recordRoot 录制根目录
 	recordRoot string
-	// segmentDuration 分段时长，为 0 时不切分
+	// segmentDuration 分段时长，为 0 时不按时间切分
 	segmentDuration time.Duration
+	// maxSegmentBytes 分段大小上限，为 0 时不按大小切分
+	maxSegmentBytes int64
 	// healthInterval 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败。
 	healthInterval time.Duration
 	// healthFailRounds 连续健康检查失败轮数，达到该轮数则判定录制异常。
@@ -52,6 +62,7 @@ func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 		d:                d,
 		recordRoot:       defaultRecordRoot,
 		segmentDuration:  defaultSegmentMinutes * time.Minute,
+		maxSegmentBytes:  defaultMaxSegmentBytes,
 		healthInterval:   defaultHealthInterval,
 		healthFailRounds: defaultHealthRounds,
 		stats:            make(map[int64]*pumpStats),
@@ -322,10 +333,22 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	}
 }
 
-// shouldSplit 判断下一个 tag 是否应开启新分段：达到目标时长且该 tag
-// 是关键帧，或者超时预算耗尽（强制切分）。
+// shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
+// 等待视频关键帧以保证分段可独立播放：
+//  1. 大小：已写字节达到上限，且该 tag 是关键帧；或超出上限的
+//     1/sizeSplitOverrunDivisor 裕度仍无关键帧则强制切分；
+//  2. 时长：达到目标时长且该 tag 是关键帧；或超出 splitOverrun 强制切分。
 func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
-	if r.segmentDuration <= 0 || !seg.hasStart {
+	if !seg.hasStart {
+		return false
+	}
+	if r.maxSegmentBytes > 0 && seg.bytes >= r.maxSegmentBytes {
+		overrun := r.maxSegmentBytes / sizeSplitOverrunDivisor
+		if tag.IsVideoKeyframe() || seg.bytes >= r.maxSegmentBytes+overrun {
+			return true
+		}
+	}
+	if r.segmentDuration <= 0 {
 		return false
 	}
 	elapsed := time.Duration(tag.Timestamp-seg.startTs) * time.Millisecond

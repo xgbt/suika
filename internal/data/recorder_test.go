@@ -322,12 +322,51 @@ func TestShouldSplit(t *testing.T) {
 	}
 }
 
+func TestShouldSplitBySize(t *testing.T) {
+	key := []byte{0x17, 0x01, 0, 0, 0}   // 关键帧 NALU
+	inter := []byte{0x27, 0x01, 0, 0, 0} // 帧间 NALU
+
+	const limit = int64(1000)
+	overrun := limit / sizeSplitOverrunDivisor
+
+	video := func(data []byte) *flv.Tag {
+		return &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: data}
+	}
+	cases := []struct {
+		name     string
+		maxBytes int64
+		bytes    int64
+		hasStart bool
+		tag      *flv.Tag
+		want     bool
+	}{
+		{"size splitting disabled", 0, limit * 10, true, video(key), false},
+		{"segment has no start yet", limit, limit, false, video(key), false},
+		{"under limit keyframe", limit, limit - 1, true, video(key), false},
+		{"at limit keyframe splits", limit, limit, true, video(key), true},
+		{"past limit inter within overrun waits", limit, limit + overrun - 1, true, video(inter), false},
+		{"overrun exhausted forces split on inter", limit, limit + overrun, true, video(inter), true},
+		{"past limit keyframe splits even mid-overrun", limit, limit + overrun/2, true, video(key), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// segmentDuration 置 0：只验证大小触发一路。
+			r := &recorderRepo{maxSegmentBytes: tc.maxBytes}
+			seg := &segmentFile{hasStart: tc.hasStart, bytes: tc.bytes}
+			if got := r.shouldSplit(seg, tc.tag); got != tc.want {
+				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // --- 构造函数 / 路径 ---
 
 func TestNewRecorderRepoConfigMapping(t *testing.T) {
 	r := NewRecorderRepo(&Data{}, nil).(*recorderRepo)
 	if r.recordRoot != defaultRecordRoot ||
 		r.segmentDuration != defaultSegmentMinutes*time.Minute ||
+		r.maxSegmentBytes != defaultMaxSegmentBytes ||
 		r.healthInterval != defaultHealthInterval ||
 		r.healthFailRounds != defaultHealthRounds {
 		t.Fatalf("defaults not applied: %+v", r)
@@ -971,6 +1010,66 @@ func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 	}
 	_, part1 := readSegmentTags(t, filepath.Join(dir, base+"_part1.flv"))
 	assertTagsEqual(t, part1, tags)
+}
+
+// TestRecordSessionSplitsAtSizeLimit 验证大小切分的端到端行为：阈值设为
+// 250 字节，正文 tag 每个 20 字节、每 5 个一个关键帧。每个分段写到约
+// 282 字节（82 字节的头 + 10 个正文 tag）后越过阈值，在下一个关键帧处
+// 切分，共产出 4 段；每段（含最后一段）都 ≥ 阈值，且切分点都是关键帧。
+func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
+	repo := newTestRepo(t, nil, nil)
+	repo.maxSegmentBytes = 250 // 测试中使用小阈值
+	ctx := context.Background()
+	session := testSession()
+	if err := repo.PrepareSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
+	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
+	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
+	tags := []*flv.Tag{metaTag, videoSeq, audioSeq}
+	for i := range 40 {
+		data := []byte{0x27, 0x01, 0, 0, 0, byte(i)} // 帧间 NALU
+		if i%5 == 0 {
+			data[0] = 0x17 // 每 5 个 tag 一个关键帧
+		}
+		tags = append(tags, &flv.Tag{Type: flv.TagVideo, Timestamp: int64((i + 1) * 10), Data: data})
+	}
+
+	stream := &biz.LiveStream{
+		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
+		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
+	}
+	result, err := repo.RecordSession(ctx, session, stream, nil)
+	if err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if result.Parts != 4 {
+		t.Fatalf("parts = %d, want 4", result.Parts)
+	}
+
+	dir, base, err := repo.sessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := loadMeta(filepath.Join(dir, base+".meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, seg := range meta.Segments {
+		if seg.Bytes < 250 {
+			t.Fatalf("segment %d bytes = %d, want >= 250", seg.Part, seg.Bytes)
+		}
+		// part2 起：注入的三个头标签之后首个正文标签必须是关键帧（切分点）。
+		if i == 0 {
+			continue
+		}
+		_, segTags := readSegmentTags(t, filepath.Join(dir, seg.Video))
+		if len(segTags) < 4 || !segTags[3].IsVideoKeyframe() {
+			t.Fatalf("segment %d first body tag after injected headers is not a keyframe", seg.Part)
+		}
+	}
 }
 
 // --- FinishSession / 收尾合并 ---
