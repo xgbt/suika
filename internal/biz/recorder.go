@@ -157,7 +157,7 @@ type ReconnectPolicy struct {
 }
 
 type RecorderUsecase struct {
-	registry            *RoomRegistry
+	roomRegistry        *RoomRegistry
 	repo                RecorderRepo
 	liveClient          LiveClient
 	pollInterval        time.Duration   // 拉取房间状态的兜底轮询间隔
@@ -170,7 +170,7 @@ type RecorderUsecase struct {
 
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
 	uc := &RecorderUsecase{
-		registry:     reg,
+		roomRegistry: reg,
 		repo:         repo,
 		liveClient:   lc,
 		pollInterval: defaultRoomInfoPollInterval,
@@ -201,7 +201,7 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 	}
 
 	// 订阅 Room 注册表变更通知，返回一个通道和取消函数。
-	changes, unsubscribe := uc.registry.Subscribe()
+	changes, unsubscribe := uc.roomRegistry.Subscribe()
 	defer unsubscribe()
 
 	// monitors 是当前活跃的房间监控协程集合；retired 是已停止的监控协程集合，等待收尾。
@@ -268,7 +268,7 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 	*retired = alive
 
 	// 获取当前Room注册表快照，按 room_id 建立索引
-	want := lo.KeyBy(uc.registry.Rooms(), func(r Room) int64 { return r.RoomID })
+	want := lo.KeyBy(uc.roomRegistry.Rooms(), func(r Room) int64 { return r.RoomID })
 
 	// 1. 如果 monitors 中存在的房间不在 want 中，则说明该房间已被删除，取消其监控协程并移入 retired。
 	for roomID, h := range monitors {

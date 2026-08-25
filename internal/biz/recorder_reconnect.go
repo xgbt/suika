@@ -25,7 +25,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			// 非瞬时故障（风控拒绝等）无法靠重试恢复：记 lastError 并结束场次。
 			if !stderrors.Is(openErr, ErrStreamTransient) {
 				log.Error("open stream failed", "room", roomID, "err", openErr)
-				uc.registry.NoteError(roomID, openErr)
+				uc.roomRegistry.NoteError(roomID, openErr)
 				return
 			}
 			// 瞬时故障（CDN 404 等）最常见的原因是主播刚下播、流已被撤：
@@ -55,7 +55,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 
 		// 2. 录制
 		session.Quality = stream.Quality
-		uc.registry.SetStreamQuality(roomID, stream.Quality)
+		uc.roomRegistry.SetStreamQuality(roomID, stream.Quality)
 		legStart := time.Now()
 		result, recErr := uc.repo.RecordSession(ctx, session, stream, events)
 		if result != nil {
@@ -139,7 +139,7 @@ func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, o
 			lastErr = err // 探测失败不计入下播确认，继续探测
 			continue
 		}
-		uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+		uc.roomRegistry.ApplyRoomInfo(ctx, roomID, roomInfo)
 		if roomInfo.Live {
 			return true, true
 		}
@@ -149,7 +149,7 @@ func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, o
 		}
 	}
 	log.Error("probe live status failed, ending session", "room", roomID, "err", lastErr)
-	uc.registry.NoteError(roomID, lastErr)
+	uc.roomRegistry.NoteError(roomID, lastErr)
 	return false, false
 }
 

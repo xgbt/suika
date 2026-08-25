@@ -246,7 +246,7 @@ func TestRecordLoopOpenLiveStreamFailureEndsSession(t *testing.T) {
 	if lc.statusCalls != 0 {
 		t.Fatalf("statusCalls = %d, want 0 (no probe on non-transient open error)", lc.statusCalls)
 	}
-	if got := uc.registry.runtime(42).LastError; got == "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got == "" {
 		t.Fatalf("LastError is empty, want the open error recorded")
 	}
 }
@@ -269,7 +269,7 @@ func TestRecordLoopOpenTransientOfflineEndsSessionQuietly(t *testing.T) {
 	if lc.openCalls != 1 {
 		t.Fatalf("openCalls = %d, want 1 (no retry after offline probe)", lc.openCalls)
 	}
-	if got := uc.registry.runtime(42).LastError; got != "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got != "" {
 		t.Fatalf("LastError = %q, want empty for a normal stream end", got)
 	}
 }
@@ -318,7 +318,7 @@ func TestRecordLoopOpenTransientProbeFailureEndsSession(t *testing.T) {
 	if lc.openCalls != 1 {
 		t.Fatalf("openCalls = %d, want 1", lc.openCalls)
 	}
-	if got := uc.registry.runtime(42).LastError; got == "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got == "" {
 		t.Fatalf("LastError is empty, want the probe error recorded")
 	}
 }
@@ -336,7 +336,7 @@ func TestProbeLiveContextCanceledEndsQuietly(t *testing.T) {
 	if live || ok {
 		t.Fatalf("probeLive = (%v, %v), want (false, false)", live, ok)
 	}
-	if got := uc.registry.runtime(42).LastError; got != "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got != "" {
 		t.Fatalf("LastError = %q, want empty for a ctx-canceled probe", got)
 	}
 }
@@ -447,7 +447,7 @@ func TestProbeLiveExhaustsAttemptsOnPersistentFailure(t *testing.T) {
 	if lc.statusCalls != probeMaxAttempts {
 		t.Fatalf("statusCalls = %d, want %d", lc.statusCalls, probeMaxAttempts)
 	}
-	if got := uc.registry.runtime(42).LastError; got == "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got == "" {
 		t.Fatalf("LastError is empty, want the probe error recorded")
 	}
 }
@@ -591,12 +591,12 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	}()
 
 	conn.roomStateUpdates <- liveInfo(42, true)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start recording after live control event")
 	}
 
 	conn.roomStateUpdates <- liveInfo(42, false)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusIdle) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusIdle) {
 		t.Fatal("offline control event did not cancel the active session")
 	}
 	if len(repo.finished) != 1 {
@@ -633,24 +633,24 @@ func TestWatchRoomGatesSessionsOnRecordEnabled(t *testing.T) {
 	// 未配置录制的房间收到开播事件：直播状态更新，但不得开启会话。
 	conn.roomStateUpdates <- liveInfo(42, true)
 	waitFor(t, "live status applied", func() bool {
-		return uc.registry.runtime(42).LiveStatus == LiveStatusOnAir
+		return uc.roomRegistry.runtime(42).LiveStatus == LiveStatusOnAir
 	})
 	time.Sleep(50 * time.Millisecond)
-	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
+	if got := uc.roomRegistry.runtime(42).RecordStatus; got != RecordStatusIdle {
 		t.Fatalf("room with record_enabled=false started recording: record status = %v", got)
 	}
 
 	// 开启录制：仍在播，应立即开录。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
 	roomChanged <- struct{}{}
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start after turning on recording for a live room")
 	}
 
 	// 关闭录制：立即优雅停止。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester"})
 	roomChanged <- struct{}{}
-	if !waitRecordStatus(uc.registry, 42, RecordStatusIdle) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusIdle) {
 		t.Fatal("turning off recording did not stop the active session")
 	}
 	if len(repo.finished) != 1 {
@@ -660,7 +660,7 @@ func TestWatchRoomGatesSessionsOnRecordEnabled(t *testing.T) {
 	// 关闭录制后的开播事件同样不得开启会话。
 	conn.roomStateUpdates <- liveInfo(42, true)
 	time.Sleep(50 * time.Millisecond)
-	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
+	if got := uc.roomRegistry.runtime(42).RecordStatus; got != RecordStatusIdle {
 		t.Fatalf("room with record_enabled=false started recording again: record status = %v", got)
 	}
 
@@ -693,7 +693,7 @@ func TestWatchRoomFallbackPollStartsSession(t *testing.T) {
 	}()
 
 	// 弹幕房间状态事件一个不发：会话只能由"定时器 → 拉取 → 策略"路径启动。
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("fallback poll did not start the session")
 	}
 	if lc.pollCalls.Load() == 0 {
@@ -755,24 +755,24 @@ func TestWatchRoomEnableRecordingDuringStopResumesSession(t *testing.T) {
 	}()
 
 	conn.roomStateUpdates <- liveInfo(42, true)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start recording")
 	}
 
 	// 关闭录制：会话进入收尾并阻塞在合并 gate 上。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester"})
 	roomChanged <- struct{}{}
-	if !waitRecordStatus(uc.registry, 42, RecordStatusMerging) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusMerging) {
 		t.Fatal("turning off recording did not drive the session into finishing")
 	}
 
 	// 收尾完成前重新开启录制。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
 	roomChanged <- struct{}{}
 
 	// 放行收尾：仍在播，应立即恢复录制（第二个会话）。
 	close(repo.gate)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not resume after finishing completed while live")
 	}
 	if got := repo.prepares.Load(); got != 2 {

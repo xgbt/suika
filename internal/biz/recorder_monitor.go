@@ -18,7 +18,7 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan s
 		// 通过弹幕链接监控房间，若弹幕连接错误，则重拨连接
 		if err := uc.watchRoom(ctx, roomChanged, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
-			uc.registry.NoteError(roomID, err)
+			uc.roomRegistry.NoteError(roomID, err)
 		}
 		if utils.SleepCtx(ctx, uc.redialDelay) != nil {
 			return
@@ -45,13 +45,13 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 	poll := time.NewTimer(uc.nextPollDelay())
 	defer poll.Stop()
 
-	policy := newSessionPolicy(uc.registry.Room(roomID).RecordEnabled)
+	policy := newSessionPolicy(uc.roomRegistry.Room(roomID).RecordEnabled)
 	var active *sessionHandle
 
 	// roomInfoArrived 是弹幕推送与回退轮询两路房间信息的共同动作：
 	// 先应用到注册表，再投递给策略决策。
 	roomInfoArrived := func(roomInfo *RoomInfo) {
-		uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+		uc.roomRegistry.ApplyRoomInfo(ctx, roomID, roomInfo)
 		active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
 	}
 
@@ -89,14 +89,14 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 			roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
 			if err != nil && ctx.Err() == nil {
 				log.Warn("fallback poll failed", "room", roomID, "err", err)
-				uc.registry.NoteError(roomID, err)
+				uc.roomRegistry.NoteError(roomID, err)
 			} else if err == nil {
 				roomInfoArrived(roomInfo)
 			}
 			poll.Reset(uc.nextPollDelay())
 		// 管理后台变更了房间记录：重读最新录制开关投递给策略
 		case <-roomChanged:
-			room := uc.registry.Room(roomID)
+			room := uc.roomRegistry.Room(roomID)
 			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
 		}
 	}

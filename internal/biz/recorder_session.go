@@ -21,17 +21,17 @@ func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info
 // runSession 端到端负责一次会话：准备、录制循环、收尾/合并。
 func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) {
 	// 1. 准备会话目录和 meta.json
-	room := uc.registry.Room(roomID)
+	room := uc.roomRegistry.Room(roomID)
 	session := &RecordingSession{
 		RoomID:        roomID,
 		RoomName:      firstNonEmpty(room.StreamerName, info.StreamerName, fmt.Sprintf("%d", roomID)),
 		Title:         info.Title,
 		LiveStartTime: info.LiveStartTime,
 	}
-	uc.registry.StartRecording(roomID)
+	uc.roomRegistry.StartRecording(roomID)
 	if err := uc.repo.PrepareSession(ctx, session); err != nil {
 		log.Error("prepare session failed", "room", roomID, "err", err)
-		uc.registry.FailRecording(roomID, err)
+		uc.roomRegistry.FailRecording(roomID, err)
 		return
 	}
 
@@ -40,16 +40,16 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 
 	// 3. 收尾脱离（可能已取消的）运行 context，保证关停期间合并标记
 	// 仍能落盘；遗留部分由下次启动时的 RecoverPending 接管。
-	uc.registry.SetMerging(roomID)
+	uc.roomRegistry.SetMerging(roomID)
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishGracePeriod)
 	defer cancel()
 	if err := uc.repo.FinishSession(fctx, session); err != nil {
 		log.Error("finish session failed", "room", roomID, "err", err)
-		uc.registry.FailRecording(roomID, err)
+		uc.roomRegistry.FailRecording(roomID, err)
 		return
 	}
 
-	uc.registry.FinishRecording(roomID)
+	uc.roomRegistry.FinishRecording(roomID)
 }
 
 func firstNonEmpty(vals ...string) string {
