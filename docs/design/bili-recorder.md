@@ -510,7 +510,7 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
 每轮开始：lc.OpenLiveStream（重取 URL，可能换 CDN 节点）
   ├─ 失败：
   │   ├─ 非瞬时故障（风控拒绝等）→ 记 lastError，结束场次（不重试）
-  │   └─ ErrStreamTransient → lc.GetRoomInfo 复查
+  │   └─ ErrStreamTransient → lc.GetRoomInfo 复查（probeLive，确认语义见下）
   │       ├─ 失败 → 记错误，结束场次（失败由 ctx 取消引起则静默返回，
   │       │   不记错误：监控已因下播事件取消了本场次）
   │       ├─ 已下播 → 正常收尾（主播刚下播、流已被撤属正常结束，
@@ -521,7 +521,10 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
       → repo.RecordSession 泵送
 泵送返回（EOF / 读错误 / 巡检中止 / 写失败 / ctx 取消）
   ├─ ctx 已取消 → 返回（停机路径）
-  └─ lc.GetRoomInfo 复查
+  ├─ 稳定录制预算重置：本腿录制时长 ≥ 5 分钟且写入过内容 →
+  │   重连次数与 CDN 预算回到初始值（预算只保护"开局即坏"的房间，
+  │   不掐死持续产出内容的长直播）
+  └─ lc.GetRoomInfo 复查（probeLive）
       ├─ 失败 → 记错误，结束场次（失败由 ctx 取消引起则静默返回，不记错误）
       ├─ 已下播 → ApplyRoomInfo 后正常收尾
       └─ 仍在播：
@@ -535,9 +538,13 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
           └─ 配额耗尽 → 保留已录内容收尾
 ```
 
+`probeLive` 确认语义：单次探测说"在播"即成立（录制优先）；"未开播"
+需连续 3 次确认（间隔 3s），避免单次接口抖动或轮次切换瞬间把场次提前
+结束；探测失败不计入下播确认，累计 6 次仍无定论才记错误结束场次。
+
 `ErrStreamTransient` 与 `ErrRiskControl` 是 biz 声明的哨兵错误，data 在
 错误源头包装（`fmt.Errorf("%w: ...")`），决策树用 `errors.Is` 分类。
-预算、延迟参数来自 `conf.Recorder.ReconnectOptions`（§7）。
+预算、延迟与确认参数均为代码常量（§7.2），不做配置。
 
 ### 4.6 场次收尾与合并（repo.FinishSession）
 
@@ -763,6 +770,9 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 | 重连延迟 | 10s | biz |
 | CDN 瞬时故障重试预算 | 5 | biz |
 | CDN 退避基数 / 封顶 | 2s / 60s | biz |
+| 下播确认次数 / 间隔 | 连续 3 次 / 3s | biz |
+| 下播确认探测上限（含失败） | 6 次 | biz |
+| 稳定录制预算重置阈值 | 5 分钟 | biz |
 | 监控重建（重拨）间隔 | 10s | biz |
 | FinishSession 脱离 grace | 30s | biz |
 | 分段时长 | 120 分钟 | data.NewRecorderRepo |
@@ -927,7 +937,8 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 
 | 场景 | 行为 |
 |---|---|
-| 断流（仍在播） | 决策树重连，新 part（§4.5）；预算耗尽则保内容收尾 |
+| 断流（仍在播） | 决策树重连，新 part（§4.5）；本腿稳定录制 ≥5 分钟则重置预算，长直播不累计耗尽；预算耗尽则保内容收尾 |
+| 单次探测说下播 | probeLive 需连续 3 次确认（间隔 3s）才结束场次；探测失败不计数，6 次无定论记错误结束（§4.5） |
 | 正常 EOF 但仍在播 | 视同断流重连（CDN 掐长连接是常态） |
 | 文件/tag 停止增长 | 巡检连续 3 轮无增长 → 中止 → 决策树普通重连分支 |
 | 风控 -352/412/403/429 | 刷 WBI+buvid 重试一次 → getDanmuInfo 再降级 getConf → 失败则房间冷却 5/10/20min（§5） |
@@ -953,11 +964,11 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 157 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
+共 161 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
-| biz | `recorder_test.go`（20） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、拉流瞬时失败复查已下播静默收尾（不记错误）/仍在播按预算重试/复查失败终止、复查因 ctx 取消失败静默收尾（不记错误）、ctx 取消即停、nil/覆盖配置、抖动区间；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`redialDelay` 字段供测试压缩时延 |
+| biz | `recorder_test.go`（24） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、拉流瞬时失败复查已下播静默收尾（不记错误）/仍在播按预算重试/复查失败终止、复查因 ctx 取消失败静默收尾（不记错误）、ctx 取消即停、nil/覆盖配置、抖动区间；**下线多次确认（单次下播探测不结束场次、在播单次即成立、持续失败耗尽 6 次记错误）、稳定录制重置预算（腿时长 ≥ 阈值且写入内容）**；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`redialDelay`/`offlineConfirmDelay`/`stableResetAfter` 字段供测试压缩时延 |
 | biz | `room_test.go`（10） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；**registry Add/Update/Remove 实时同步与合并式变更通知（含退订）**、**RoomUsecase CRUD 落库后同步 registry（持久化失败不回写）**；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
 | biz | `session_policy_test.go`（4） | 决策矩阵逐行覆盖（`.scratch/session-policy/spec.md`）：RoomInfoArrived / RecordEnabledFlipped / SessionFinished 三种输入 × 阶段（idle / running / finishing）转移，收尾后续录（resumeOnFinish）语义（ADR-0001） |
 | biz | `account_test.go`（5） | fake PassportClient + CredentialRepo 脚本化：轮询确认才持久化凭据、未确认状态不落库、参数校验、账号状态（无凭据=已登出）、本地登出 |

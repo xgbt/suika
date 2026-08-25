@@ -110,6 +110,7 @@ func newTestUsecaseWithRooms(t *testing.T, rooms map[int64]*Room, repo RecorderR
 	uc.rec.ReconnectDelay = time.Millisecond
 	uc.cdnBackoffBase = time.Millisecond
 	uc.redialDelay = time.Millisecond
+	uc.offlineConfirmDelay = time.Millisecond
 	if mutate != nil {
 		mutate(uc)
 	}
@@ -349,6 +350,105 @@ func TestRecordLoopProbeFailureEndsSession(t *testing.T) {
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
+	}
+}
+
+func TestRecordLoopOfflineRequiresRepeatedConfirmation(t *testing.T) {
+	// 首次探测说"未开播"但随后复活在播：单次下播结论不得结束场次，
+	// 应继续重连；之后连续多次"未开播"才确认下播并收尾。
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: stderrors.New("reset")}}}
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{
+		{info: liveInfo(42, false)}, // 第一次确认的首轮：未开播
+		{info: liveInfo(42, true)},  // 次轮复活在播 → 确认不成立，重连
+		{info: liveInfo(42, false)}, // 第二次确认起粘滞未开播 → 三轮后确认
+	}}
+	uc := newTestUsecase(t, repo, lc, nil)
+
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+
+	// 若单次下播即结束，recordCalls 只会是 1。
+	if repo.recordCalls != 2 {
+		t.Fatalf("recordCalls = %d, want 2 (single offline probe must not end the session)", repo.recordCalls)
+	}
+}
+
+// slowStableRepo 的每次泵送都睡眠一小段时间再产出内容，模拟"稳定录制
+// 了一段时间"的腿，用于触发预算重置。
+type slowStableRepo struct {
+	sleep       time.Duration
+	result      *RecordingResult
+	err         error
+	recordCalls int
+}
+
+func (r *slowStableRepo) PrepareSession(context.Context, *RecordingSession) error { return nil }
+
+func (r *slowStableRepo) RecordSession(_ context.Context, _ *RecordingSession, stream *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
+	if stream != nil && stream.Body != nil {
+		stream.Body.Close()
+	}
+	time.Sleep(r.sleep)
+	r.recordCalls++
+	return r.result, r.err
+}
+
+func (r *slowStableRepo) FinishSession(context.Context, *RecordingSession) error { return nil }
+func (r *slowStableRepo) RecoverPending(context.Context) error                   { return nil }
+
+func TestRecordLoopStableRecordingResetsBudget(t *testing.T) {
+	// 泵送稳定录制超过阈值后重置重连预算：长直播中的偶发断流不再累计
+	// 到耗尽。MaxReconnect=1 下，不重置时第二次探测在播就会因预算耗尽
+	// 结束（recordCalls=2）；重置后可持续到第三次探测确认下播（=3）。
+	repo := &slowStableRepo{
+		sleep:  3 * time.Millisecond,
+		result: &RecordingResult{BytesWritten: 1024},
+		err:    stderrors.New("reset"),
+	}
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{
+		{info: liveInfo(42, true)},
+		{info: liveInfo(42, true)},
+		{info: liveInfo(42, false)},
+	}}
+	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
+		u.rec.MaxReconnect = 1
+		u.stableResetAfter = time.Millisecond
+	})
+
+	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+
+	if repo.recordCalls != 3 {
+		t.Fatalf("recordCalls = %d, want 3 (stable legs must reset the reconnect budget)", repo.recordCalls)
+	}
+}
+
+func TestProbeLiveSingleLiveProbeSuffices(t *testing.T) {
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
+	uc := newTestUsecase(t, &fakeRepo{}, lc, nil)
+
+	live, ok := uc.probeLive(context.Background(), 42)
+	if !live || !ok {
+		t.Fatalf("probeLive = (%v, %v), want (true, true)", live, ok)
+	}
+	// "在播"单次探测即成立，不做多余确认。
+	if lc.statusCalls != 1 {
+		t.Fatalf("statusCalls = %d, want 1", lc.statusCalls)
+	}
+}
+
+func TestProbeLiveExhaustsAttemptsOnPersistentFailure(t *testing.T) {
+	// 探测持续失败：耗尽尝试次数后记错误并返回 (false, false)。
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{{err: stderrors.New("probe down")}}}
+	uc := newTestUsecase(t, &fakeRepo{}, lc, nil)
+
+	live, ok := uc.probeLive(context.Background(), 42)
+	if live || ok {
+		t.Fatalf("probeLive = (%v, %v), want (false, false)", live, ok)
+	}
+	if lc.statusCalls != probeMaxAttempts {
+		t.Fatalf("statusCalls = %d, want %d", lc.statusCalls, probeMaxAttempts)
+	}
+	if got := uc.registry.runtime(42).LastError; got == "" {
+		t.Fatalf("LastError is empty, want the probe error recorded")
 	}
 }
 

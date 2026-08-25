@@ -37,6 +37,10 @@ const (
 	monitorRedialDelay          = 10 * time.Second  // 弹幕连接重拨前的停顿
 	finishGracePeriod           = 30 * time.Second  // 限定关停期间 FinishSession 脱离已取消运行 context 后仍可用的工作时长
 	pollJitterFraction          = 5                 // 回退轮询间隔的相对抖动幅度（间隔 +/- fraction/2）
+	offlineConfirmRounds        = 3                 // 判定下播所需的连续"未开播"探测次数
+	probeMaxAttempts            = 6                 // 单次下播确认内的探测总次数上限（含失败）
+	defaultOfflineConfirmDelay  = 3 * time.Second   // 下播确认相邻两次探测的间隔
+	defaultStableResetAfter     = 5 * time.Minute   // 泵送稳定录制超过该时长后重置重连预算
 )
 
 // 写入 JSONL 的弹幕事件类型。
@@ -157,15 +161,17 @@ type ReconnectPolicy struct {
 // 决策：所有平台 IO 由 LiveClient 执行，所有存储 IO 由 RecorderRepo
 // 执行。房间配置与直播/录制状态存放在共享的 RoomRegistry 中。
 type RecorderUsecase struct {
-	registry       *RoomRegistry
-	repo           RecorderRepo
-	liveClient     LiveClient
-	pollInterval   time.Duration   // 拉取房间状态的兜底轮询间隔
-	rec            ReconnectPolicy // 断流决策树使用的重连配置
-	cdnBackoffBase time.Duration   // CDN 瞬时故障首次重试的延迟；测试中会调小。
-	redialDelay    time.Duration   // 监控重拨的停顿；测试中会调小。
-	maxConcurrent  int             // 最大并发录制会话数，若 <= 0 则表示不限制录制会话并发
-	slots          chan struct{}   // 录制槽位，若 maxConcurrent <= 0 则不限制并发
+	registry            *RoomRegistry
+	repo                RecorderRepo
+	liveClient          LiveClient
+	pollInterval        time.Duration   // 拉取房间状态的兜底轮询间隔
+	rec                 ReconnectPolicy // 断流决策树使用的重连配置
+	cdnBackoffBase      time.Duration   // CDN 瞬时故障首次重试的延迟；测试中会调小。
+	redialDelay         time.Duration   // 监控重拨的停顿；测试中会调小。
+	offlineConfirmDelay time.Duration   // 下播确认相邻两次探测的间隔；测试中会调小。
+	stableResetAfter    time.Duration   // 泵送稳定录制超过该时长后重置重连预算；测试中会调小。
+	maxConcurrent       int             // 最大并发录制会话数，若 <= 0 则表示不限制录制会话并发
+	slots               chan struct{}   // 录制槽位，若 maxConcurrent <= 0 则不限制并发
 }
 
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
@@ -180,8 +186,10 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 			ReconnectDelay:     defaultReconnectDelay,
 			CDNTransientBudget: defaultCDNTransientBudget,
 		},
-		cdnBackoffBase: defaultCDNBackoffBase,
-		redialDelay:    monitorRedialDelay,
+		cdnBackoffBase:      defaultCDNBackoffBase,
+		redialDelay:         monitorRedialDelay,
+		offlineConfirmDelay: defaultOfflineConfirmDelay,
+		stableResetAfter:    defaultStableResetAfter,
 	}
 	if c == nil {
 		log.Warn("recorder configuration missing, running with zero rooms")
@@ -523,12 +531,27 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 		// 2. 录制
 		session.Quality = stream.Quality
 		uc.registry.SetStreamQuality(roomID, stream.Quality)
+		legStart := time.Now()
 		result, recErr := uc.repo.RecordSession(ctx, session, stream, events)
 		if result != nil {
 			log.Info("pump ended", "room", roomID, "bytes", result.BytesWritten, "parts", result.Parts, "err", recErr)
 		}
 		if ctx.Err() != nil {
 			return
+		}
+
+		// 泵送稳定录制超过阈值且写入了内容：本场次是健康的，重置重连预
+		// 算，让长直播中的偶发断流不再累计到耗尽。预算只保护"反复开局
+		// 即坏"的房间，不应掐死持续产出内容的会话。
+		if uc.stableResetAfter > 0 && time.Since(legStart) >= uc.stableResetAfter &&
+			result != nil && result.BytesWritten > 0 {
+			if reconnects > 0 || cdnBudget < uc.rec.CDNTransientBudget {
+				log.Info("recording stable, resetting reconnect budget",
+					"room", roomID, "ran", time.Since(legStart).Round(time.Second))
+			}
+			reconnects = 0
+			cdnBudget = uc.rec.CDNTransientBudget
+			cdnAttempt = 0
 		}
 
 		// 3. 探测直播状态
@@ -568,21 +591,41 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 	}
 }
 
-// probeLive 复查房间的直播状态并应用到注册表。探测失败时记 lastError 并
-// 返回 ok=false，调用方应结束场次；若失败由 ctx 取消引起（如监控已因下播
-// 事件取消了本场次），属正常结束路径，静默返回、不记错误。
+// probeLive 复查房间的直播状态并应用到注册表。单次探测说"在播"即成立
+// （录制优先）；"未开播"需要连续 offlineConfirmRounds 次确认，避免单次
+// 接口抖动或轮次切换瞬间把场次提前结束。探测失败不计入下播确认，累计
+// probeMaxAttempts 次仍无定论时记错误并返回 ok=false，调用方应结束场次；
+// 若失败由 ctx 取消引起（如监控已因下播事件取消了本场次），属正常结束
+// 路径，静默返回、不记错误。
 func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, ok bool) {
-	roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
-	if err != nil {
-		if ctx.Err() != nil {
-			return false, false
+	var lastErr error
+	offlineStreak := 0
+	for attempt := range probeMaxAttempts {
+		if attempt > 0 {
+			if sleepCtx(ctx, uc.offlineConfirmDelay) != nil {
+				return false, false
+			}
 		}
-		log.Error("probe live status failed, ending session", "room", roomID, "err", err)
-		uc.registry.NoteError(roomID, err)
-		return false, false
+		roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, false
+			}
+			lastErr = err // 探测失败不计入下播确认，继续探测
+			continue
+		}
+		uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
+		if roomInfo.Live {
+			return true, true
+		}
+		offlineStreak++
+		if offlineStreak >= offlineConfirmRounds {
+			return false, true
+		}
 	}
-	uc.registry.ApplyRoomInfo(ctx, roomID, roomInfo)
-	return roomInfo.Live, true
+	log.Error("probe live status failed, ending session", "room", roomID, "err", lastErr)
+	uc.registry.NoteError(roomID, lastErr)
+	return false, false
 }
 
 // acquireSlot 尝试获取一个录制槽位，若已满则阻塞等待或直到 ctx 被取消
