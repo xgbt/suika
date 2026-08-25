@@ -14,37 +14,50 @@ import (
 	"suika/internal/data/flv"
 )
 
-// headerCache 缓存了录制分段文件的头标签，避免每次切分分段时都重新生成。
-type headerCache struct {
+// segmentHeaders 是分段层的头标签边界对象：维护缓存、检测序列头变化、
+// 以及为新分段提供可重注入的头标签集合。
+type segmentHeaders struct {
 	metadata *flv.Tag
 	videoSeq *flv.Tag
 	audioSeq *flv.Tag
 }
 
-// headerChanged 判断 tag 是否携带与缓存不同的序列头：流中途的序列头变
-// 化（CDN 换源、主播改码率）意味着后续帧的解码配置与此前不同，继续写
-// 入旧分段会把两种配置拼进同一个文件。此时应强制切段；首次见到某类序列
-// 头（缓存为 nil）不算变化。
-func headerChanged(cache *headerCache, tag *flv.Tag) bool {
+// changed 判断 tag 是否携带与缓存不同的序列头：流中途的序列头变化
+// 意味着后续帧的解码配置与此前不同，应触发切段。首次见到某类序列头
+// （缓存为 nil）不算变化。
+func (h *segmentHeaders) changed(tag *flv.Tag) bool {
 	switch {
 	case tag.IsAVCSequenceHeader():
-		return cache.videoSeq != nil && !bytes.Equal(cache.videoSeq.Data, tag.Data)
+		return h.videoSeq != nil && !bytes.Equal(h.videoSeq.Data, tag.Data)
 	case tag.IsAACSequenceHeader():
-		return cache.audioSeq != nil && !bytes.Equal(cache.audioSeq.Data, tag.Data)
+		return h.audioSeq != nil && !bytes.Equal(h.audioSeq.Data, tag.Data)
 	}
 	return false
 }
 
-// cacheHeaderTag 把头标签（onMetaData / AVC 序列头 / AAC 序列头）存入
-// cache；非头标签不改变缓存。
-func cacheHeaderTag(cache *headerCache, tag *flv.Tag) {
+// absorb 把头标签（onMetaData / AVC 序列头 / AAC 序列头）存入缓存；
+// 非头标签不改变缓存。
+func (h *segmentHeaders) absorb(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
-		cache.metadata = tag
+		h.metadata = tag
 	case tag.IsAVCSequenceHeader():
-		cache.videoSeq = tag
+		h.videoSeq = tag
 	case tag.IsAACSequenceHeader():
-		cache.audioSeq = tag
+		h.audioSeq = tag
+	}
+}
+
+// forEachReinject 按固定顺序遍历可重注入头标签（metadata -> video seq -> audio seq）。
+func (h *segmentHeaders) forEachReinject(fn func(*flv.Tag)) {
+	if h == nil {
+		return
+	}
+	for _, tag := range []*flv.Tag{h.metadata, h.videoSeq, h.audioSeq} {
+		if tag == nil {
+			continue
+		}
+		fn(tag)
 	}
 }
 
@@ -64,7 +77,7 @@ type segmentFile struct {
 }
 
 // openSegment 打开一个新的录制分段文件，返回 segmentFile 对象。
-func openSegment(dir, base string, part int, header *flv.FileHeader, cache *headerCache) (*segmentFile, error) {
+func openSegment(dir, base string, part int, header *flv.FileHeader, headers *segmentHeaders) (*segmentFile, error) {
 	videoPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.flv", base, part))
 	danmuPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.danmu.jsonl", base, part))
 	vf, err := os.OpenFile(videoPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -92,16 +105,19 @@ func openSegment(dir, base string, part int, header *flv.FileHeader, cache *head
 	seg.bytes += int64(len(hb))
 	// 写入缓存的头标签
 	// 这些标签包括 metadata、video sequence header 和 audio sequence header，确保新分段文件可以独立播放。
-	for _, tag := range []*flv.Tag{cache.metadata, cache.videoSeq, cache.audioSeq} {
-		if tag == nil {
-			continue
+	headers.forEachReinject(func(tag *flv.Tag) {
+		if err != nil {
+			return
 		}
 		tb := tag.AppendTo(nil)
-		if _, err := seg.bw.Write(tb); err != nil {
+		if _, err = seg.bw.Write(tb); err != nil {
 			seg.close()
-			return nil, err
+			return
 		}
 		seg.bytes += int64(len(tb))
+	})
+	if err != nil {
+		return nil, err
 	}
 	return seg, nil
 }

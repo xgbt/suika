@@ -6,9 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,17 +21,10 @@ const (
 	defaultSegmentMinutes = 120              // 分段时长（分钟）
 	defaultHealthInterval = 10 * time.Second // 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
 	defaultHealthRounds   = 3                // 健康检查失败轮数，连续失败达到该轮数则判定录制异常
-	splitOverrun          = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
-	maxTitleLen           = 64               // meta.json 中 title 字段的最大长度，超过则截断
-	maxNameLen            = 32               // meta.json 中 room_name 字段的最大长度，超过则截断
 
 	// defaultMaxSegmentBytes 分段大小上限（2.5 GiB，对齐 biliup 默认值）：
 	// 原画长直播的单段体积和崩溃时的损失半径由此封顶，与时长上限取或。
 	defaultMaxSegmentBytes int64 = 2_684_354_560
-	// sizeSplitOverrunDivisor 大小切分等待关键帧的强切裕度：超出阈值
-	// 1/该值 仍未等到关键帧则强制切分（GOP 增量相对 GiB 级阈值可忽略，
-	// 裕度只是无关键帧病态流的保险）。
-	sizeSplitOverrunDivisor = 10
 )
 
 // recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与收尾合并。
@@ -79,7 +69,7 @@ func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
 func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.RecordingSession) error {
 
 	// 获取目录和文件名前缀
-	dir, base, err := r.sessionPaths(session)
+	dir, base, err := sessionPaths(r.recordRoot, session)
 	if err != nil {
 		return err
 	}
@@ -97,9 +87,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 		ps = &pumpStats{}
 		r.stats[session.RoomID] = ps
 	}
-	ps.bytes.Store(0)
-	ps.file.Store("")
-	ps.speed.Store(0)
+	ps.reset()
 
 	// 读取 meta.json，
 	metaPath := filepath.Join(dir, base+".meta.json")
@@ -139,7 +127,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	defer stream.Body.Close()
 
 	// 获取会话目录和文件名前缀
-	dir, base, err := r.sessionPaths(session)
+	dir, base, err := sessionPaths(r.recordRoot, session)
 	if err != nil {
 		return nil, err
 	}
@@ -157,8 +145,8 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	// 记录当前会话的写入进度
 	stats := r.statsFor(session.RoomID)
 	// 记录本次录制之前的写入进度
-	baseBytes := stats.bytes.Load()
-	stats.file.Store("")
+	baseBytes := stats.bytesWritten()
+	stats.setCurrentFile("")
 
 	// 把 CDN 实际授予的清晰度记入 meta
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
@@ -205,7 +193,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 				// （头标签仍照常入缓存，供开段注入），保证段首即关键帧、
 				// 独立可解码；纯音频流没有视频关键帧，豁免等待。
 				if header.HasVideo && !tag.IsVideoKeyframe() {
-					cacheHeaderTag(&loop.cache, tag)
+					loop.headers.absorb(tag)
 					continue
 				}
 				if err := loop.openNewSegment(); err != nil {
@@ -232,7 +220,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 					r.appendMetaError(metaPath, "record", err)
 					return &loop.result, err
 				}
-			} else if headerChanged(&loop.cache, tag) {
+			} else if loop.headers.changed(tag) {
 				// 流中途序列头变化（CDN 换源、主播改码率）：继续写入旧分
 				// 段会把两种解码配置拼进同一个文件，强制切段。新段按既有
 				// 规则从缓存注入旧头标签，新序列头作为首个正文标签紧随其
@@ -252,7 +240,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个
 			// 标签不能从缓存重注入，否则会被写两次（openSegment 写一次、
 			// 下面的拉流写入又一次）。切分前已见过的头标签仍会完整重注入。
-			cacheHeaderTag(&loop.cache, tag)
+			loop.headers.absorb(tag)
 			loop.guard.add(tag)
 		// 弹幕/礼物等事件写入
 		case ev := <-events:
@@ -271,7 +259,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			if elapsed <= 0 {
 				continue
 			}
-			stats.speed.Store(int64(float64(delta) / elapsed.Seconds()))
+			stats.setDownloadSpeed(int64(float64(delta) / elapsed.Seconds()))
 			lastSample = loop.sessionBytes
 			lastSampleAt = now
 		// 健康检查：在 healthInterval 内未见新数据则计为一次失败，连续 failRounds 次则判定录制异常。
@@ -320,9 +308,9 @@ type recordSessionLoop struct {
 	stats     *pumpStats
 	baseBytes int64
 
-	cache headerCache
-	guard dupGuard
-	seg   *segmentFile
+	headers segmentHeaders
+	guard   dupGuard
+	seg     *segmentFile
 
 	result       biz.RecordingResult
 	sessionBytes int64
@@ -357,24 +345,21 @@ func (l *recordSessionLoop) openNewSegment() error {
 	defer l.repo.segmentMu.Unlock()
 
 	part := nextPartNumber(l.dir, l.base)
-	seg, err := openSegment(l.dir, l.base, part, l.header, &l.cache)
+	seg, err := openSegment(l.dir, l.base, part, l.header, &l.headers)
 	if err != nil {
 		return err
 	}
 
 	l.seg = seg
 	l.result.Parts++
-	l.stats.file.Store(seg.videoPath)
+	l.stats.setCurrentFile(seg.videoPath)
 
 	// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
 	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
 	// FLV 文件头本身不计，与既有口径一致。
-	for _, ht := range []*flv.Tag{l.cache.metadata, l.cache.videoSeq, l.cache.audioSeq} {
-		if ht == nil {
-			continue
-		}
+	l.headers.forEachReinject(func(ht *flv.Tag) {
 		l.addBytes(int64(len(ht.Data)) + tagEnvelopeOverhead)
-	}
+	})
 
 	l.repo.appendSegmentMeta(l.meta, seg)
 	log.Info("segment opened", "room", l.session.RoomID, "part", part, "file", seg.videoPath)
@@ -431,37 +416,12 @@ func (l *recordSessionLoop) writeTag(tag *flv.Tag, persistError bool) error {
 func (l *recordSessionLoop) addBytes(n int64) {
 	l.sessionBytes += n
 	l.result.BytesWritten = l.sessionBytes
-	l.stats.bytes.Store(l.baseBytes + l.sessionBytes)
-}
-
-// shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
-// 等待视频关键帧以保证分段可独立播放：
-//  1. 大小：已写字节达到上限，且该 tag 是关键帧；或超出上限的
-//     1/sizeSplitOverrunDivisor 裕度仍无关键帧则强制切分；
-//  2. 时长：达到目标时长且该 tag 是关键帧；或超出 splitOverrun 强制切分。
-func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
-	if !seg.hasStart {
-		return false
-	}
-	if r.maxSegmentBytes > 0 && seg.bytes >= r.maxSegmentBytes {
-		overrun := r.maxSegmentBytes / sizeSplitOverrunDivisor
-		if tag.IsVideoKeyframe() || seg.bytes >= r.maxSegmentBytes+overrun {
-			return true
-		}
-	}
-	if r.segmentDuration <= 0 {
-		return false
-	}
-	elapsed := time.Duration(tag.Timestamp-seg.startTs) * time.Millisecond
-	if elapsed < r.segmentDuration {
-		return false
-	}
-	return tag.IsVideoKeyframe() || elapsed >= r.segmentDuration+splitOverrun
+	l.stats.setBytesWritten(l.baseBytes + l.sessionBytes)
 }
 
 // FinishSession 收尾 meta.json 并合并所有已录分段。
 func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.RecordingSession) error {
-	dir, base, err := r.sessionPaths(session)
+	dir, base, err := sessionPaths(r.recordRoot, session)
 	if err != nil {
 		return err
 	}
@@ -488,81 +448,6 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Recording
 	return r.finalizeSession(ctx, metaPath, meta)
 }
 
-// --- 辅助函数 ---
-
-// sessionPaths 计算会话目录和文件名前缀（所有分段与 meta 文件共享的日期/时间/标题前缀）。
-//
-// 目录结构示例：
-//
-//	recordings/
-//	└── 12345_主播名/
-//	    └── 2024-06-01/
-//	        ├── 20240601_1504_直播标题.meta.json
-//	        ├── 20240601_1504_直播标题_part1.flv
-//	        └── 20240601_1504_直播标题_part1.danmu.jsonl
-//
-// 返回值：
-//   - dir  : recordings/12345_主播名/2024-06-01
-//   - base : 20240601_1504_直播标题
-func (r *recorderRepo) sessionPaths(session *biz.RecordingSession) (dir string, base string, err error) {
-	if session == nil || session.RoomID <= 0 {
-		return "", "", biz.ErrRoomInternal
-	}
-
-	start := session.LiveStartTime
-	if start.IsZero() {
-		start = time.Now()
-	}
-
-	roomDir := fmt.Sprintf("%d_%s", session.RoomID, sanitizeSegment(session.RoomName, maxNameLen))
-	dir = filepath.Join(r.recordRoot, roomDir, start.Format("2006-01-02"))
-	base = start.Format("20060102_1504") + "_" + sanitizeSegment(session.Title, maxTitleLen)
-	return
-}
-
-var (
-	// unsafeChars 匹配文件名不安全字符：控制字符、路径分隔符及 Unicode 空白，
-	// + 折叠连续匹配为单个下划线。
-	unsafeChars       = regexp.MustCompile(`[\x00-\x1f\x7f\\/:*?"<>|\s\p{Z}]+`)
-	partSuffixPattern = regexp.MustCompile(`_part(\d+)\.(flv|mp4)$`)
-)
-
-// sanitizeSegment 清理文件名, 替换不安全字符、截断过长片段
-func sanitizeSegment(s string, max int) string {
-	s = strings.Trim(unsafeChars.ReplaceAllString(s, "_"), "_")
-	if runes := []rune(s); len(runes) > max {
-		s = strings.TrimRight(string(runes[:max]), "_")
-	}
-	if s == "" {
-		return "untitled"
-	}
-	return s
-}
-
-// nextPartNumber 扫描会话目录推导下一个分段编号
-// 同时覆盖重连和崩溃重启两种情况
-func nextPartNumber(dir, base string) int {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 1
-	}
-	maxPart := 0
-	prefix := base + "_part"
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasPrefix(name, prefix) {
-			continue
-		}
-		m := partSuffixPattern.FindStringSubmatch(name)
-		if m == nil {
-			continue
-		}
-		if n, err := strconv.Atoi(m[1]); err == nil && n > maxPart {
-			maxPart = n
-		}
-	}
-	return maxPart + 1
-}
 
 // archiveMergedSession 将已完成会话的合并产物恢复为历史分段，使同一直播
 // 场次关闭录制后再次开启时，可以继续追加而不是覆盖旧产物。

@@ -15,6 +15,37 @@ type pumpStats struct {
 	speed atomic.Int64
 }
 
+func (ps *pumpStats) reset() {
+	ps.setBytesWritten(0)
+	ps.setCurrentFile("")
+	ps.setDownloadSpeed(0)
+}
+
+func (ps *pumpStats) setCurrentFile(path string) {
+	ps.file.Store(path)
+}
+
+func (ps *pumpStats) setBytesWritten(n int64) {
+	ps.bytes.Store(n)
+}
+
+func (ps *pumpStats) setDownloadSpeed(n int64) {
+	ps.speed.Store(n)
+}
+
+func (ps *pumpStats) bytesWritten() int64 {
+	return ps.bytes.Load()
+}
+
+func (ps *pumpStats) snapshot() *biz.SessionStats {
+	file, _ := ps.file.Load().(string)
+	return &biz.SessionStats{
+		CurrentFile:   file,
+		BytesWritten:  ps.bytes.Load(),
+		DownloadSpeed: ps.speed.Load(),
+	}
+}
+
 // SessionStats 读取 pumpStats 的原子字段，返回 SessionStats
 func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.SessionStats, error) {
 	r.mu.Lock()
@@ -24,12 +55,7 @@ func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.Sessi
 	if !ok {
 		return nil, nil
 	}
-	file, _ := ps.file.Load().(string)
-	return &biz.SessionStats{
-		CurrentFile:   file,
-		BytesWritten:  ps.bytes.Load(),
-		DownloadSpeed: ps.speed.Load(),
-	}, nil
+	return ps.snapshot(), nil
 }
 
 // statsFor 返回指定房间的 pumpStats

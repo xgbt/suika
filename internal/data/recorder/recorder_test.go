@@ -196,32 +196,30 @@ func TestSanitizeSegment(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		max  int
 		want string
 	}{
-		{"slashes", `a/b\c`, 64, "a_b_c"},
-		{"all unsafe chars collapse", `\/:*?"<>|`, 64, "untitled"},
-		{"whitespace runs collapse", "a  b\tc", 64, "a_b_c"},
-		{"chinese survives", "主播的 直播间", 64, "主播的_直播间"},
-		{"control chars", "a\x01b\x7fc", 64, "a_b_c"},
-		{"pure dots survive", "...", 64, "..."},
-		{"empty falls back", "", 64, "untitled"},
-		{"only whitespace falls back", "   ", 64, "untitled"},
-		{"edge underscores trimmed", "_a b_", 64, "a_b"},
-		{"truncated to max runes", strings.Repeat("a", 70), 64, strings.Repeat("a", 64)},
-		{"truncation trims trailing underscore", strings.Repeat("a", 63) + " b", 64, strings.Repeat("a", 63)},
-		{"name length limit", strings.Repeat("字", 40), 32, strings.Repeat("字", 32)},
+		{"slashes", `a/b\\c`, "a_b_c"},
+		{"all unsafe chars collapse", `\\/:*?"<>|`, "untitled"},
+		{"whitespace runs collapse", "a  b\tc", "a_b_c"},
+		{"chinese survives", "主播的 直播间", "主播的_直播间"},
+		{"control chars", "a\x01b\x7fc", "a_b_c"},
+		{"pure dots survive", "...", "..."},
+		{"empty falls back", "", "untitled"},
+		{"only whitespace falls back", "   ", "untitled"},
+		{"edge underscores trimmed", "_a b_", "a_b"},
+		{"long title no truncate", strings.Repeat("a", 70), strings.Repeat("a", 70)},
+		{"long chinese no truncate", strings.Repeat("字", 40), strings.Repeat("字", 40)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeSegment(tc.in, tc.max)
+			got := sanitizeSegment(tc.in)
 			if got != tc.want {
-				t.Fatalf("sanitizeSegment(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+				t.Fatalf("sanitizeSegment(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 			if strings.ContainsAny(got, `/\`) {
 				t.Errorf("result %q contains a path separator", got)
 			}
-			if again := sanitizeSegment(got, tc.max); again != got {
+			if again := sanitizeSegment(got); again != got {
 				t.Errorf("result not stable: second pass = %q", again)
 			}
 		})
@@ -317,10 +315,10 @@ func TestShouldSplit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &recorderRepo{segmentDuration: tc.dur}
+			policy := segmentSplitPolicy{segmentDuration: tc.dur}
 			seg := &segmentFile{hasStart: tc.hasStart, startTs: tc.startTs}
-			if got := r.shouldSplit(seg, tc.tag); got != tc.want {
-				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
+			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
+				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -355,10 +353,10 @@ func TestShouldSplitBySize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
-			r := &recorderRepo{maxSegmentBytes: tc.maxBytes}
+			policy := segmentSplitPolicy{maxSegmentBytes: tc.maxBytes}
 			seg := &segmentFile{hasStart: tc.hasStart, bytes: tc.bytes}
-			if got := r.shouldSplit(seg, tc.tag); got != tc.want {
-				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
+			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
+				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -384,7 +382,7 @@ func TestNewRecorderRepoConfigMapping(t *testing.T) {
 
 func TestSessionPaths(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	dir, base, err := repo.sessionPaths(testSession())
+	dir, base, err := sessionPaths(repo.recordRoot, testSession())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,10 +394,10 @@ func TestSessionPaths(t *testing.T) {
 		t.Fatalf("base = %q, want %q", base, want)
 	}
 
-	if _, _, err := repo.sessionPaths(nil); !errors.Is(err, biz.ErrRoomInternal) {
+	if _, _, err := sessionPaths(repo.recordRoot, nil); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("nil session err = %v, want ErrRoomInternal", err)
 	}
-	if _, _, err := repo.sessionPaths(&biz.RecordingSession{RoomID: 0}); !errors.Is(err, biz.ErrRoomInternal) {
+	if _, _, err := sessionPaths(repo.recordRoot, &biz.RecordingSession{RoomID: 0}); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("zero room err = %v, want ErrRoomInternal", err)
 	}
 }
@@ -412,7 +410,7 @@ func TestPrepareSessionResumeKeepsSegments(t *testing.T) {
 	if err := repo.PrepareSession(ctx, session); err != nil {
 		t.Fatalf("PrepareSession: %v", err)
 	}
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +453,7 @@ func TestPrepareSessionResumeUpdatesTitleVariants(t *testing.T) {
 	if err := repo.PrepareSession(ctx, session); err != nil {
 		t.Fatal(err)
 	}
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +540,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
 	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
 	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	cache := &headerCache{metadata: metaTag, videoSeq: videoSeq, audioSeq: audioSeq}
+	cache := &segmentHeaders{metadata: metaTag, videoSeq: videoSeq, audioSeq: audioSeq}
 
 	seg, err := openSegment(t.TempDir(), "base", 1, header, cache)
 	if err != nil {
@@ -572,7 +570,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 
 func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	seg, err := openSegment(t.TempDir(), "base", 1, header, &headerCache{})
+	seg, err := openSegment(t.TempDir(), "base", 1, header, &segmentHeaders{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +666,7 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 		t.Fatalf("result = %+v, want 1 part / %d bytes", result, wantBytes)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +742,7 @@ func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
 		}
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -804,7 +802,7 @@ func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
 		t.Fatalf("result = %+v, want 2 parts / %d bytes", result, wantBytes)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +859,7 @@ func TestRecordSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 		t.Fatalf("parts = %d, want 1", result.Parts)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +910,7 @@ func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
 		t.Fatalf("parts = %d, want 2", result.Parts)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -967,7 +965,7 @@ func TestRecordSessionSplitsOnSeqHeaderChange(t *testing.T) {
 		t.Fatalf("parts = %d, want 3 (split on video and audio seq header changes)", result.Parts)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1014,7 +1012,7 @@ func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 		t.Fatalf("parts = %d, want 1 (identical seq headers must not split)", result.Parts)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1059,7 +1057,7 @@ func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
 		t.Fatalf("parts = %d, want 4", result.Parts)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1123,7 +1121,7 @@ func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
 		t.Fatalf("bytes = %d, want %d (pre-keyframe tags must not count)", result.BytesWritten, wantBytes)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,7 +1155,7 @@ func TestRecordSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
 		t.Fatalf("parts = %d, want 1", result.Parts)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1228,7 +1226,7 @@ func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
 		t.Fatalf("bytes = %d, want %d (dropped blocks must not count)", result.BytesWritten, wantBytes)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1278,7 +1276,7 @@ func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
 		{Type: flv.TagVideo, Timestamp: 0, Data: loopKey},
 		{Type: flv.TagVideo, Timestamp: 20, Data: loopInter},
 	}
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1319,7 +1317,7 @@ func TestRecordSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
 		t.Fatalf("parts = %d, want 2 (overrun force split)", result.Parts)
 	}
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1343,7 +1341,7 @@ func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (dir, b
 		t.Fatal(err)
 	}
 	var err error
-	dir, base, err = repo.sessionPaths(session)
+	dir, base, err = sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1460,7 +1458,7 @@ func TestFinishedSessionCanAppendAfterRecordingIsReenabled(t *testing.T) {
 	record(metaTag, videoSeq, audioSeq, firstKey, firstEnd)
 	record(metaTag, videoSeq, audioSeq, secondKey, secondEnd)
 
-	dir, base, err := repo.sessionPaths(session)
+	dir, base, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
