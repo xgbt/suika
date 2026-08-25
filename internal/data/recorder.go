@@ -22,7 +22,7 @@ import (
 const (
 	defaultRecordRoot     = "./recordings"   // 默认录制目录
 	defaultSegmentMinutes = 120              // 分段时长（分钟）
-	defaultHealthInterval = 30 * time.Second // 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
+	defaultHealthInterval = 10 * time.Second // 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
 	defaultHealthRounds   = 3                // 健康检查失败轮数，连续失败达到该轮数则判定录制异常
 	splitOverrun          = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 	maxTitleLen           = 64               // meta.json 中 title 字段的最大长度，超过则截断

@@ -471,7 +471,7 @@ HTTP body（原始字节，LiveClient 打开）
       │     重复注入（否则 openSegment 注入一次、泵送又写一次）；序列头
       │     变化触发的新段注入旧头，新序列头作为首个正文标签紧随其后
       ├─ 弹幕事件同步写当前 part 的 JSONL（无活动段时丢弃）
-      ├─ 健康巡检：每 30s 检查累计字节，
+      ├─ 健康巡检：每 10s 检查累计字节，
       │     连续 3 轮无增长 → 中止本次连接
       │     （返回普通错误 → 走决策树普通重连分支）
       └─ 统计：pumpStats（atomic 文件路径/字节数），字节数跨重连续泵累加
@@ -780,7 +780,7 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 | 监控重建（重拨）间隔 | 10s | biz |
 | FinishSession 脱离 grace | 30s | biz |
 | 分段时长 | 120 分钟 | data.NewRecorderRepo |
-| 健康检查间隔 / 失败轮数 | 30s / 3 轮 | data.NewRecorderRepo |
+| 健康检查间隔 / 失败轮数 | 10s / 3 轮 | data.NewRecorderRepo |
 | 请求清晰度 | 10000（原画；不足时平台自动降档） | data/bili（live） |
 | 切段关键帧等待上限 | 15s | data |
 | 弹幕事件缓冲 / 房态更新缓冲 | 4096 / 16 | data |
