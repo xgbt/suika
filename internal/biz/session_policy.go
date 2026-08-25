@@ -4,7 +4,7 @@ package biz
 // （房间信息到达、record_enabled 翻转、会话结束）先更新策略所知的世界状态，
 // 然后由同一个 decide 按唯一判据 shouldRecord（录制门控开着且最新信息
 // 在播）对照会话阶段裁决——该录而没有会话 → Start，在录而不该录 →
-// Stop，收尾中不产生新决策。监控协程（watchRoom）的 select 分支只负
+// Stop，收尾中不产生新决策。监控协程（runMonitorConnection）的 select 分支只负
 // 责投递输入并执行返回的决策，自身不含任何启停判断。
 //
 // 停止是异步的（取消之后还有合并收尾），"收尾完成后恢复录制"因此

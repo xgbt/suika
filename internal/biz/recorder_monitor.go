@@ -11,12 +11,26 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// monitorRoom 维持房间的弹幕连接，断开即重拨，直到 ctx 被取消。
-func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) {
-	// 当 ctx 被取消时，monitorRoom 会立即返回，监控协程结束
+// launchMonitor 异步启动指定房间的监控，并返回其生命周期句柄。
+func (uc *RecorderUsecase) launchMonitor(ctx context.Context, roomID int64) *monitorHandle {
+	mctx, cancel := context.WithCancel(ctx)
+	h := &monitorHandle{
+		roomChanged: make(chan struct{}, 1),
+		cancel:      cancel,
+		done:        make(chan struct{}),
+	}
+	go func() {
+		defer close(h.done)
+		uc.runMonitor(mctx, h.roomChanged, roomID)
+	}()
+	return h
+}
+
+// runMonitor 维持房间的弹幕连接，断开后重拨，直到 ctx 被取消。
+func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChanged <-chan struct{}, roomID int64) {
 	for ctx.Err() == nil {
-		// 通过弹幕链接监控房间，若弹幕连接错误，则重拨连接
-		if err := uc.watchRoom(ctx, roomChanged, roomID); err != nil && ctx.Err() == nil {
+		// 单次连接结束后重新拨号，直到 ctx 被取消。
+		if err := uc.runMonitorConnection(ctx, roomChanged, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.roomRegistry.NoteError(roomID, err)
 		}
@@ -26,14 +40,13 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan s
 	}
 }
 
-// watchRoom 是单个房间的监控分发器：持有弹幕连接、回退轮询定时器和会话
-// 句柄，本身不含任何会话启停判断。启停策略集中在 sessionPolicy：
+// runMonitorConnection 运行一次弹幕连接生命周期内的房间监控分发器，持有弹幕连接、回退轮询定时器和会话句柄。
+// 它本身不做会话启停判断，相关策略集中在 sessionPolicy：
 // 各 select 分支把输入投递给策略（房间信息到达前先应用到注册表），并执
 // 行返回的决策——Start 启动会话协程，Stop 取消活跃会话。会话是否启动受
 // 房间 record_enabled 门控；roomChanged 信号只承担重评估的投递，监控本身
-// 不受影响。无活跃会话时弹幕事件由 watchRoom 排空丢弃；有活跃会话时
-// RecordSession 独占消费事件通道。
-func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
+// 不受影响。无活跃会话时排空弹幕事件；有活跃会话时由 RecordSession 独占消费事件通道。
+func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChanged <-chan struct{}, roomID int64) error {
 	// 弹幕连接：开播检测主通道，录制期间同时提供弹幕事件。
 	danmakuConn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
@@ -56,9 +69,8 @@ func (uc *RecorderUsecase) watchRoom(ctx context.Context, roomChanged <-chan str
 	}
 
 	for {
-		// events / done 借助 nil 通道互斥启用：无活跃会话时 watchRoom
-		// 排空弹幕事件通道；有活跃会话时录制协程独占消费事件，
-		// watchRoom 只监听其结束信号。
+		// events / done 借助 nil 通道互斥启用：无活跃会话时排空弹幕事件通道；
+		// 有活跃会话时由录制协程独占消费事件，监控循环只监听其结束信号。
 		var events <-chan *DanmakuEvent
 		var done chan struct{}
 		if active == nil {

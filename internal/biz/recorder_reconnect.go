@@ -10,8 +10,8 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
-// recordLoop 断流决策树：持续拉流直到连接结束，然后重新探测直播状态，要么重连（新分段），要么结束会话并保留已录内容。
-func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session *RecordingSession, events <-chan *DanmakuEvent) {
+// runRecordingLoop 执行会话内的流录制和断流重连，直到直播结束或重连策略决定结束会话。
+func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, roomID int64, session *RecordingSession, events <-chan *DanmakuEvent) {
 	reconnects := 0
 	cdnBudget := uc.rec.CDNTransientBudget
 	cdnAttempt := 0

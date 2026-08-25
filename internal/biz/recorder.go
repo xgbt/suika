@@ -237,10 +237,10 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 }
 
 // monitorHandle 是监督循环管理的一个房间监控协程句柄
-// roomChanged 表示合并式重评估信号（如 record_enabled 翻转），由监督循环送达 watchRoom。
+// roomChanged 表示合并式重评估信号（如 record_enabled 翻转），由监督循环送达 runMonitorConnection。
 type monitorHandle struct {
-	recordEnabled bool          // 当前房间的录制开关状态，监督循环维护；watchRoom 只读。
-	roomChanged   chan struct{} // 重评估信号 channel, 当管理后台操作 record_enabled 时发送信号，watchRoom 监听并执行决策。
+	recordEnabled bool          // 当前房间的录制开关状态，监督循环维护；runMonitorConnection 只读。
+	roomChanged   chan struct{} // 重评估信号 channel, 当管理后台操作 record_enabled 时发送信号，runMonitorConnection 监听并执行决策。
 	cancel        context.CancelFunc
 	done          chan struct{}
 }
@@ -288,7 +288,7 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 		// case 2 中途新增房间
 		// 启动监控协程并登记到 monitors
 		if !ok {
-			monitor = uc.startMonitor(ctx, roomID)
+			monitor = uc.launchMonitor(ctx, roomID)
 			monitor.recordEnabled = room.RecordEnabled
 			monitors[roomID] = monitor
 			continue
@@ -302,17 +302,4 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 	}
 }
 
-// startMonitor 启动指定房间的监控协程。
-func (uc *RecorderUsecase) startMonitor(ctx context.Context, roomID int64) *monitorHandle {
-	mctx, cancel := context.WithCancel(ctx)
-	h := &monitorHandle{
-		roomChanged: make(chan struct{}, 1),
-		cancel:      cancel,
-		done:        make(chan struct{}),
-	}
-	go func() {
-		defer close(h.done)
-		uc.monitorRoom(mctx, h.roomChanged, roomID)
-	}()
-	return h
-}
+
