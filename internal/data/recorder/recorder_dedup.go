@@ -11,17 +11,17 @@ const (
 	// dupDisconnectStreak 连续重复块达到该值判定为 CDN 边缘节点循环吐
 	// 流，中止泵送并由断流决策树换流地址重连。
 	dupDisconnectStreak = 10
+
 	// dupGapThreshold（毫秒）：相邻标签时间戳间隔超过该值则关闭当前块。
 	// 纯音频流没有视频关键帧，这是唯一的自然边界。
 	dupGapThreshold int64 = 25_000
 	// dupBlockMaxSpan（毫秒）：单块的流内时长跨度上限，超限强制关闭，
 	// 防止病态长 GOP 让缓冲无限增长。
 	dupBlockMaxSpan int64 = 60_000
+
 	// dupBlockMaxBytes 单块缓冲字节上限，超限强制关闭，框定去重内存占用。
 	dupBlockMaxBytes int64 = 64 << 20
-	// tagEnvelopeOverhead 每个 tag 的 FLV 封装开销（11 字节头 + 4 字节
-	// PreviousTagSize），用于不序列化即估算块字节数。
-	tagEnvelopeOverhead = 15
+
 	// tagDigestSampleBytes 单 tag 指纹采样字节数：仅取前 64 字节，配合
 	// 载荷长度降低误判，同时避免全量遍历大包体。
 	tagDigestSampleBytes = 64
@@ -85,7 +85,7 @@ func (g *dupGuard) add(tag *flv.Tag) {
 	g.lastTs = tag.Timestamp
 	g.count++
 	g.sum = g.sum*131 + digestTag(tag)
-	g.bufBytes += int64(len(tag.Data)) + tagEnvelopeOverhead
+	g.bufBytes += int64(len(tag.Data)) + flv.TagEnvelopeSize
 	g.buf = append(g.buf, tag)
 }
 

@@ -190,7 +190,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 			tag := tr.tag
 			// 下载速度统计基于实际接收流量（receiveBytes），而非块裁决后的落盘字节（writtenBytes），
 			// 避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
-			loop.receiveBytes += int64(len(tag.Data)) + tagEnvelopeOverhead
+			loop.receiveBytes += int64(len(tag.Data)) + flv.TagEnvelopeSize
 			if loop.seg == nil {
 				// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃
 				// （头标签仍照常入缓存，供开段注入），保证段首即关键帧、
@@ -362,7 +362,7 @@ func (l *recordSessionLoop) openNewSegment() error {
 	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
 	// FLV 文件头本身不计，与既有口径一致。
 	l.headers.forEachReinject(func(ht *flv.Tag) {
-		l.addWrittenBytes(int64(len(ht.Data)) + tagEnvelopeOverhead)
+		l.addWrittenBytes(int64(len(ht.Data)) + flv.TagEnvelopeSize)
 	})
 
 	l.repo.appendSegmentMeta(l.meta, seg)

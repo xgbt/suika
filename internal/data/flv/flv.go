@@ -17,6 +17,8 @@ const (
 	HeaderSize     = 9
 	tagHeaderSize  = 11
 	prevTagSizeLen = 4
+	// TagEnvelopeSize 是单个 tag 的封装开销（头 + 尾部 PreviousTagSize），供调用方不序列化即估算字节数。
+	TagEnvelopeSize = tagHeaderSize + prevTagSizeLen
 )
 
 // FileHeader 是解析后的 FLV 文件头。
