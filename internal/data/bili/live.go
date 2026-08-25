@@ -141,36 +141,15 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 }
 
 // pickFLVStream 从播放信息中挑选最优 FLV 流地址与清晰度：AVC 编码优先，
-// 仅收 FLV。清晰度以平台实际授予为准（cookie 过期会失去原画），
-// 即使低于请求档也接受。
+// 仅收 FLV。P2P CDN（.mcdn.）节点不适合长时间拉流录制，优先排除；排除
+// 后无候选时退回全部候选。清晰度以平台实际授予为准（cookie 过期会失去
+// 原画），即使低于请求档也接受。
 func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.StreamQuality, error) {
-	bestURL := ""
-	bestPriority := -1
-	selectedQn := 0
-	for _, stream := range pu.Stream {
-		for _, format := range stream.Format {
-			for _, codec := range format.Codec {
-				for _, urlInfo := range codec.URLInfo {
-					if urlInfo.Host == "" || codec.BaseURL == "" {
-						continue
-					}
-					if !isFLVStream(codec.BaseURL) {
-						continue // 录制只收 FLV
-					}
-					priority := flvStreamPriorityDefault
-					if codec.CodecName == "avc" {
-						priority = flvStreamPriorityAVC
-					}
-					if priority > bestPriority {
-						bestPriority = priority
-						bestURL = urlInfo.Host + codec.BaseURL + urlInfo.Extra
-						selectedQn = codec.CurrentQn
-					}
-				}
-			}
-		}
+	bestURL, selectedQn, ok := bestFLVStream(pu, true)
+	if !ok {
+		bestURL, selectedQn, ok = bestFLVStream(pu, false)
 	}
-	if bestURL == "" {
+	if !ok {
 		return "", biz.StreamQuality{}, fmt.Errorf("no FLV stream candidate for room %d", roomID)
 	}
 
@@ -192,6 +171,45 @@ func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.Strea
 		log.Warn("stream quality downgraded", "room", roomID, "requested", requestedQN, "granted", granted)
 	}
 	return bestURL, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
+}
+
+// bestFLVStream 按编码优先级挑选最高的 FLV 候选；excludeP2P 为 true 时
+// 跳过 P2P CDN（.mcdn.）主机。同优先级取首个候选。
+func bestFLVStream(pu playURL, excludeP2P bool) (url string, qn int, ok bool) {
+	bestPriority := -1
+	for _, stream := range pu.Stream {
+		for _, format := range stream.Format {
+			for _, codec := range format.Codec {
+				for _, urlInfo := range codec.URLInfo {
+					if urlInfo.Host == "" || codec.BaseURL == "" {
+						continue
+					}
+					if !isFLVStream(codec.BaseURL) {
+						continue // 录制只收 FLV
+					}
+					if excludeP2P && isP2PCDNHost(urlInfo.Host) {
+						continue
+					}
+					priority := flvStreamPriorityDefault
+					if codec.CodecName == "avc" {
+						priority = flvStreamPriorityAVC
+					}
+					if priority > bestPriority {
+						bestPriority = priority
+						url = urlInfo.Host + codec.BaseURL + urlInfo.Extra
+						qn = codec.CurrentQn
+						ok = true
+					}
+				}
+			}
+		}
+	}
+	return
+}
+
+// isP2PCDNHost 报告主机是否为 P2P CDN 节点（.mcdn.）。
+func isP2PCDNHost(host string) bool {
+	return strings.Contains(host, ".mcdn.")
 }
 
 func (lc *liveClient) DanmakuConn(ctx context.Context, roomID int64) (biz.DanmakuConn, error) {

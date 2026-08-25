@@ -143,3 +143,42 @@ func TestPickFLVStreamAcceptsDowngrade(t *testing.T) {
 		t.Fatalf("got (%q, %+v), want the granted 150 despite requesting 10000", url, quality)
 	}
 }
+
+func TestPickFLVStreamPrefersRegularCDNOverP2P(t *testing.T) {
+	// P2P CDN（.mcdn.）节点排在前面也不选：优先普通 CDN。
+	pu := playURL{
+		CurrentQn: 10000,
+		Stream: []streamLine{{Format: []formatLine{{Codec: []codecLine{
+			flvCodec("avc", "/live/a.flv",
+				hostURL{Host: "https://cn-gotcha-02-cc.mcdn.bilivideo.com", Extra: "?sig=p2p"},
+				hostURL{Host: "https://cn-gotcha-02.bilivideo.com", Extra: "?sig=cdn"},
+			),
+		}}}}},
+	}
+
+	url, _, err := pickFLVStream(pu, 10000, 1)
+	if err != nil {
+		t.Fatalf("pickFLVStream: %v", err)
+	}
+	if url != "https://cn-gotcha-02.bilivideo.com/live/a.flv?sig=cdn" {
+		t.Fatalf("url = %q, want the regular CDN candidate", url)
+	}
+}
+
+func TestPickFLVStreamFallsBackToP2PWhenOnlyCandidate(t *testing.T) {
+	// 候选全是 P2P 节点时退回全量：有得录比没得录好。
+	pu := playURL{
+		CurrentQn: 10000,
+		Stream: []streamLine{{Format: []formatLine{{Codec: []codecLine{
+			flvCodec("avc", "/live/a.flv", hostURL{Host: "https://cn-gotcha-02-cc.mcdn.bilivideo.com"}),
+		}}}}},
+	}
+
+	url, _, err := pickFLVStream(pu, 10000, 1)
+	if err != nil {
+		t.Fatalf("pickFLVStream: %v", err)
+	}
+	if url != "https://cn-gotcha-02-cc.mcdn.bilivideo.com/live/a.flv" {
+		t.Fatalf("url = %q, want the P2P candidate as last resort", url)
+	}
+}
