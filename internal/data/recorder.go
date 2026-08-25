@@ -169,233 +169,272 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 		meta.Title = session.Title
 	})
 
-	// 拉流写入循环：按分段时长切分，写入 meta.json。
-	type tagRead struct {
-		tag *flv.Tag
-		err error
-	}
-	tagCh := make(chan tagRead, 512)
-	go func() {
-		for {
-			tag, err := flv.ReadTag(stream.Body)
-			tagCh <- tagRead{tag, err}
-			if err != nil {
-				return
-			}
-		}
-	}()
+	loop := newRecordSessionLoop(r, session, dir, base, metaPath, header, stats, baseBytes)
+	tagCh := startTagReader(stream.Body)
 
 	var (
-		cache        headerCache
-		guard        dupGuard
-		seg          *segmentFile
-		result       biz.RecordingResult
-		sessionBytes int64
-		lastGrowth   int64
 		lastSampleAt = time.Now()
 		lastSample   int64
-		failRounds   int
 	)
 	health := time.NewTicker(r.healthInterval)
 	defer health.Stop()
 	speedSampler := time.NewTicker(time.Second)
 	defer speedSampler.Stop()
 
-	// openNewSegment 打开新分段文件，写入头标签并更新 meta.json。
-	openNewSegment := func() error {
-		// 编号探测和 O_TRUNC 创建必须串行，否则并发的录制泵会同时选中
-		// 同一个 part，并截断彼此刚写入的分段。
-		r.segmentMu.Lock()
-		defer r.segmentMu.Unlock()
-
-		part := nextPartNumber(dir, base)
-		newSeg, err := openSegment(dir, base, part, header, &cache)
-		if err != nil {
-			return err
-		}
-		seg = newSeg
-		result.Parts++
-		stats.file.Store(seg.videoPath)
-		// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
-		// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
-		// FLV 文件头本身不计，与既有口径一致。
-		for _, ht := range []*flv.Tag{cache.metadata, cache.videoSeq, cache.audioSeq} {
-			if ht == nil {
-				continue
-			}
-			sessionBytes += int64(len(ht.Data)) + tagEnvelopeOverhead
-		}
-		result.BytesWritten = sessionBytes
-		stats.bytes.Store(baseBytes + sessionBytes)
-		r.appendSegmentMeta(metaPath, seg)
-		log.Info("segment opened", "room", session.RoomID, "part", part, "file", seg.videoPath)
-		return nil
-	}
-
-	// closeSegment 关闭当前分段文件，写入尾标签并更新 meta.json。
-	closeSegment := func() {
-		if seg == nil {
-			return
-		}
-		if err := seg.close(); err != nil {
-			log.Error("close segment failed", "room", session.RoomID, "file", seg.videoPath, "err", err)
-		}
-		r.finishSegmentMeta(metaPath, seg)
-		seg = nil
-	}
-
-	// flushBlock 结束当前缓冲块并裁决：指纹唯一 → 整块写入当前分段；
-	// 重复 → 整块丢弃并重置健康失败轮数（流还活着，只是在循环）；连续
-	// 重复达到上限 → 返回包装为 ErrStreamTransient 的错误，由断流决策树
-	// 换流地址重连（换 CDN 节点）。写错误记入 meta.json。
-	flushBlock := func() error {
-		buf, disconnect := guard.close()
-		if disconnect {
-			return fmt.Errorf("%w: cdn looping duplicate stream data", biz.ErrStreamTransient)
-		}
-		if buf == nil {
-			failRounds = 0
-			log.Warn("duplicate stream block dropped", "room", session.RoomID, "streak", guard.streak)
-			return nil
-		}
-		for _, bt := range buf {
-			n, werr := seg.writeTag(bt)
-			sessionBytes += n
-			result.BytesWritten = sessionBytes
-			stats.bytes.Store(baseBytes + sessionBytes)
-			if werr != nil {
-				r.appendMetaError(metaPath, "record", werr)
-				return werr
-			}
-		}
-		return nil
-	}
-
-	// drainPending 把未关闭的缓冲块原样写入（不做重复裁决），用于流结
-	// 束/中止时尽量保留已收到的数据。
-	drainPending := func() {
-		for _, bt := range guard.takeAll() {
-			n, werr := seg.writeTag(bt)
-			sessionBytes += n
-			result.BytesWritten = sessionBytes
-			stats.bytes.Store(baseBytes + sessionBytes)
-			if werr != nil {
-				log.Warn("drain pending block failed", "room", session.RoomID, "err", werr)
-				return
-			}
-		}
-	}
-
 	for {
 		select {
 		// 关闭录制开关、停机、房间被删除
 		case <-ctx.Done():
-			drainPending()
-			closeSegment()
-			return &result, ctx.Err()
+			loop.drainPending()
+			loop.closeSegment()
+			return &loop.result, ctx.Err()
 		// 读取 tag
 		case tr := <-tagCh:
 			// 读取 tag 失败，可能是流断开或其他瞬时错误
 			if tr.err != nil {
-				drainPending()
-				closeSegment()
+				loop.drainPending()
+				loop.closeSegment()
 				// EOF 表示流干净结束
 				if tr.err == io.EOF {
-					return &result, nil
+					return &loop.result, nil
 				}
 				// 其他瞬时错误，则返回，让上层决定是否重连
-				return &result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.err)
+				return &loop.result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.err)
 			}
 
 			tag := tr.tag
-			if seg == nil {
+			if loop.seg == nil {
 				// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃
 				// （头标签仍照常入缓存，供开段注入），保证段首即关键帧、
 				// 独立可解码；纯音频流没有视频关键帧，豁免等待。
 				if header.HasVideo && !tag.IsVideoKeyframe() {
-					cacheHeaderTag(&cache, tag)
+					cacheHeaderTag(&loop.cache, tag)
 					continue
 				}
-				if err := openNewSegment(); err != nil {
+				if err := loop.openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
-					return &result, err
+					return &loop.result, err
 				}
-			} else if guard.boundary(tag) {
+			} else if loop.guard.boundary(tag) {
 				// 块边界：先裁决缓冲块落盘，切段判定才能用上最新的段状态。
-				if err := flushBlock(); err != nil {
-					closeSegment()
-					return &result, err
+				if err := loop.flushBlock(); err != nil {
+					loop.closeSegment()
+					return &loop.result, err
 				}
 			}
 
 			// 切段判定在块裁决之后；强切路径（超限/序列头变化）同样要先
 			// 结束缓冲块，避免关段时把在途数据留在缓冲里丢失。
-			if r.shouldSplit(seg, tag) {
-				if err := flushBlock(); err != nil {
-					closeSegment()
-					return &result, err
+			if r.shouldSplit(loop.seg, tag) {
+				if err := loop.flushBlock(); err != nil {
+					loop.closeSegment()
+					return &loop.result, err
 				}
-				closeSegment()
-				if err := openNewSegment(); err != nil {
+				loop.closeSegment()
+				if err := loop.openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
-					return &result, err
+					return &loop.result, err
 				}
-			} else if headerChanged(&cache, tag) {
+			} else if headerChanged(&loop.cache, tag) {
 				// 流中途序列头变化（CDN 换源、主播改码率）：继续写入旧分
 				// 段会把两种解码配置拼进同一个文件，强制切段。新段按既有
 				// 规则从缓存注入旧头标签，新序列头作为首个正文标签紧随其
 				// 后写入，播放器以最新的序列头为准。
 				log.Warn("sequence header changed, splitting segment",
-					"room", session.RoomID, "part", seg.part)
-				if err := flushBlock(); err != nil {
-					closeSegment()
-					return &result, err
+					"room", session.RoomID, "part", loop.seg.part)
+				if err := loop.flushBlock(); err != nil {
+					loop.closeSegment()
+					return &loop.result, err
 				}
-				closeSegment()
-				if err := openNewSegment(); err != nil {
+				loop.closeSegment()
+				if err := loop.openNewSegment(); err != nil {
 					r.appendMetaError(metaPath, "record", err)
-					return &result, err
+					return &loop.result, err
 				}
 			}
 			// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个
 			// 标签不能从缓存重注入，否则会被写两次（openSegment 写一次、
 			// 下面的拉流写入又一次）。切分前已见过的头标签仍会完整重注入。
-			cacheHeaderTag(&cache, tag)
-			guard.add(tag)
+			cacheHeaderTag(&loop.cache, tag)
+			loop.guard.add(tag)
 		// 弹幕/礼物等事件写入
 		case ev := <-events:
-			if seg == nil {
+			if loop.seg == nil {
 				continue
 			}
-			if err := seg.writeEvent(ev); err != nil {
+			if err := loop.seg.writeEvent(ev); err != nil {
 				log.Warn("danmaku write failed", "room", session.RoomID, "err", err)
 				// 尽力而为, 不影响录制主流程
 			}
 		// 下载速度采样
 		case <-speedSampler.C:
 			now := time.Now()
-			delta := max(sessionBytes-lastSample, 0)
+			delta := max(loop.sessionBytes-lastSample, 0)
 			elapsed := now.Sub(lastSampleAt)
 			if elapsed <= 0 {
 				continue
 			}
 			stats.speed.Store(int64(float64(delta) / elapsed.Seconds()))
-			lastSample = sessionBytes
+			lastSample = loop.sessionBytes
 			lastSampleAt = now
 		// 健康检查：在 healthInterval 内未见新数据则计为一次失败，连续 failRounds 次则判定录制异常。
 		case <-health.C:
-			if sessionBytes > lastGrowth {
-				lastGrowth = sessionBytes
-				failRounds = 0
+			if loop.sessionBytes > loop.lastGrowth {
+				loop.lastGrowth = loop.sessionBytes
+				loop.failRounds = 0
 				continue
 			}
-			failRounds++
-			if failRounds >= r.healthFailRounds {
-				closeSegment()
-				return &result, fmt.Errorf("recording unhealthy: no new data for %d rounds", failRounds)
+			loop.failRounds++
+			if loop.failRounds >= r.healthFailRounds {
+				loop.closeSegment()
+				return &loop.result, fmt.Errorf("recording unhealthy: no new data for %d rounds", loop.failRounds)
 			}
 		}
 	}
+}
+
+type tagRead struct {
+	tag *flv.Tag
+	err error
+}
+
+func startTagReader(body io.Reader) <-chan tagRead {
+	tagCh := make(chan tagRead, 512)
+	go func() {
+		for {
+			tag, err := flv.ReadTag(body)
+			tagCh <- tagRead{tag: tag, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return tagCh
+}
+
+type recordSessionLoop struct {
+	repo    *recorderRepo
+	session *biz.RecordingSession
+	dir     string
+	base    string
+	meta    string
+	header  *flv.FileHeader
+
+	stats     *pumpStats
+	baseBytes int64
+
+	cache headerCache
+	guard dupGuard
+	seg   *segmentFile
+
+	result       biz.RecordingResult
+	sessionBytes int64
+	lastGrowth   int64
+	failRounds   int
+}
+
+func newRecordSessionLoop(
+	repo *recorderRepo,
+	session *biz.RecordingSession,
+	dir, base, metaPath string,
+	header *flv.FileHeader,
+	stats *pumpStats,
+	baseBytes int64,
+) *recordSessionLoop {
+	return &recordSessionLoop{
+		repo:      repo,
+		session:   session,
+		dir:       dir,
+		base:      base,
+		meta:      metaPath,
+		header:    header,
+		stats:     stats,
+		baseBytes: baseBytes,
+	}
+}
+
+func (l *recordSessionLoop) openNewSegment() error {
+	// 编号探测和 O_TRUNC 创建必须串行，否则并发的录制泵会同时选中
+	// 同一个 part，并截断彼此刚写入的分段。
+	l.repo.segmentMu.Lock()
+	defer l.repo.segmentMu.Unlock()
+
+	part := nextPartNumber(l.dir, l.base)
+	seg, err := openSegment(l.dir, l.base, part, l.header, &l.cache)
+	if err != nil {
+		return err
+	}
+
+	l.seg = seg
+	l.result.Parts++
+	l.stats.file.Store(seg.videoPath)
+
+	// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
+	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
+	// FLV 文件头本身不计，与既有口径一致。
+	for _, ht := range []*flv.Tag{l.cache.metadata, l.cache.videoSeq, l.cache.audioSeq} {
+		if ht == nil {
+			continue
+		}
+		l.addBytes(int64(len(ht.Data)) + tagEnvelopeOverhead)
+	}
+
+	l.repo.appendSegmentMeta(l.meta, seg)
+	log.Info("segment opened", "room", l.session.RoomID, "part", part, "file", seg.videoPath)
+	return nil
+}
+
+func (l *recordSessionLoop) closeSegment() {
+	if l.seg == nil {
+		return
+	}
+	if err := l.seg.close(); err != nil {
+		log.Error("close segment failed", "room", l.session.RoomID, "file", l.seg.videoPath, "err", err)
+	}
+	l.repo.finishSegmentMeta(l.meta, l.seg)
+	l.seg = nil
+}
+
+func (l *recordSessionLoop) flushBlock() error {
+	buf, disconnect := l.guard.close()
+	if disconnect {
+		return fmt.Errorf("%w: cdn looping duplicate stream data", biz.ErrStreamTransient)
+	}
+	if buf == nil {
+		l.failRounds = 0
+		log.Warn("duplicate stream block dropped", "room", l.session.RoomID, "streak", l.guard.streak)
+		return nil
+	}
+	for _, bt := range buf {
+		if err := l.writeTag(bt, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (l *recordSessionLoop) drainPending() {
+	for _, bt := range l.guard.takeAll() {
+		if err := l.writeTag(bt, false); err != nil {
+			log.Warn("drain pending block failed", "room", l.session.RoomID, "err", err)
+			return
+		}
+	}
+}
+
+func (l *recordSessionLoop) writeTag(tag *flv.Tag, persistError bool) error {
+	n, err := l.seg.writeTag(tag)
+	l.addBytes(n)
+	if err != nil && persistError {
+		l.repo.appendMetaError(l.meta, "record", err)
+	}
+	return err
+}
+
+func (l *recordSessionLoop) addBytes(n int64) {
+	l.sessionBytes += n
+	l.result.BytesWritten = l.sessionBytes
+	l.stats.bytes.Store(l.baseBytes + l.sessionBytes)
 }
 
 // shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
