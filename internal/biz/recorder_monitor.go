@@ -6,6 +6,8 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"suika/internal/utils"
+
 	"github.com/go-kratos/kratos/v3/log"
 )
 
@@ -18,7 +20,7 @@ func (uc *RecorderUsecase) monitorRoom(ctx context.Context, roomChanged <-chan s
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.registry.NoteError(roomID, err)
 		}
-		if sleepCtx(ctx, uc.redialDelay) != nil {
+		if utils.SleepCtx(ctx, uc.redialDelay) != nil {
 			return
 		}
 	}

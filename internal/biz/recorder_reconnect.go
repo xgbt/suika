@@ -5,6 +5,8 @@ import (
 	stderrors "errors"
 	"time"
 
+	"suika/internal/utils"
+
 	"github.com/go-kratos/kratos/v3/log"
 )
 
@@ -45,7 +47,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			delay := uc.cdnBackoff(cdnAttempt)
 			cdnAttempt++
 			log.Warn("open stream failed, retrying", "room", roomID, "err", openErr, "delay", delay)
-			if sleepCtx(ctx, delay) != nil {
+			if utils.SleepCtx(ctx, delay) != nil {
 				return
 			}
 			continue
@@ -93,7 +95,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 			delay := uc.cdnBackoff(cdnAttempt)
 			cdnAttempt++
 			log.Warn("transient stream error, re-opening stream", "room", roomID, "err", recErr, "delay", delay)
-			if sleepCtx(ctx, delay) != nil {
+			if utils.SleepCtx(ctx, delay) != nil {
 				return
 			}
 			continue
@@ -108,7 +110,7 @@ func (uc *RecorderUsecase) recordLoop(ctx context.Context, roomID int64, session
 		}
 		reconnects++
 		log.Warn("stream interrupted, reconnecting", "room", roomID, "err", recErr, "attempt", reconnects, "max", uc.rec.MaxReconnect, "delay", uc.rec.ReconnectDelay)
-		if sleepCtx(ctx, uc.rec.ReconnectDelay) != nil {
+		if utils.SleepCtx(ctx, uc.rec.ReconnectDelay) != nil {
 			return
 		}
 	}
@@ -125,7 +127,7 @@ func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, o
 	offlineStreak := 0
 	for attempt := range probeMaxAttempts {
 		if attempt > 0 {
-			if sleepCtx(ctx, uc.offlineConfirmDelay) != nil {
+			if utils.SleepCtx(ctx, uc.offlineConfirmDelay) != nil {
 				return false, false
 			}
 		}

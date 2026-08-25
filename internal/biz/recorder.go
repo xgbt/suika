@@ -188,20 +188,6 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 	return uc
 }
 
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return ctx.Err()
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
 // Run 运行录制守护进程的主循环：先收尾上次运行遗留的会话，然后作为监督
 // 循环持续调和 RoomRegistry 快照与每房间的监控协程。监控跟随房间存在：
 // 新建房间无论是否配置录制都立即开始监控，删除房间立即停止监控（活跃会话
