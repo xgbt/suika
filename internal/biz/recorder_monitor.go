@@ -29,9 +29,7 @@ func (h *monitorHandle) reEvaluate() {
 
 // launchMonitor 异步启动指定房间的监控，并返回其生命周期句柄。
 func (uc *RecorderUsecase) launchMonitor(ctx context.Context, roomID int64) *monitorHandle {
-
 	mctx, cancel := context.WithCancel(ctx)
-
 	h := &monitorHandle{
 		reEvaluateCh: make(chan struct{}, 1), // 缓冲 1，避免重复请求阻塞
 		cancel:       cancel,
