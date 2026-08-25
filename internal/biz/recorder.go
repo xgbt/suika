@@ -201,7 +201,7 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 	}
 
 	// 订阅 Room 注册表变更通知，返回一个通道和取消函数。
-	changes, unsubscribe := uc.roomRegistry.Subscribe()
+	wakeup, unsubscribe := uc.roomRegistry.Subscribe()
 	defer unsubscribe()
 
 	// monitors 是当前活跃的房间监控协程集合；retired 是已停止的监控协程集合，等待收尾。
@@ -228,7 +228,7 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-changes:
+		case <-wakeup:
 			uc.reconcile(ctx, monitors, &retired)
 		}
 	}

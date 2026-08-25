@@ -81,23 +81,23 @@ func (reg *RoomRegistry) Room(roomID int64) Room {
 // 唤醒信号是合并式的：多次变更只会触发一次唤醒，订阅者应在收到唤醒后主动拉取最新房间列表。
 // 订阅者应在不再需要时调用取消订阅函数，否则会造成内存泄漏。
 func (reg *RoomRegistry) Subscribe() (<-chan struct{}, func()) {
-	changes := make(chan struct{}, 1)
+	wakeup := make(chan struct{}, 1)
 	reg.mu.Lock()
-	reg.subscribers = append(reg.subscribers, changes)
+	reg.subscribers = append(reg.subscribers, wakeup)
 	reg.mu.Unlock()
 
 	unsubscribe := func() {
 		reg.mu.Lock()
 		defer reg.mu.Unlock()
 		for i, sub := range reg.subscribers {
-			if sub == changes {
+			if sub == wakeup {
 				reg.subscribers = append(reg.subscribers[:i], reg.subscribers[i+1:]...)
 				return
 			}
 		}
 	}
 
-	return changes, unsubscribe
+	return wakeup, unsubscribe
 }
 
 // Add 在房间创建落库成功后登记到注册表，使其立即对录制守护进程可见。
