@@ -112,6 +112,7 @@ func (s *segmentFile) writeTag(tag *flv.Tag) (int64, error) {
 func (s *segmentFile) writeEvent(ev *biz.DanmakuEvent) error {
 	line := danmuLine{
 		Ts:       ev.Ts.UnixMilli(),
+		SendTs:   ev.SendTs,
 		Type:     ev.Type,
 		UID:      ev.UID,
 		Uname:    ev.Uname,

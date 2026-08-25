@@ -498,11 +498,16 @@ unix 毫秒，`raw` 附原始 JSON 兜底；空字段按 omitempty 省略）：
 
 | cmd | type | 解析出的字段 |
 |---|---|---|
-| `DANMU_MSG` | `danmaku` | text / uid / uname / mode / color（空文本丢弃） |
+| `DANMU_MSG` | `danmaku` | text / uid / uname / mode / color / **send_ts**（空文本丢弃） |
 | `SEND_GIFT` | `gift` | gift_name / num / price / coin_type（免费礼物全录） |
 | `SUPER_CHAT_MESSAGE` | `superchat` | price / text / duration |
 | `GUARD_BUY` | `guard` | level / num |
 | `ENTRY_EFFECT` | `entry_effect` | text（进场特效文案） |
+
+`send_ts` 仅 `DANMU_MSG` 携带：解析平台载荷的发送时刻（`info[0][4]`，
+unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收时刻更贴近视频
+时间轴（录制积压、网络抖动时两者差异明显），供二阶段切片做弹幕↔视频
+对齐；接收时刻 `ts` 保留，双时间轴都落盘。
 
 `INTERACT_WORD`（进场词）与点赞类量级约为弹幕 10 倍、切片价值≈0，
 不录制：`danmakuConn.dispatch` 直接忽略该命令，biz 与 repo 只见已过滤
@@ -695,12 +700,16 @@ cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并�
 ### 6.3 弹幕 JSONL（每 part 一个）
 
 ```json
-{"ts":1754912401234,"type":"danmaku","uid":123,"uname":"某人","text":"666","color":16777215,"mode":1,"raw":{...}}
+{"ts":1754912401234,"send_ts":1754912401000,"type":"danmaku","uid":123,"uname":"某人","text":"666","color":16777215,"mode":1,"raw":{...}}
 {"ts":1754912402345,"type":"gift","uid":456,"uname":"某人","gift_name":"小心心","num":1,"price":0,"coin_type":"silver","raw":{...}}
 {"ts":1754912403456,"type":"superchat","uid":789,"uname":"某人","price":30,"text":"...","duration":60,"raw":{...}}
 {"ts":1754912404567,"type":"guard","uid":789,"uname":"某人","level":3,"num":1,"raw":{...}}
 {"ts":1754912405678,"type":"entry_effect","uid":789,"uname":"某人","text":"...","raw":{...}}
 ```
+
+`ts` = 接收时刻（unix 毫秒）；`send_ts` = 平台载荷发送时刻（仅
+`danmaku` 携带，缺失省略）。`send_ts` 更贴近视频时间轴，切片对齐优先用
+它，`ts` 兜底。
 
 ---
 
@@ -975,7 +984,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 170 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
+共 171 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
@@ -989,7 +998,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `credential_test.go`（5） | 空库读取、单例行 upsert、Save/Delete 热替换 `Data.Cookie`、删除幂等、并发读 Cookie 安全 |
 | data/bili | `live_test.go`（10） | pickFLVStream 纯函数：avc 优先 / 同优先级首个 / 过滤非 FLV 与空 URL、**排除 `.mcdn.` P2P 主机（普通 CDN 优先；候选全为 P2P 时退回全量）**、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |
-| data/bili | `danmaku_test.go`（24） | 包编解码往返、zlib/brotli 嵌套解包、事件解析（弹幕/礼物/SC/上舰/进场）、认证包 uid 跟随 cookie（登录/匿名） |
+| data/bili | `danmaku_test.go`（25） | 包编解码往返、zlib/brotli 嵌套解包、事件解析（弹幕/礼物/SC/上舰/进场）、**弹幕发送时刻 `send_ts`（载荷 `info[0][4]`；缺失/非数字/非正数保持未知、字符串数字可解析）**、认证包 uid 跟随 cookie（登录/匿名） |
 | data/bili | `risk_test.go`（16） | riskGuard：成功清冷却、冷却闸门拦截、HTTP 风控与 -352 刷新重试一次/耗尽、fallback 成功/失败/非零码、非零码不记账、阶梯冷却升级、并发安全 |
 | data/bili | `wbi_test.go`（5） | mixin_key 已知向量/短输入/32 截断、签名值 sanitize、URL 提取密钥 |
 | data/bili | `buvid_test.go`（5） | 注入替换语义（替换已有/空串追加/跳过空值/修剪空白）、cookie 取值 |

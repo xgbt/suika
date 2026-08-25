@@ -573,7 +573,7 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	danmaku := &biz.DanmakuEvent{
-		Ts: time.Unix(123, 0), Type: biz.EventDanmaku,
+		Ts: time.Unix(123, 0), SendTs: 1755633600123, Type: biz.EventDanmaku,
 		UID: 7, Uname: "user", Text: "你好", Color: 16777215, Mode: 1,
 		Raw: []byte(`{"info":"x"}`),
 	}
@@ -606,15 +606,15 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
 		t.Fatal(err)
 	}
-	if first.Ts != 123_000 || first.Type != biz.EventDanmaku || first.UID != 7 ||
-		first.Text != "你好" || first.Color != 16777215 || first.Mode != 1 {
+	if first.Ts != 123_000 || first.SendTs != 1755633600123 || first.Type != biz.EventDanmaku ||
+		first.UID != 7 || first.Text != "你好" || first.Color != 16777215 || first.Mode != 1 {
 		t.Fatalf("danmaku line = %+v", first)
 	}
 	if string(first.Raw) != `{"info":"x"}` {
 		t.Fatalf("raw = %s", first.Raw)
 	}
 	if second.Type != biz.EventGift || second.GiftName != "火箭" || second.Num != 2 ||
-		second.Price != 1000 || second.CoinType != "gold" {
+		second.Price != 1000 || second.CoinType != "gold" || second.SendTs != 0 {
 		t.Fatalf("gift line = %+v", second)
 	}
 }

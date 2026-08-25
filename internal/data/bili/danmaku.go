@@ -315,6 +315,9 @@ func (c *danmakuConn) emit(ev *biz.DanmakuEvent) {
 // parseDanmakuEvent 解析 DANMU_MSG：弹幕文本、发送者、模式与颜色。
 // 载荷形状是数组（info[0]=弹幕元数据, info[1]=文本, info[2]=用户信息），
 // 字段缺失或形状不符时返回 nil（该事件被丢弃）。
+// info[0][4] 是平台侧的发送时刻（unix 毫秒），比接收时刻更贴近视频时间
+// 轴（录制积压、网络抖动时差异明显），解析为 SendTs 供切片对齐；缺失或
+// 非正数时保持 0（未知）。
 func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
 		Info []any `json:"info"`
@@ -339,6 +342,11 @@ func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEv
 		}
 		if len(meta) > 3 {
 			ev.Color = int32(toInt64(meta[3]))
+		}
+		if len(meta) > 4 {
+			if sendTs := toInt64(meta[4]); sendTs > 0 {
+				ev.SendTs = sendTs
+			}
 		}
 	}
 	return ev

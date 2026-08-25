@@ -60,7 +60,8 @@ type errorMeta struct {
 }
 
 type danmuLine struct {
-	Ts       int64           `json:"ts"`
+	Ts       int64           `json:"ts"`                // 接收时刻（unix 毫秒）
+	SendTs   int64           `json:"send_ts,omitempty"` // 平台载荷中的发送时刻（unix 毫秒），未知省略
 	Type     string          `json:"type"`
 	UID      int64           `json:"uid,omitempty"`
 	Uname    string          `json:"uname,omitempty"`

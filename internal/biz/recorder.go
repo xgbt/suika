@@ -78,7 +78,8 @@ type LiveStream struct {
 // DanmakuEvent 是一条过滤后的弹幕房间事件。各字段的相关性取决于
 // Type；落盘的 JSON 形状由 RecorderRepo 决定。
 type DanmakuEvent struct {
-	Ts       time.Time
+	Ts       time.Time // 接收时刻
+	SendTs   int64     // 平台载荷中的发送时刻（unix 毫秒）；未知为 0
 	Type     string
 	UID      int64
 	Uname    string

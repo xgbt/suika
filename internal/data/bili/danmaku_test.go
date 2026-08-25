@@ -211,17 +211,45 @@ func assertEventEqual(t *testing.T, got *biz.DanmakuEvent, want biz.DanmakuEvent
 }
 
 func TestParseDanmakuEvent(t *testing.T) {
-	raw := json.RawMessage(`{"cmd":"DANMU_MSG","info":[[0,6,25,16777215],"你好世界",[42,"某用户"]]}`)
+	raw := json.RawMessage(`{"cmd":"DANMU_MSG","info":[[0,6,25,16777215,1755633600123],"你好世界",[42,"某用户"]]}`)
 
 	ev := parseDanmakuEvent(raw, receivedAt)
 	if ev == nil {
 		t.Fatal("parseDanmakuEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventDanmaku, Text: "你好世界", Raw: raw,
+		Ts: receivedAt, SendTs: 1755633600123, Type: biz.EventDanmaku, Text: "你好世界", Raw: raw,
 		UID: 42, Uname: "某用户", Mode: 6, Color: 16777215,
 	}
 	assertEventEqual(t, ev, want)
+}
+
+func TestParseDanmakuEventSendTs(t *testing.T) {
+	// 发送时刻缺失、非数字或非正数时保持未知（0），不影响其余字段。
+	cases := map[string]struct {
+		raw  json.RawMessage
+		want int64
+	}{
+		"meta shorter than 5":  {json.RawMessage(`{"info":[[0,1,0,0],"text",[1,"n"]]}`), 0},
+		"send ts zero":         {json.RawMessage(`{"info":[[0,1,0,0,0],"text",[1,"n"]]}`), 0},
+		"send ts negative":     {json.RawMessage(`{"info":[[0,1,0,0,-5],"text",[1,"n"]]}`), 0},
+		"send ts not a number": {json.RawMessage(`{"info":[[0,1,0,0,"x"],"text",[1,"n"]]}`), 0},
+		"send ts as string":    {json.RawMessage(`{"info":[[0,1,0,0,"1755633600123"],"text",[1,"n"]]}`), 1755633600123},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ev := parseDanmakuEvent(tc.raw, receivedAt)
+			if ev == nil {
+				t.Fatal("parseDanmakuEvent returned nil")
+			}
+			if ev.SendTs != tc.want {
+				t.Fatalf("SendTs = %d, want %d", ev.SendTs, tc.want)
+			}
+			if ev.Text != "text" || ev.UID != 1 {
+				t.Fatalf("other fields broken: %+v", ev)
+			}
+		})
+	}
 }
 
 func TestParseDanmakuEventStringUID(t *testing.T) {
