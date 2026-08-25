@@ -356,8 +356,13 @@ tree, on-disk layout (`meta.json`, danmaku JSONL), risk control, config
 defaults, and failure handling. `docs/design/architecture-diagrams.md` is
 its companion diagram set: system/app architecture, sequence diagrams for
 room CRUD / live detection / recording / query, state machines, and the ER
-view. Both defer repo-level conventions (layering, naming, build commands)
-to this file — when changing template rules, keep the three consistent.
+view. `docs/design/recorder-comparison.md` is a research note comparing
+the core recording pipeline against the four upstream recorders in the
+workspace (BililiveRecorder / biliup / blrec(bilive) / DDTV) with
+candidate improvements — it is analysis, not decisions; anything adopted
+from it gets its own ADR. All three defer repo-level conventions
+(layering, naming, build commands) to this file — when changing template
+rules, keep them consistent.
 
 ## Agent skills
 

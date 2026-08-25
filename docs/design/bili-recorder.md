@@ -430,12 +430,14 @@ SIGTERM → kratos 触发各 server.Stop
 
 ### 4.2 拉流
 
-- `getRoomPlayInfo`：`protocol=0,1 & format=0,1,2 & codec=0,1 & qn=10000
-  & platform=web`（qn 固定请求原画；请求不到时平台自动授予次高档位）。
-  候选展开 stream×format×codec×url_info，过滤
-  `base_url` 含 `.flv` 的候选（录制必须 FLV），排除 `.mcdn.`（P2P CDN）
-  主机——P2P 节点不适合长时间拉流录制；排除后无候选则退回全部候选。
-  avc 优先级 100、其他 90，取最高优先级（同优先级取首个）
+- `getRoomPlayInfo`：`protocol=0,1 & format=0,1,2 & codec=0 & qn=10000
+  & platform=web`（qn 固定请求原画；请求不到时平台自动授予次高档位；
+  codec 只请求 0=avc，见 ADR-0004）。
+  候选展开 stream×format×codec×url_info，只保留 `avc` codec（tag 级的
+  关键帧/序列头判定按 AVC 布局实现，HEVC/enhanced-RTMP 会使其失效，
+  见 ADR-0004），再过滤 `base_url` 含 `.flv` 的候选（录制必须 FLV），
+  排除 `.mcdn.`（P2P CDN）主机——P2P 节点不适合长时间拉流录制；排除后
+  无候选则退回全部候选。取首个候选，
   URL = `host + base_url + extra`，并记录该 codec 行的
   `current_qn`（平台实际授予的档位）。
 - 授予档位优先取选中 codec 行的 `current_qn`，缺失退用 playurl 顶层
@@ -957,6 +959,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | 场景 | 行为 |
 |---|---|
 | 断流（仍在播） | 决策树重连，新 part（§4.5）；本腿稳定录制 ≥5 分钟则重置预算，长直播不累计耗尽；预算耗尽则保内容收尾 |
+| 房间只有 HEVC/AV1 流 | 无 AVC 候选 → 非瞬时错误，决策树记 lastError 结束场次，不重试（§4.2、ADR-0004） |
 | 流中途序列头变化 | 强制切段：旧段照常收尾，新段注入缓存旧头 + 新序列头为首个正文标签（§4.3） |
 | 单次探测说下播 | probeLive 需连续 3 次确认（间隔 3s）才结束场次；探测失败不计数，6 次无定论记错误结束（§4.5） |
 | 正常 EOF 但仍在播 | 视同断流重连（CDN 掐长连接是常态） |
@@ -984,7 +987,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 171 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
+共 172 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
@@ -997,7 +1000,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | data | `recorder_test.go`（35） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定（时长 + **大小双触发：阈值/关键帧/裕度强切各分支**）、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、**并发泵送分配不同 part**、新段头注入且不重复写（单段/切段各一）、**序列头变化强制切段（视频/音频各一次变头共三段；重复相同序列头不切）**、**大小上限端到端切分（段体积与关键帧切点断言）**、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、**合并产物后再开录的回滚追加（含弹幕缺失回滚）**、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `credential_test.go`（5） | 空库读取、单例行 upsert、Save/Delete 热替换 `Data.Cookie`、删除幂等、并发读 Cookie 安全 |
-| data/bili | `live_test.go`（10） | pickFLVStream 纯函数：avc 优先 / 同优先级首个 / 过滤非 FLV 与空 URL、**排除 `.mcdn.` P2P 主机（普通 CDN 优先；候选全为 P2P 时退回全量）**、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |
+| data/bili | `live_test.go`（11） | pickFLVStream 纯函数：**仅接受 avc（hevc/av1 候选被跳过、无 avc 则无候选报错，ADR-0004）** / 多个 avc 行取首个 / 过滤非 FLV 与空 URL、**排除 `.mcdn.` P2P 主机（普通 CDN 优先；候选全为 P2P 时退回全量）**、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |
 | data/bili | `danmaku_test.go`（25） | 包编解码往返、zlib/brotli 嵌套解包、事件解析（弹幕/礼物/SC/上舰/进场）、**弹幕发送时刻 `send_ts`（载荷 `info[0][4]`；缺失/非数字/非正数保持未知、字符串数字可解析）**、认证包 uid 跟随 cookie（登录/匿名） |
 | data/bili | `risk_test.go`（16） | riskGuard：成功清冷却、冷却闸门拦截、HTTP 风控与 -352 刷新重试一次/耗尽、fallback 成功/失败/非零码、非零码不记账、阶梯冷却升级、并发安全 |
 | data/bili | `wbi_test.go`（5） | mixin_key 已知向量/短输入/32 截断、签名值 sanitize、URL 提取密钥 |
@@ -1083,7 +1086,7 @@ hikami-go：Go 单机服务，录直播音频+弹幕 → ASR → AI 总结（刻
 | 接口 | 用途 | 代码位置 |
 |---|---|---|
 | `GET api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=` | 房间/开播状态、标题、live_start_time、主播名 | bili/live.go roomStatus |
-| `GET api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=&protocol=0,1&format=0,1,2&codec=0,1&qn=&platform=web` | 流地址（候选排序取 FLV+avc 优先） | bili/live.go selectStreamURL |
+| `GET api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=&protocol=0,1&format=0,1,2&codec=0&qn=&platform=web` | 流地址（仅收 FLV + avc，ADR-0004） | bili/live.go selectStreamURL |
 | `GET api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=&type=0` | 弹幕 token + 接入节点（WBI 签名） | bili/danmaku.go danmuInfo |
 | `GET api.live.bilibili.com/room/v1/Danmu/getConf?room_id=&platform=pc&player=web` | 弹幕 token 降级通道（无 WBI） | bili/danmaku.go danmuConf |
 | `GET api.bilibili.com/x/web-interface/nav` | WBI 密钥（兼判断登录态） | bili/wbi.go fetchKeys |

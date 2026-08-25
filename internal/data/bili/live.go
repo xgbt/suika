@@ -13,16 +13,16 @@ import (
 )
 
 const (
-	liveAPIBase              = "https://api.live.bilibili.com" // B 站直播 API 基础 URL
-	riskCode352              = -352                            // B 站直播 API 的 -352 风控错误码
-	flvStreamPriorityDefault = 90                              // 默认 FLV 流优先级
-	flvStreamPriorityAVC     = 100                             // AVC 编码 FLV 流优先级（更优）
-	liveStatusOn             = 1
-	defaultDanmakuServer     = "wss://broadcastlv.chat.bilibili.com:2245/sub" // getDanmuInfo 和旧版 getConf 都被风控时的兜底弹幕端点
+	liveAPIBase          = "https://api.live.bilibili.com" // B 站直播 API 基础 URL
+	riskCode352          = -352                            // B 站直播 API 的 -352 风控错误码
+	liveStatusOn         = 1
+	defaultDanmakuServer = "wss://broadcastlv.chat.bilibili.com:2245/sub" // getDanmuInfo 和旧版 getConf 都被风控时的兜底弹幕端点
 )
 
 // sourceQualityQN 是请求的直播流清晰度：10000 = 原画。不做成配置项：
 // 请求不到原画时平台会自动授予次高档位，没有理由请求更低的档。
+// codec 只请求 0（avc）：录制管线只接受 AVC 流（见 pickFLVStream 与
+// ADR-0004），不从平台请求无法正确录制的编码。
 const sourceQualityQN = 10000
 
 // qnNames 将清晰度编号映射为展示名称（API 未返回 g_qn_desc 时兜底）。
@@ -122,7 +122,7 @@ func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.Li
 func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string, biz.StreamQuality, error) {
 	endpoint := liveAPIBase + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
 		strconv.FormatInt(roomID, 10) +
-		"&protocol=0,1&format=0,1,2&codec=0,1&qn=" + strconv.Itoa(sourceQualityQN) + "&platform=web"
+		"&protocol=0,1&format=0,1,2&codec=0&qn=" + strconv.Itoa(sourceQualityQN) + "&platform=web"
 
 	var resp playInfoResponse
 	attempt := func(ctx context.Context) (int, error) {
@@ -140,10 +140,10 @@ func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string
 	return pickFLVStream(resp.Data.PlayURLInfo.PlayURL, sourceQualityQN, roomID)
 }
 
-// pickFLVStream 从播放信息中挑选最优 FLV 流地址与清晰度：AVC 编码优先，
-// 仅收 FLV。P2P CDN（.mcdn.）节点不适合长时间拉流录制，优先排除；排除
-// 后无候选时退回全部候选。清晰度以平台实际授予为准（cookie 过期会失去
-// 原画），即使低于请求档也接受。
+// pickFLVStream 从播放信息中挑选最优 FLV 流地址与清晰度：仅收 FLV、
+// 仅收 AVC 编码。P2P CDN（.mcdn.）节点不适合长时间拉流录制，优先排除；
+// 排除后无候选时退回全部候选。清晰度以平台实际授予为准（cookie 过期会
+// 失去原画），即使低于请求档也接受。
 func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.StreamQuality, error) {
 	bestURL, selectedQn, ok := bestFLVStream(pu, true)
 	if !ok {
@@ -173,13 +173,17 @@ func pickFLVStream(pu playURL, requestedQN int, roomID int64) (string, biz.Strea
 	return bestURL, biz.StreamQuality{Qn: int32(granted), Desc: desc}, nil
 }
 
-// bestFLVStream 按编码优先级挑选最高的 FLV 候选；excludeP2P 为 true 时
-// 跳过 P2P CDN（.mcdn.）主机。同优先级取首个候选。
+// bestFLVStream 挑选首个 AVC FLV 候选；excludeP2P 为 true 时跳过 P2P
+// CDN（.mcdn.）主机。只接受 avc codec：flv 包的关键帧与序列头判定按
+// AVC 布局实现，HEVC 流（尤其 enhanced-RTMP 的 FourCC 布局）会使判定
+// 失效，切段与头注入退化（ADR-0004）。
 func bestFLVStream(pu playURL, excludeP2P bool) (url string, qn int, ok bool) {
-	bestPriority := -1
 	for _, stream := range pu.Stream {
 		for _, format := range stream.Format {
 			for _, codec := range format.Codec {
+				if codec.CodecName != "avc" {
+					continue
+				}
 				for _, urlInfo := range codec.URLInfo {
 					if urlInfo.Host == "" || codec.BaseURL == "" {
 						continue
@@ -190,16 +194,7 @@ func bestFLVStream(pu playURL, excludeP2P bool) (url string, qn int, ok bool) {
 					if excludeP2P && isP2PCDNHost(urlInfo.Host) {
 						continue
 					}
-					priority := flvStreamPriorityDefault
-					if codec.CodecName == "avc" {
-						priority = flvStreamPriorityAVC
-					}
-					if priority > bestPriority {
-						bestPriority = priority
-						url = urlInfo.Host + codec.BaseURL + urlInfo.Extra
-						qn = codec.CurrentQn
-						ok = true
-					}
+					return urlInfo.Host + codec.BaseURL + urlInfo.Extra, codec.CurrentQn, true
 				}
 			}
 		}
