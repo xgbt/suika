@@ -219,11 +219,13 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 		}
 	}()
 
+	// 程序启动初始化
 	uc.reconcile(ctx, monitors, &retired)
 	if len(monitors) == 0 {
 		log.Warn("recorder has no configured rooms, idling")
 	}
 
+	// 程序运行中, 如果收到 RoomRegistry 变更通知, 则重新触发 reconcile
 	for {
 		select {
 		case <-ctx.Done():
