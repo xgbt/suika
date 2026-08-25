@@ -1,4 +1,4 @@
-package data
+package recorder
 
 import (
 	"suika/internal/data/flv"

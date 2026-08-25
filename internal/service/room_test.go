@@ -42,8 +42,7 @@ func newTestData(t *testing.T) *data.Data {
 			Source: filepath.Join(t.TempDir(), "test.db"),
 		},
 	}
-	// MergeEnabled=false 关闭收尾合并（测试只关心 CRUD 与运行时合并）。
-	d, cleanup, err := data.NewData(confData, &conf.Recorder{MergeEnabled: proto.Bool(false)})
+	d, cleanup, err := data.NewData(confData, &conf.Recorder{})
 	if err != nil {
 		t.Fatalf("NewData() error = %v", err)
 	}

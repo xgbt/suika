@@ -100,10 +100,9 @@ func TestNewDataInitializesRoomsTableWhenDBFileExists(t *testing.T) {
 		t.Fatalf("create empty db file: %v", err)
 	}
 
-	mergeEnabled := false
 	d, cleanup, err := NewData(
 		&conf.Data{Database: &conf.Data_Database{Source: dbPath}},
-		&conf.Recorder{MergeEnabled: &mergeEnabled},
+		&conf.Recorder{},
 	)
 	if err != nil {
 		t.Fatalf("NewData returned error: %v", err)

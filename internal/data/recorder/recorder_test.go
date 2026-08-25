@@ -1,4 +1,4 @@
-package data
+package recorder
 
 import (
 	"bytes"
@@ -23,16 +23,13 @@ import (
 // --- 辅助函数 ---
 
 // newTestRepo 构建以全新临时目录为 record_root 的 recorderRepo。
-func newTestRepo(t *testing.T, d *Data, c *conf.Recorder) *recorderRepo {
+func newTestRepo(t *testing.T, c *conf.Recorder) *recorderRepo {
 	t.Helper()
-	if d == nil {
-		d = &Data{}
-	}
 	if c == nil {
 		c = &conf.Recorder{}
 	}
 	c.RecordRoot = t.TempDir()
-	repo, ok := NewRecorderRepo(d, c).(*recorderRepo)
+	repo, ok := NewRecorderRepo(c).(*recorderRepo)
 	if !ok {
 		t.Fatal("NewRecorderRepo did not return *recorderRepo")
 	}
@@ -370,7 +367,7 @@ func TestShouldSplitBySize(t *testing.T) {
 // --- 构造函数 / 路径 ---
 
 func TestNewRecorderRepoConfigMapping(t *testing.T) {
-	r := NewRecorderRepo(&Data{}, nil).(*recorderRepo)
+	r := NewRecorderRepo(nil).(*recorderRepo)
 	if r.recordRoot != defaultRecordRoot ||
 		r.segmentDuration != defaultSegmentMinutes*time.Minute ||
 		r.maxSegmentBytes != defaultMaxSegmentBytes ||
@@ -379,14 +376,14 @@ func TestNewRecorderRepoConfigMapping(t *testing.T) {
 		t.Fatalf("defaults not applied: %+v", r)
 	}
 
-	r = NewRecorderRepo(&Data{}, &conf.Recorder{RecordRoot: "/srv/recordings"}).(*recorderRepo)
+	r = NewRecorderRepo(&conf.Recorder{RecordRoot: "/srv/recordings"}).(*recorderRepo)
 	if r.recordRoot != "/srv/recordings" {
 		t.Fatalf("recordRoot = %q, want %q", r.recordRoot, "/srv/recordings")
 	}
 }
 
 func TestSessionPaths(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	dir, base, err := repo.sessionPaths(testSession())
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +405,7 @@ func TestSessionPaths(t *testing.T) {
 }
 
 func TestPrepareSessionResumeKeepsSegments(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 
@@ -451,7 +448,7 @@ func TestPrepareSessionResumeKeepsSegments(t *testing.T) {
 func TestPrepareSessionResumeUpdatesTitleVariants(t *testing.T) {
 	// meta 路径内嵌的是净化后的标题，因此只有净化后基座相同的标题才会
 	// 走到续录分支；此时落盘标题会刷新为重启会话带来的标题。
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	session.Title = "a/b"
@@ -483,7 +480,7 @@ func TestPrepareSessionResumeUpdatesTitleVariants(t *testing.T) {
 }
 
 func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 
 	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
@@ -629,7 +626,7 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 // --- RecordSession ---
 
 func TestRecordSessionRejectsNilStream(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	if _, err := repo.RecordSession(context.Background(), testSession(), nil, nil); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("err = %v, want ErrRoomInternal", err)
 	}
@@ -639,7 +636,7 @@ func TestRecordSessionRejectsNilStream(t *testing.T) {
 }
 
 func TestRecordSessionSingleSegment(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -716,7 +713,7 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 }
 
 func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -769,7 +766,7 @@ func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
 }
 
 func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
@@ -837,7 +834,7 @@ func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
 // part1 前先缓存首个头标签，openSegment 重注入（此时已非空的）缓存，
 // 拉流写入又把同一个标签写了一遍——part1 里的 onMetaData 因此重复。
 func TestRecordSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -885,7 +882,7 @@ func TestRecordSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 // 回归（切分的一半）：part2 必须把缓存的 metadata / AVC / AAC 头各恰好
 // 重注入一次——开启 part2 的切分关键帧不在缓存中，所以那边也不会重复。
 func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
@@ -939,7 +936,7 @@ func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
 // 源、主播改码率）触发强制切段：视频与音频序列头各变化一次，产生三段；
 // 每段从缓存注入当时的旧头标签，新序列头作为首个正文标签写入。
 func TestRecordSessionSplitsOnSeqHeaderChange(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -989,7 +986,7 @@ func TestRecordSessionSplitsOnSeqHeaderChange(t *testing.T) {
 // TestRecordSessionRepeatedSeqHeaderDoesNotSplit 验证重复出现的相同序列头
 // （字节一致）不触发切段：只有解码配置真正变化才值得切。
 func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1030,7 +1027,7 @@ func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 // 282 字节（82 字节的头 + 10 个正文 tag）后越过阈值，在下一个关键帧处
 // 切分，共产出 4 段；每段（含最后一段）都 ≥ 阈值，且切分点都是关键帧。
 func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	repo.maxSegmentBytes = 250 // 测试中使用小阈值
 	ctx := context.Background()
 	session := testSession()
@@ -1089,7 +1086,7 @@ func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
 // 频关键帧处开启：关键帧之前的正文标签被丢弃（流内重连后的新段同理），
 // 头标签照常入缓存并在开段时注入，保证段首即关键帧、独立可解码。
 func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1106,7 +1103,7 @@ func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
 
 	stream := &biz.LiveStream{
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t,
+		Body: io.NopCloser(bytes.NewReader(buildFLVStream(t,
 			metaTag, videoSeq, audioSeq, earlyInter1, earlyInter2, key40, inter60))),
 	}
 	result, err := repo.RecordSession(ctx, session, stream, nil)
@@ -1137,7 +1134,7 @@ func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
 // TestRecordSessionAudioOnlyOpensWithoutKeyframe 验证纯音频流的豁免：文件
 // 头无视频轨时没有关键帧可等，首个标签即开段。
 func TestRecordSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1172,7 +1169,7 @@ func TestRecordSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
 // （类型+载荷）重复的块整块丢弃不落盘，唯一块正常写入；未达断开上限时
 // 会话正常收尾。
 func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1242,7 +1239,7 @@ func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
 // TestRecordSessionDisconnectsOnCDNLoop 验证连续重复块达到上限时泵送以
 // ErrStreamTransient 中止，交由断流决策树换流地址重连（换 CDN 节点）。
 func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1292,7 +1289,7 @@ func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
 // TestRecordSessionSplitOverrunFlushesPendingBlock 验证强制切分（时长超限
 // 且仍无关键帧）会先裁决缓冲块：在途数据不能因为关段而丢失。
 func TestRecordSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
@@ -1382,44 +1379,9 @@ func mergeTestTags() (metaTag, videoSeq, audioSeq *flv.Tag) {
 }
 
 func TestFinishSessionWithoutMetaIsNoop(t *testing.T) {
-	repo := newTestRepo(t, nil, nil)
+	repo := newTestRepo(t, nil)
 	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
 		t.Fatalf("want nil for missing meta.json, got %v", err)
-	}
-}
-
-func TestFinishSessionMergeDisabledKeepsSegments(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	content := buildFLVStream(t, metaTag, videoSeq, audioSeq, key0)
-	repo := newTestRepo(t, &Data{mergeEnabled: false}, nil)
-	dir, base, metaPath := seedMergeSession(t, repo, content)
-
-	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
-		t.Fatalf("FinishSession: %v", err)
-	}
-
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Status != metaStatusDone {
-		t.Fatalf("status = %q, want %q", meta.Status, metaStatusDone)
-	}
-	if meta.MergedVideo != "" || meta.MergedDanmaku != "" {
-		t.Fatalf("merge bookkeeping = %+v, want empty when merge disabled", meta)
-	}
-	if meta.EndTime == 0 || meta.Quality.Qn != 10000 || meta.Quality.Desc != "source" {
-		t.Fatalf("finish bookkeeping = %+v", meta)
-	}
-	if seg := meta.Segments[0]; !seg.FLVKept {
-		t.Fatalf("segment = %+v, want flv kept", seg)
-	}
-	if _, err := os.Stat(filepath.Join(dir, base+".flv")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("no merged file must be produced when merge is disabled (stat err = %v)", err)
-	}
-	if got, err := os.ReadFile(filepath.Join(dir, base+"_part1.flv")); err != nil || !bytes.Equal(got, content) {
-		t.Fatalf("source flv modified: %v", err)
 	}
 }
 
@@ -1429,7 +1391,7 @@ func TestFinishSessionMergeSingleSegment(t *testing.T) {
 	metaTag, videoSeq, audioSeq := mergeTestTags()
 	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
 	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	dir, base, metaPath := seedMergeSession(t, repo, buildFLVStream(t, metaTag, videoSeq, audioSeq, key0, inter40))
 	danmu := `{"ts":1,"type":"danmaku","text":"hi"}` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, base+"_part1.danmu.jsonl"), []byte(danmu), 0o644); err != nil {
@@ -1476,7 +1438,7 @@ func TestFinishedSessionCanAppendAfterRecordingIsReenabled(t *testing.T) {
 	secondKey := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
 	secondEnd := &flv.Tag{Type: flv.TagVideo, Timestamp: 5_000, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
 
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	session := testSession()
 	record := func(tags ...*flv.Tag) {
 		t.Helper()
@@ -1560,7 +1522,7 @@ func TestFinishSessionMergeMultiSegmentRebasesBoundaryHeaders(t *testing.T) {
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq, key0, inter40)
 	// part2 模拟切段后的重注入：序列头保留近零时间戳，内容标签延续。
 	part2 := buildFLVStream(t, metaTag, videoSeq, audioSeq, keyB, interB)
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	dir, base, metaPath := seedMergeSession(t, repo, part1, part2)
 	if err := os.WriteFile(filepath.Join(dir, base+"_part1.danmu.jsonl"), []byte("line1\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1610,7 +1572,7 @@ func TestFinishSessionMergeMultiSegmentRebasesBoundaryHeaders(t *testing.T) {
 func TestFinishSessionMergeFailureKeepsSegments(t *testing.T) {
 	metaTag, videoSeq, audioSeq := mergeTestTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	dir, base, metaPath := seedMergeSession(t, repo, part1, []byte("not an flv"))
 
 	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
@@ -1656,7 +1618,7 @@ func TestFinishSessionMergeFailureKeepsSegments(t *testing.T) {
 func TestFinishSessionMergeMissingSegmentMarksPartial(t *testing.T) {
 	metaTag, videoSeq, audioSeq := mergeTestTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	_, _, metaPath := seedMergeSession(t, repo, part1, nil) // part2 未落盘
 
 	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
@@ -1676,7 +1638,7 @@ func TestFinishSessionMergeMissingSegmentMarksPartial(t *testing.T) {
 func TestRecoverPendingFinishesInterruptedSessions(t *testing.T) {
 	metaTag, videoSeq, audioSeq := mergeTestTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	_, base, metaPath := seedMergeSession(t, repo, part1)
 	// 模拟合并期间崩溃
 	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusMerging })
@@ -1700,7 +1662,7 @@ func TestRecoverPendingFinishesInterruptedSessions(t *testing.T) {
 func TestRecoverPendingSkipsUnknownStatus(t *testing.T) {
 	metaTag, videoSeq, audioSeq := mergeTestTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	dir, base, metaPath := seedMergeSession(t, repo, part1)
 	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = "remuxing" })
 
@@ -1726,7 +1688,7 @@ func TestRecoverPendingSkipsUnknownStatus(t *testing.T) {
 func TestRecoverPendingRetriesPartialWithSources(t *testing.T) {
 	metaTag, videoSeq, audioSeq := mergeTestTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	_, base, metaPath := seedMergeSession(t, repo, part1)
 	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
 
@@ -1746,7 +1708,7 @@ func TestRecoverPendingRetriesPartialWithSources(t *testing.T) {
 func TestRecoverPendingLeavesPartialWithoutSources(t *testing.T) {
 	metaTag, videoSeq, audioSeq := mergeTestTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, &Data{mergeEnabled: true}, nil)
+	repo := newTestRepo(t, nil)
 	dir, base, metaPath := seedMergeSession(t, repo, part1, nil) // part2 未落盘
 	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
 

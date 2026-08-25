@@ -1,4 +1,4 @@
-package data
+package recorder
 
 import (
 	"context"
@@ -39,8 +39,6 @@ const (
 
 // recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与收尾合并。
 type recorderRepo struct {
-	d *Data
-
 	// recordRoot 录制根目录
 	recordRoot string
 	// segmentDuration 分段时长，为 0 时不按时间切分
@@ -57,9 +55,8 @@ type recorderRepo struct {
 	stats     map[int64]*pumpStats
 }
 
-func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
+func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 	r := &recorderRepo{
-		d:                d,
 		recordRoot:       defaultRecordRoot,
 		segmentDuration:  defaultSegmentMinutes * time.Minute,
 		maxSegmentBytes:  defaultMaxSegmentBytes,
@@ -617,14 +614,6 @@ func archiveMergedSession(dir, base string, meta *sessionMeta) error {
 // 下次启动的 RecoverPending 重试；只有合并产物验证通过后才删除源分段。
 func (r *recorderRepo) finalizeSession(ctx context.Context, metaPath string, meta *sessionMeta) error {
 	dir := filepath.Dir(metaPath)
-
-	if !r.d.mergeEnabled {
-		for i := range meta.Segments {
-			meta.Segments[i].FLVKept = true
-		}
-		meta.Status = metaStatusDone
-		return r.persistMeta(metaPath, meta)
-	}
 
 	base := sessionBaseFromMetaPath(metaPath)
 	videoName, danmuName, err := mergeSessionFiles(ctx, dir, base, meta.Segments)

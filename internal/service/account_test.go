@@ -11,8 +11,6 @@ import (
 	"suika/internal/biz"
 	"suika/internal/conf"
 	"suika/internal/data"
-
-	"google.golang.org/protobuf/proto"
 )
 
 // fakePassportClient 实现 biz.PassportClient，供服务层测试驱动。
@@ -132,7 +130,7 @@ func TestAccountServiceCredentialPersistsAcrossRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "persist.db")
 	confData := &conf.Data{Database: &conf.Data_Database{Source: dbPath}}
 
-	d, cleanup, err := data.NewData(confData, &conf.Recorder{MergeEnabled: proto.Bool(false)})
+	d, cleanup, err := data.NewData(confData, &conf.Recorder{})
 	if err != nil {
 		t.Fatalf("NewData(first) error = %v", err)
 	}
@@ -151,7 +149,7 @@ func TestAccountServiceCredentialPersistsAcrossRestart(t *testing.T) {
 	cleanup()
 
 	// 重启：在同一数据库文件上新建 Data，启动时应自动加载凭据。
-	restarted, cleanup2, err := data.NewData(confData, &conf.Recorder{MergeEnabled: proto.Bool(false)})
+	restarted, cleanup2, err := data.NewData(confData, &conf.Recorder{})
 	if err != nil {
 		t.Fatalf("NewData(restart) error = %v", err)
 	}
