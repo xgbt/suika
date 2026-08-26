@@ -46,7 +46,7 @@ func (uc *RecorderUsecase) launchMonitor(ctx context.Context, roomID int64) *mon
 
 // runMonitor 维持房间的弹幕连接，断开后重拨，直到 ctx 被取消。
 func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChange <-chan struct{}, roomID int64) {
-	for ctx.Err() == nil {
+	for {
 		// 单次连接结束后重新拨号，直到 ctx 被取消。
 		if err := uc.runMonitorConnection(ctx, roomChange, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
