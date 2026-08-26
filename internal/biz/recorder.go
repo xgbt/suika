@@ -15,10 +15,8 @@ import (
 )
 
 var (
+	// ErrRoomInternal 通用内部错误
 	ErrRoomInternal = errors.InternalServer(v1.ErrorReason_ERROR_REASON_INTERNAL.String(), "recorder internal error")
-)
-
-var (
 	// ErrStreamTransient 标记 CDN 侧的瞬时故障（HTTP 404、连接被重置等），值得重新选择流地址后重试。
 	ErrStreamTransient = stderrors.New("recorder: transient stream error")
 	// ErrRiskControl 标记 B 站风控拒绝（-352/412 等）。
@@ -194,33 +192,36 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 // 随之优雅停止）；record_enabled 翻转不影响监控，只作为重评估信号送达监控
 // 协程，由其决定开始或停止录制。
 func (uc *RecorderUsecase) Run(ctx context.Context) error {
-
 	// 收尾上次运行遗留的合并工作，若失败则记录错误并继续运行。
 	if err := uc.repo.RecoverPending(ctx); err != nil {
 		log.Error("recorder: recover pending merge", "err", err)
 	}
 
-	// 订阅 Room 注册表变更通知，返回一个通道和取消函数。
+	// 订阅 Room 注册表变更通知
 	wakeup, unsubscribe := uc.roomRegistry.Subscribe()
 	defer unsubscribe()
 
-	// monitors 是当前活跃的房间监控协程集合；retired 是已停止的监控协程集合，等待收尾。
+	// monitors 表示当前活跃的房间监控协程集合
 	monitors := make(map[int64]*monitorHandle)
-	var retired []*monitorHandle
+	// stopping 表示已停止的、等待收尾的监控协程集合
+	stopping := make([]*monitorHandle, 0)
+
 	defer func() {
+		// 退出时取消所有监控协程
 		for _, h := range monitors {
 			h.cancel()
 		}
+		// 并等待所有监控协程收尾完成
 		for _, h := range monitors {
 			<-h.done
 		}
-		for _, h := range retired {
+		for _, h := range stopping {
 			<-h.done
 		}
 	}()
 
 	// 程序启动初始化
-	uc.reconcile(ctx, monitors, &retired)
+	uc.reconcile(ctx, monitors, &stopping)
 	if len(monitors) == 0 {
 		log.Warn("recorder has no configured rooms, idling")
 	}
@@ -231,45 +232,40 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-wakeup:
-			uc.reconcile(ctx, monitors, &retired)
+			uc.reconcile(ctx, monitors, &stopping)
 		}
 	}
 }
 
-// reconcile 按注册表快照调和监控协程集合：为新增房间启动监控；停止并
-// 移除已删除房间的监控（移入 retired 自行优雅收尾，不阻塞调和）；
-// record_enabled 翻转的房间投递重评估信号。
-func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*monitorHandle, retired *[]*monitorHandle) {
+// reconcile 调和 RoomRegistry 快照与 monitors/stopping 的状态，确保每个房间的监控协程正确启动/停止。
+func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*monitorHandle, stopping *[]*monitorHandle) {
 
 	// 回收 retired 中已完成收尾的被移除监控。
-	alive := (*retired)[:0]
-	for _, h := range *retired {
+	alive := (*stopping)[:0]
+	for _, h := range *stopping {
 		select {
 		case <-h.done:
 		default:
 			alive = append(alive, h)
 		}
 	}
-	*retired = alive
+	*stopping = alive
 
 	// 获取当前Room注册表快照，按 room_id 建立索引
 	want := lo.KeyBy(uc.roomRegistry.Rooms(), func(r Room) int64 { return r.RoomID })
 
-	// 1. 如果 monitors 中存在的房间不在 want 中，则说明该房间已被删除，取消其监控协程并移入 retired。
+	// 如果 monitors 中的 Room 不在 want 中，则说明该房间已被删除，取消其监控协程并移入 stopping。
 	for roomID, h := range monitors {
 		if _, ok := want[roomID]; !ok {
 			h.cancel()
-			*retired = append(*retired, h)
+			*stopping = append(*stopping, h)
 			delete(monitors, roomID)
 		}
 	}
 
 	for roomID, room := range want {
 		monitor, ok := monitors[roomID]
-
-		// case 1 初次启动
-		// case 2 中途新增房间
-		// 启动监控协程并登记到 monitors
+		// 初始化启动/中途新增房间, 启动监控协程并登记到 monitors
 		if !ok {
 			monitor = uc.launchMonitor(ctx, roomID)
 			monitor.lastRecordEnabled = room.RecordEnabled
