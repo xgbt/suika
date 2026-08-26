@@ -276,7 +276,7 @@ func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*mo
 		// 已存在房间监控状态变动，通过发送信号的方式, 让监控协程重新评估是否需要启动/停止录制会话。
 		if monitor.lastRecordEnabled != room.RecordEnabled {
 			monitor.lastRecordEnabled = room.RecordEnabled
-			monitor.reEvaluate()
+			monitor.notifyRoomChange()
 		}
 	}
 }

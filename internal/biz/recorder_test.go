@@ -618,14 +618,14 @@ func TestRunMonitorConnectionGatesSessionsOnRecordEnabled(t *testing.T) {
 	}
 	// 房间 42 初始未配置录制。
 	uc := newTestUsecaseWithRooms(t, map[int64]*Room{42: {RoomID: 42, StreamerName: "tester"}}, repo, &watchClient{conn: conn}, nil)
-	reevaluate := make(chan struct{}, 1)
+	signalCh := make(chan struct{}, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		if err := uc.runMonitorConnection(ctx, reevaluate, 42); err != nil {
+		if err := uc.runMonitorConnection(ctx, signalCh, 42); err != nil {
 			t.Errorf("runMonitorConnection: %v", err)
 		}
 	}()
@@ -642,14 +642,14 @@ func TestRunMonitorConnectionGatesSessionsOnRecordEnabled(t *testing.T) {
 
 	// 开启录制：仍在播，应立即开录。
 	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
-	reevaluate <- struct{}{}
+	signalCh <- struct{}{}
 	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start after turning on recording for a live room")
 	}
 
 	// 关闭录制：立即优雅停止。
 	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester"})
-	reevaluate <- struct{}{}
+	signalCh <- struct{}{}
 	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusIdle) {
 		t.Fatal("turning off recording did not stop the active session")
 	}
@@ -742,14 +742,14 @@ func TestRunMonitorConnectionEnableRecordingDuringStopResumesSession(t *testing.
 		roomStateUpdates: make(chan *RoomInfo),
 	}
 	uc := newTestUsecase(t, repo, &watchClient{conn: conn}, nil)
-	reevaluate := make(chan struct{}, 1)
+	signalCh := make(chan struct{}, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		if err := uc.runMonitorConnection(ctx, reevaluate, 42); err != nil {
+		if err := uc.runMonitorConnection(ctx, signalCh, 42); err != nil {
 			t.Errorf("runMonitorConnection: %v", err)
 		}
 	}()
@@ -761,14 +761,14 @@ func TestRunMonitorConnectionEnableRecordingDuringStopResumesSession(t *testing.
 
 	// 关闭录制：会话进入收尾并阻塞在合并 gate 上。
 	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester"})
-	reevaluate <- struct{}{}
+	signalCh <- struct{}{}
 	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusMerging) {
 		t.Fatal("turning off recording did not drive the session into finishing")
 	}
 
 	// 收尾完成前重新开启录制。
 	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
-	reevaluate <- struct{}{}
+	signalCh <- struct{}{}
 
 	// 放行收尾：仍在播，应立即恢复录制（第二个会话）。
 	close(repo.gate)

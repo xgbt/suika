@@ -13,16 +13,16 @@ import (
 
 // monitorHandle 是 supervisor 管理单个房间 Monitor 的生命周期句柄。
 type monitorHandle struct {
-	lastRecordEnabled bool          // supervisor 上次调和时记录的录制开关状态。
-	reEvaluateCh      chan struct{} // 请求 Monitor 重新读取房间状态并评估 Session 策略。
+	lastRecordEnabled bool
+	roomChange        chan struct{}
 	cancel            context.CancelFunc
 	done              chan struct{}
 }
 
-// reEvaluate 请求 Monitor 重新评估录制策略；重复请求会合并。
-func (h *monitorHandle) reEvaluate() {
+// notifyRoomChange 发送信号到 roomChange 通道, 通知 Monitor 重新读取房间状态并评估 Session 策略
+func (h *monitorHandle) notifyRoomChange() {
 	select {
-	case h.reEvaluateCh <- struct{}{}:
+	case h.roomChange <- struct{}{}:
 	default:
 	}
 }
@@ -31,24 +31,24 @@ func (h *monitorHandle) reEvaluate() {
 func (uc *RecorderUsecase) launchMonitor(ctx context.Context, roomID int64) *monitorHandle {
 	mctx, cancel := context.WithCancel(ctx)
 	h := &monitorHandle{
-		reEvaluateCh: make(chan struct{}, 1), // 缓冲 1，避免重复请求阻塞
-		cancel:       cancel,
-		done:         make(chan struct{}),
+		roomChange: make(chan struct{}, 1), // 缓冲 1，避免重复请求阻塞
+		cancel:     cancel,
+		done:       make(chan struct{}),
 	}
 
 	go func() {
 		defer close(h.done)
-		uc.runMonitor(mctx, h.reEvaluateCh, roomID)
+		uc.runMonitor(mctx, h.roomChange, roomID)
 	}()
 
 	return h
 }
 
 // runMonitor 维持房间的弹幕连接，断开后重拨，直到 ctx 被取消。
-func (uc *RecorderUsecase) runMonitor(ctx context.Context, reevaluateCh <-chan struct{}, roomID int64) {
+func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChange <-chan struct{}, roomID int64) {
 	for ctx.Err() == nil {
 		// 单次连接结束后重新拨号，直到 ctx 被取消。
-		if err := uc.runMonitorConnection(ctx, reevaluateCh, roomID); err != nil && ctx.Err() == nil {
+		if err := uc.runMonitorConnection(ctx, roomChange, roomID); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.roomRegistry.NoteError(roomID, err)
 		}
@@ -58,13 +58,8 @@ func (uc *RecorderUsecase) runMonitor(ctx context.Context, reevaluateCh <-chan s
 	}
 }
 
-// runMonitorConnection 运行一次弹幕连接生命周期内的房间监控分发器，持有弹幕连接、回退轮询定时器和会话句柄。
-// 它本身不做会话启停判断，相关策略集中在 sessionPolicy：
-// 各 select 分支把输入投递给策略（房间信息到达前先应用到注册表），并执
-// 行返回的决策——Start 启动会话协程，Stop 取消活跃会话。会话是否启动受
-// 房间 record_enabled 门控；reevaluate 信号只承担重评估的投递，监控本身
-// 不受影响。无活跃会话时排空弹幕事件；有活跃会话时由 RecordSession 独占消费事件通道。
-func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, reevaluateCh <-chan struct{}, roomID int64) error {
+// runMonitorConnection 运行实际的房间监控连接，直到连接断开或 ctx 被取消。连接断开后返回错误，调用方可决定是否重拨
+func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange <-chan struct{}, roomID int64) error {
 	// 弹幕连接：开播检测主通道，录制期间同时提供弹幕事件。
 	danmakuConn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
@@ -125,7 +120,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, reevaluateC
 			}
 			poll.Reset(uc.nextPollDelay())
 		// 管理后台变更了房间记录：重读最新录制开关投递给策略
-		case <-reevaluateCh:
+		case <-roomChange:
 			room := uc.roomRegistry.Room(roomID)
 			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
 		}

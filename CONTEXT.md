@@ -16,6 +16,10 @@ _Avoid_: recording (ambiguous between the act and the files), broadcast
 The per-room goroutine that holds the room's danmaku connection and translates room events into session starts and stops. Every room has exactly one monitor, regardless of its `record_enabled` flag.
 _Avoid_: watcher, poller (the fallback poll is only one of a monitor's inputs)
 
+**Monitor handle** (监控句柄):
+The supervisor-owned lifecycle handle for one Monitor. It carries cancellation, completion notification, and the buffered room-change signal. Monitor execution functions should receive only the dependencies they use (`context`, `roomID`, and the room-change channel), rather than the whole handle; the handle is not a container for Monitor business context.
+_Avoid_: using the handle as a general-purpose parameter bundle
+
 **Fallback poll** (回退轮询):
 Periodic polling of the platform's room-info API that backs up the danmaku connection as the live-detection channel.
 _Avoid_: heartbeat, health check
