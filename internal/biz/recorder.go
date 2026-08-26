@@ -100,10 +100,7 @@ type RecordingSession struct {
 	Quality       StreamQuality
 }
 
-type sessionHandle struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-}
+
 
 // RecordingResult 一次录制会话的最终结果
 type RecordingResult struct {
@@ -155,9 +152,10 @@ type ReconnectPolicy struct {
 }
 
 type RecorderUsecase struct {
-	roomRegistry        *RoomRegistry
-	repo                RecorderRepo
-	liveClient          LiveClient
+	roomRegistry *RoomRegistry
+	repo         RecorderRepo
+	liveClient   LiveClient
+
 	pollInterval        time.Duration   // 拉取房间状态的兜底轮询间隔
 	rec                 ReconnectPolicy // 断流决策树使用的重连配置
 	cdnBackoffBase      time.Duration   // CDN 瞬时故障首次重试的延迟；测试中会调小。

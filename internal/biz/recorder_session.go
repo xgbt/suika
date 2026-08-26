@@ -7,15 +7,25 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
+type sessionHandle struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 // launchSession 异步启动录制会话，并返回其生命周期句柄。
 func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) *sessionHandle {
 	sctx, cancel := context.WithCancel(ctx)
-	handle := &sessionHandle{cancel: cancel, done: make(chan struct{})}
+	h := &sessionHandle{
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+
 	go func() {
-		defer close(handle.done)
+		defer close(h.done)
 		uc.runSession(sctx, roomID, info, events)
 	}()
-	return handle
+
+	return h
 }
 
 // runSession 同步执行一次完整会话，包括准备、录制和收尾合并。
