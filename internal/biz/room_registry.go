@@ -196,6 +196,9 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	roomSnapshot := st.room
 	reg.mu.Unlock()
 
+	if reg.repo == nil {
+		return
+	}
 	if _, err := reg.repo.UpdateRoom(ctx, &roomSnapshot); err != nil {
 		log.Warn("room registry: persist room identity update failed", "room", roomID, "err", err)
 	}

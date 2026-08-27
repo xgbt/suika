@@ -105,6 +105,24 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		active = applyDecision(active, policy.RoomInfoArrived(roomInfo))
 	}
 
+	// probeRoomInfo 主动拉取一次房间信息：成功则推进会话策略，失败（如房间
+	// 不存在）则记录到注册表，供管理后台展示。
+	probeRoomInfo := func(logMsg string) {
+		roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Warn(logMsg, "room", roomID, "err", err)
+				uc.roomRegistry.NoteError(roomID, err)
+			}
+			return
+		}
+		roomInfoArrived(roomInfo)
+	}
+
+	// 监控刚启动（含每次重连）时立即探测一次，房间不存在等错误应尽快回填到管理后台，而不是让
+	// 用户长时间面对一个状态未知的新房间。
+	probeRoomInfo("initial room info probe failed")
+
 	for {
 		// events / done 借助 nil 通道互斥启用：无活跃会话时排空弹幕事件通道；
 		// 有活跃会话时由录制协程独占消费事件，监控循环只监听其结束信号。
@@ -135,13 +153,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 			roomInfoArrived(roomInfo)
 		// 轮询: 主动请求房间信息
 		case <-poll.C:
-			roomInfo, err := uc.liveClient.GetRoomInfo(ctx, roomID)
-			if err != nil && ctx.Err() == nil {
-				log.Warn("fallback poll failed", "room", roomID, "err", err)
-				uc.roomRegistry.NoteError(roomID, err)
-			} else if err == nil {
-				roomInfoArrived(roomInfo)
-			}
+			probeRoomInfo("fallback poll failed")
 			poll.Reset(uc.nextPollDelay())
 		// 管理后台变更了房间记录：重读最新录制开关投递给策略
 		case <-roomChange:

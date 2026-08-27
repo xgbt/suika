@@ -529,15 +529,20 @@ func (c *fakeDanmakuConn) isClosed() bool {
 
 // watchClient 是完全经由弹幕连接驱动的 LiveClient；状态探测默认恒报未
 // 开播，pollInfo 非 nil 时固定返回该信息（回退轮询接线测试用），
+// pollErr 非 nil 时固定返回该错误（房间不存在等探测失败场景测试用），
 // pollCalls 计数探测次数。
 type watchClient struct {
 	conn      DanmakuConn
 	pollInfo  *RoomInfo
+	pollErr   error
 	pollCalls atomic.Int64
 }
 
 func (c *watchClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, error) {
 	c.pollCalls.Add(1)
+	if c.pollErr != nil {
+		return nil, c.pollErr
+	}
 	if c.pollInfo != nil {
 		return c.pollInfo, nil
 	}
@@ -698,6 +703,42 @@ func TestRunMonitorConnectionFallbackPollStartsSession(t *testing.T) {
 	}
 	if lc.pollCalls.Load() == 0 {
 		t.Fatal("session started without any fallback poll call")
+	}
+
+	cancel()
+	<-watchDone
+}
+
+// TestRunMonitorConnectionImmediateProbeReportsError 验证监控启动时会立即探测一次房间
+// 信息（不等待兜底轮询的首个周期）：房间不存在等错误应尽快回填到 LastError，
+// 供管理后台发现。
+func TestRunMonitorConnectionImmediateProbeReportsError(t *testing.T) {
+	repo := &pumpBlockRepo{}
+	conn := &fakeDanmakuConn{
+		events:           make(chan *DanmakuEvent),
+		roomStateUpdates: make(chan *RoomInfo),
+	}
+	probeErr := stderrors.New("getInfoByRoom code=1 message=直播间不存在")
+	lc := &watchClient{conn: conn, pollErr: probeErr}
+	// 兜底轮询间隔保持默认（10 分钟量级）：错误必须来自启动时的立即探测，
+	// 而不是等待轮询定时器。
+	uc := newTestUsecase(t, repo, lc, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		if err := uc.runMonitorConnection(ctx, make(chan struct{}, 1), 42); err != nil {
+			t.Errorf("runMonitorConnection: %v", err)
+		}
+	}()
+
+	waitFor(t, "initial probe error recorded", func() bool {
+		return uc.roomRegistry.runtime(42).LastError == probeErr.Error()
+	})
+	if lc.pollCalls.Load() != 1 {
+		t.Fatalf("pollCalls = %d, want 1 (immediate probe only)", lc.pollCalls.Load())
 	}
 
 	cancel()
