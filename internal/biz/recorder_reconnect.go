@@ -10,6 +10,12 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
+const (
+	offlineConfirmRounds = 3                // 判定下播所需的连续"未开播"探测次数
+	probeMaxAttempts     = 6                // 单次下播确认内的探测总次数上限（含失败）
+	defaultCDNBackoffMax = 60 * time.Second // CDN 瞬时故障的重试延迟上限
+)
+
 // runRecordingLoop 执行会话内的流录制和断流重连，直到直播结束或重连策略决定结束会话。
 func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, roomID int64, session *RecordingSession, events <-chan *DanmakuEvent) {
 	reconnects := 0

@@ -11,6 +11,10 @@ import (
 	"github.com/go-kratos/kratos/v3/log"
 )
 
+const (
+	pollJitterFraction = 5 // 轮询间隔的相对抖动幅度（间隔 +/- fraction/2）
+)
+
 // monitorHandle 是 supervisor 管理单个房间 Monitor 的生命周期句柄。
 type monitorHandle struct {
 	lastRecordEnabled bool
@@ -67,7 +71,8 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 	}
 	defer danmakuConn.Close()
 
-	// 回退轮询：开播检测备用通道；抖动避免多房间同时发请求。
+	// 兜底轮询：弹幕连接没有推送房态时，主动拉取房间信息。
+	// 轮询间隔加入抖动，避免多个房间同时请求平台接口。
 	poll := time.NewTimer(uc.nextPollDelay())
 	defer poll.Stop()
 
@@ -140,7 +145,7 @@ func (uc *RecorderUsecase) executeDecision(ctx context.Context, roomID int64, co
 	return active
 }
 
-// nextPollDelay 返回下一次回退轮询的延迟：pollInterval 加均匀抖动
+// nextPollDelay 返回下一次兜底轮询的延迟：pollInterval 加均匀抖动
 // （± 1/pollJitterFraction 的一半），避免多房间的轮询在同一时刻打到
 // 平台接口。
 func (uc *RecorderUsecase) nextPollDelay() time.Duration {

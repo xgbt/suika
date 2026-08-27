@@ -3,8 +3,13 @@ package biz
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-kratos/kratos/v3/log"
+)
+
+const (
+	finishGracePeriod = 30 * time.Second // 限定关停期间 FinishSession 脱离已取消运行 context 后仍可用的工作时长
 )
 
 type sessionHandle struct {

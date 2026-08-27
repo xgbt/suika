@@ -29,12 +29,7 @@ const (
 	defaultReconnectDelay       = 10 * time.Second  // 断流决策树重连延迟
 	defaultCDNTransientBudget   = 5                 // CDN 瞬时故障的重试预算，超过预算则不再重连
 	defaultCDNBackoffBase       = 2 * time.Second   // CDN 瞬时故障首次重试的延迟，随尝试次数指数增长
-	defaultCDNBackoffMax        = 60 * time.Second  // CDN 瞬时故障的重试延迟上限
 	monitorRedialDelay          = 10 * time.Second  // 弹幕连接重拨前的停顿
-	finishGracePeriod           = 30 * time.Second  // 限定关停期间 FinishSession 脱离已取消运行 context 后仍可用的工作时长
-	pollJitterFraction          = 5                 // 回退轮询间隔的相对抖动幅度（间隔 +/- fraction/2）
-	offlineConfirmRounds        = 3                 // 判定下播所需的连续"未开播"探测次数
-	probeMaxAttempts            = 6                 // 单次下播确认内的探测总次数上限（含失败）
 	defaultOfflineConfirmDelay  = 3 * time.Second   // 下播确认相邻两次探测的间隔
 	defaultStableResetAfter     = 5 * time.Minute   // 泵送稳定录制超过该时长后重置重连预算
 )
@@ -99,8 +94,6 @@ type RecordingSession struct {
 	LiveStartTime time.Time
 	Quality       StreamQuality
 }
-
-
 
 // RecordingResult 一次录制会话的最终结果
 type RecordingResult struct {
