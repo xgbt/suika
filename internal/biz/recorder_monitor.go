@@ -78,12 +78,31 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 
 	policy := newSessionPolicy(uc.roomRegistry.Room(roomID).RecordEnabled)
 	var active *sessionHandle
+	applyDecision := func(active *sessionHandle, action sessionAction) *sessionHandle {
+		switch action.kind {
+		case actionStart:
+			return uc.launchSession(ctx, roomID, action.info, danmakuConn.Events())
+		case actionStop:
+			if active == nil {
+				// 理论上 Stop 仅在 running 阶段产生；若出现 nil 句柄，记录异常便于排查策略/接线回归。
+				log.Error("session stop decision without active session", "room", roomID)
+				return nil
+			}
+			active.cancel()
+			return active
+		case actionNone:
+			return active
+		default:
+			log.Error("unknown session action", "room", roomID, "action", action.kind.String())
+			return active
+		}
+	}
 
 	// roomInfoArrived 是弹幕推送与回退轮询两路房间信息的共同动作：
 	// 先应用到注册表，再投递给策略决策。
 	roomInfoArrived := func(roomInfo *RoomInfo) {
 		uc.roomRegistry.ApplyRoomInfo(ctx, roomID, roomInfo)
-		active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RoomInfoArrived(roomInfo))
+		active = applyDecision(active, policy.RoomInfoArrived(roomInfo))
 	}
 
 	for {
@@ -110,7 +129,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		case <-events:
 		// 录制会话已结束
 		case <-done:
-			active = uc.executeDecision(ctx, roomID, danmakuConn, nil, policy.SessionFinished())
+			active = applyDecision(nil, policy.SessionFinished())
 		// 弹幕连接推送了房间状态变化
 		case roomInfo := <-danmakuConn.RoomStateUpdates():
 			roomInfoArrived(roomInfo)
@@ -127,22 +146,9 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		// 管理后台变更了房间记录：重读最新录制开关投递给策略
 		case <-roomChange:
 			room := uc.roomRegistry.Room(roomID)
-			active = uc.executeDecision(ctx, roomID, danmakuConn, active, policy.RecordEnabledFlipped(room.RecordEnabled))
+			active = applyDecision(active, policy.RecordEnabledUpdated(room.RecordEnabled))
 		}
 	}
-}
-
-// executeDecision 执行会话策略的决策并返回（可能更新的）活跃会话句柄：
-// Start 以决策携带的房间信息启动会话协程；Stop 取消活跃会话（策略保证
-// Stop 只在会话录制中产生）；None 不做任何事。
-func (uc *RecorderUsecase) executeDecision(ctx context.Context, roomID int64, conn DanmakuConn, active *sessionHandle, decision policyDecision) *sessionHandle {
-	switch decision.kind {
-	case decisionStart:
-		return uc.launchSession(ctx, roomID, decision.info, conn.Events())
-	case decisionStop:
-		active.cancel()
-	}
-	return active
 }
 
 // nextPollDelay 返回下一次兜底轮询的延迟：pollInterval 加均匀抖动

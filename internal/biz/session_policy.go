@@ -1,22 +1,16 @@
 package biz
 
-// sessionPolicy 是会话启停策略的唯一归属。策略是电平触发的：每个输入
-// （房间信息到达、record_enabled 翻转、会话结束）先更新策略所知的世界状态，
-// 然后由同一个 decide 按唯一判据 shouldRecord（录制门控开着且最新信息
-// 在播）对照会话阶段裁决——该录而没有会话 → Start，在录而不该录 →
-// Stop，收尾中不产生新决策。监控协程（runMonitorConnection）的 select 分支只负
-// 责投递输入并执行返回的决策，自身不含任何启停判断。
+// sessionPolicy 归拢会话启停策略，只做纯决策：输入事件，输出
+// Start(info) / Stop / None，不接触 registry、存储或 goroutine。
 //
-// 停止是异步的（取消之后还有合并收尾），"收尾完成后恢复录制"因此
-// 不是立即执行的动作，而是由会话结束时点推导：被停止的会话经过收尾阶
-// 段，收尾完成时若世界状态已变回"该录"则立即恢复；自然结束的会话
-// （未经停止）自身就是"此刻录不下去"的最新证据，不凭陈旧的在播信息
-// 重启，等新到的世界状态再裁决。
+// 策略是电平触发的：每次输入先更新世界状态，再按 shouldRecord
+// （record_enabled 打开且 latest 表示在播）对照 phase 裁决。停止是异步
+// 的，因此 finishing 阶段只更新状态不直接重启，是否恢复留到
+// SessionFinished 时重算。
 //
-// 模块只做决策：不接触 RoomRegistry、存储或 goroutine，由单个监控协程
-// 独占，无需互斥锁。决策矩阵见 .scratch/session-policy/spec.md，矩阵
-// 每一行都有对应测试；另见 ADR-0001、ADR-0002 与 CONTEXT.md 的
-// "Session policy" 词条。
+// 详细决策矩阵见 .scratch/session-policy/spec.md；设计背景见
+// docs/adr/0001-session-policy-module.md 与
+// docs/adr/0002-level-triggered-session-policy.md。
 type sessionPolicy struct {
 	// recordEnabled 是房间的录制门控（配置是否录制该房间）。
 	recordEnabled bool
@@ -35,23 +29,34 @@ const (
 	phaseFinishing                     // 收尾中：已发送停止、尚未结束
 )
 
-// policyDecision 是会话策略对单个事件的裁决。输出字母表为
+// sessionAction 是会话策略对单个事件的裁决。输出字母表为
 // Start(info) / Stop / None；恢复不是独立决策——对监控而言它与开始
 // 是同一动作。
-type policyDecision struct {
-	kind decisionKind
-	// info 是 kind == decisionStart 时启动会话所使用的房间信息，其余
+type sessionAction struct {
+	kind actionKind
+	// info 是 kind == actionStart 时启动会话所使用的房间信息，其余
 	// 决策下为 nil。
 	info *RoomInfo
 }
 
-type decisionKind int
+type actionKind int
 
 const (
-	decisionNone decisionKind = iota
-	decisionStart
-	decisionStop
+	actionNone actionKind = iota
+	actionStart
+	actionStop
 )
+
+func (k actionKind) String() string {
+	switch k {
+	case actionStart:
+		return "Start"
+	case actionStop:
+		return "Stop"
+	default:
+		return "None"
+	}
+}
 
 // newSessionPolicy 创建会话策略，recordEnabled 为房间的初始录制开关状态。
 func newSessionPolicy(recordEnabled bool) *sessionPolicy {
@@ -66,42 +71,42 @@ func (p *sessionPolicy) shouldRecord() bool {
 // decide 按当前世界状态对照会话阶段做差额裁决，是房间信息到达与录制
 // 开关翻转两个入口共享的唯一决策逻辑。收尾阶段不产生决策：停止是异步的，
 // 收尾期间到达的输入只更新世界状态，恢复与否留待会话结束时裁决。
-func (p *sessionPolicy) decide() policyDecision {
+func (p *sessionPolicy) decide() sessionAction {
 	switch {
 	case p.phase == phaseIdle && p.shouldRecord():
 		p.phase = phaseRunning
-		return policyDecision{kind: decisionStart, info: p.latest}
+		return sessionAction{kind: actionStart, info: p.latest}
 	case p.phase == phaseRunning && !p.shouldRecord():
 		p.phase = phaseFinishing
-		return policyDecision{kind: decisionStop}
+		return sessionAction{kind: actionStop}
 	default:
-		return policyDecision{}
+		return sessionAction{}
 	}
 }
 
 // RoomInfoArrived 处理到达的房间信息——弹幕房间状态事件与回退轮询的共享
 // 入口。最新房间信息总是更新，然后重算裁决。
-func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) policyDecision {
+func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) sessionAction {
 	p.latest = info
 	return p.decide()
 }
 
-// RecordEnabledFlipped 处理房间录制开关状态的重评估信号（由监控的
+// RecordEnabledUpdated 处理房间录制开关状态的重评估信号（由监控的
 // roomChange 分支从注册表读取后投递）。值与当前状态一致时重算结果
 // 不变，从而吸收合并或重复的信号。
-func (p *sessionPolicy) RecordEnabledFlipped(recordEnabled bool) policyDecision {
+func (p *sessionPolicy) RecordEnabledUpdated(recordEnabled bool) sessionAction {
 	p.recordEnabled = recordEnabled
 	return p.decide()
 }
 
 // SessionFinished 处理会话结束事件。
 // 收尾阶段的会话结束时，若世界状态已变回"该录"则立即恢复。
-func (p *sessionPolicy) SessionFinished() policyDecision {
+func (p *sessionPolicy) SessionFinished() sessionAction {
 	stopped := p.phase == phaseFinishing
 	p.phase = phaseIdle
 	if stopped && p.shouldRecord() {
 		p.phase = phaseRunning
-		return policyDecision{kind: decisionStart, info: p.latest}
+		return sessionAction{kind: actionStart, info: p.latest}
 	}
-	return policyDecision{}
+	return sessionAction{}
 }
