@@ -76,6 +76,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 	poll := time.NewTimer(uc.nextPollDelay())
 	defer poll.Stop()
 
+	// 会话状态机：根据房间信息和录制开关，决定是否启动/停止录制会话。
 	policy := newSessionPolicy(uc.roomRegistry.Room(roomID).RecordEnabled)
 	var active *sessionHandle
 	applyDecision := func(active *sessionHandle, action sessionAction) *sessionHandle {
