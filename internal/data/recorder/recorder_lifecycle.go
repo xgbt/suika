@@ -47,7 +47,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 		// 之前已经录制过，已存在 meta.json, 更新 meta.json 的状态为 recording, 并更新标题和房间名
 		meta.Status = metaStatusRecording
 		meta.Title = session.Title
-		meta.RoomName = session.RoomName
+		meta.RoomName = session.StreamerName
 		return saveMeta(metaPath, meta)
 	}
 
@@ -58,7 +58,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 	}
 	meta := &sessionMeta{
 		RoomID:        session.RoomID,
-		RoomName:      session.RoomName,
+		RoomName:      session.StreamerName,
 		Title:         session.Title,
 		LiveStartTime: start.Unix(),
 		Status:        metaStatusRecording,

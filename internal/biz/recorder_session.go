@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-kratos/kratos/v3/log"
+	"github.com/samber/lo"
 )
 
 const (
@@ -39,7 +40,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	room := uc.roomRegistry.Room(roomID)
 	session := &RecordingSession{
 		RoomID:        roomID,
-		RoomName:      firstNonEmpty(room.StreamerName, info.StreamerName, fmt.Sprintf("%d", roomID)),
+		StreamerName:  lo.CoalesceOrEmpty(room.StreamerName, info.StreamerName, fmt.Sprintf("%d", roomID)),
 		Title:         info.Title,
 		LiveStartTime: info.LiveStartTime,
 	}
@@ -65,13 +66,4 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	}
 
 	uc.roomRegistry.FinishRecording(roomID)
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

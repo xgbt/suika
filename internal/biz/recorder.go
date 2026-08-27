@@ -89,7 +89,7 @@ type DanmakuEvent struct {
 // RecordingSession 是一次录制会话（同一房间的一次开播）。
 type RecordingSession struct {
 	RoomID        int64
-	RoomName      string
+	StreamerName  string
 	Title         string
 	LiveStartTime time.Time
 	Quality       StreamQuality

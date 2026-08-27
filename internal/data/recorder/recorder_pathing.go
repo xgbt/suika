@@ -43,7 +43,7 @@ func sessionPaths(recordRoot string, session *biz.RecordingSession) (string, str
 		start = time.Now()
 	}
 
-	roomDir := fmt.Sprintf("%d_%s", session.RoomID, sanitizeSegment(session.RoomName))
+	roomDir := fmt.Sprintf("%d_%s", session.RoomID, sanitizeSegment(session.StreamerName))
 	dir := filepath.Join(recordRoot, roomDir, start.Format("2006-01-02"))
 	base := start.Format("20060102_1504") + "_" + sanitizeSegment(session.Title)
 	return dir, base, nil

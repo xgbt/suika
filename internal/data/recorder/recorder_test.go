@@ -39,7 +39,7 @@ func newTestRepo(t *testing.T, c *conf.Recorder) *recorderRepo {
 func testSession() *biz.RecordingSession {
 	return &biz.RecordingSession{
 		RoomID:        42,
-		RoomName:      "tester",
+		StreamerName:  "tester",
 		Title:         "stream title",
 		LiveStartTime: time.Date(2026, 8, 11, 20, 0, 0, 0, time.UTC),
 		Quality:       biz.StreamQuality{Qn: 10000, Desc: "source"},
@@ -464,7 +464,7 @@ func TestPrepareSessionResumeUpdatesTitleVariants(t *testing.T) {
 
 	restart := *session
 	restart.Title = "a b" // 净化后基座相同
-	restart.RoomName = session.RoomName
+	restart.StreamerName = session.StreamerName
 	if err := repo.PrepareSession(ctx, &restart); err != nil {
 		t.Fatal(err)
 	}
