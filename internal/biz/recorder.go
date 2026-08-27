@@ -149,12 +149,12 @@ type RecorderUsecase struct {
 	repo         RecorderRepo
 	liveClient   LiveClient
 
-	pollInterval        time.Duration   // 拉取房间状态的兜底轮询间隔
-	rec                 ReconnectPolicy // 断流决策树使用的重连配置
-	cdnBackoffBase      time.Duration   // CDN 瞬时故障首次重试的延迟；测试中会调小。
-	redialDelay         time.Duration   // 监控重拨的停顿；测试中会调小。
-	offlineConfirmDelay time.Duration   // 下播确认相邻两次探测的间隔；测试中会调小。
-	stableResetAfter    time.Duration   // 泵送稳定录制超过该时长后重置重连预算；测试中会调小。
+	pollInterval          time.Duration   // 拉取房间状态的兜底轮询间隔
+	rec                   ReconnectPolicy // 断流决策树使用的重连配置
+	cdnBackoffBase        time.Duration   // CDN 瞬时故障首次重试的延迟；测试中会调小。
+	monitorReconnectDelay time.Duration   // 监控连接重连前的停顿；测试中会调小。
+	offlineConfirmDelay   time.Duration   // 下播确认相邻两次探测的间隔；测试中会调小。
+	stableResetAfter      time.Duration   // 泵送稳定录制超过该时长后重置重连预算；测试中会调小。
 }
 
 func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
@@ -169,10 +169,10 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 			ReconnectDelay:     defaultReconnectDelay,
 			CDNTransientBudget: defaultCDNTransientBudget,
 		},
-		cdnBackoffBase:      defaultCDNBackoffBase,
-		redialDelay:         monitorRedialDelay,
-		offlineConfirmDelay: defaultOfflineConfirmDelay,
-		stableResetAfter:    defaultStableResetAfter,
+		cdnBackoffBase:        defaultCDNBackoffBase,
+		monitorReconnectDelay: monitorRedialDelay,
+		offlineConfirmDelay:   defaultOfflineConfirmDelay,
+		stableResetAfter:      defaultStableResetAfter,
 	}
 	return uc
 }

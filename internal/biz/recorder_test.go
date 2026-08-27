@@ -109,7 +109,7 @@ func newTestUsecaseWithRooms(t *testing.T, rooms map[int64]*Room, repo RecorderR
 	uc := NewRecorderUsecase(&conf.Recorder{}, reg, repo, lc)
 	uc.rec.ReconnectDelay = time.Millisecond
 	uc.cdnBackoffBase = time.Millisecond
-	uc.redialDelay = time.Millisecond
+	uc.monitorReconnectDelay = time.Millisecond
 	uc.offlineConfirmDelay = time.Millisecond
 	if mutate != nil {
 		mutate(uc)
@@ -831,7 +831,7 @@ func TestRunReconcilesRoomAddAndRemove(t *testing.T) {
 	}
 	client := &connSignalingClient{}
 	uc := NewRecorderUsecase(&conf.Recorder{}, reg, &fakeRepo{}, client)
-	uc.redialDelay = time.Millisecond
+	uc.monitorReconnectDelay = time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

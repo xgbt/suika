@@ -300,7 +300,7 @@ App.Run
   retired 自行优雅收尾），record_enabled 翻转不增删协程、只投递重评估信号。
   rooms 为空时记 warn 空转，但对后续变更保持响应。
 - `monitorRoom`：`watchRoom` 返回错误且 ctx 未取消时记错误、
-  `registry.NoteError`，等 `redialDelay = 10s` 后重建弹幕连接
+  `registry.NoteError`，等 `monitorReconnectDelay = 10s` 后重建弹幕连接
   （防御性循环；当前 `liveClient.DanmakuConn` 构造不会失败，重连都在
   conn 内部完成）。
 - `watchRoom` 的 select 六路：ctx 取消（cancel 活动场次并等 done）/
@@ -999,7 +999,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
-| biz | `recorder_test.go`（24） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、拉流瞬时失败复查已下播静默收尾（不记错误）/仍在播按预算重试/复查失败终止、复查因 ctx 取消失败静默收尾（不记错误）、ctx 取消即停、nil/覆盖配置、抖动区间；**下线多次确认（单次下播探测不结束场次、在播单次即成立、持续失败耗尽 6 次记错误）、稳定录制重置预算（腿时长 ≥ 阈值且写入内容）**；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`redialDelay`/`offlineConfirmDelay`/`stableResetAfter` 字段供测试压缩时延 |
+| biz | `recorder_test.go`（24） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、拉流瞬时失败复查已下播静默收尾（不记错误）/仍在播按预算重试/复查失败终止、复查因 ctx 取消失败静默收尾（不记错误）、ctx 取消即停、nil/覆盖配置、抖动区间；**下线多次确认（单次下播探测不结束场次、在播单次即成立、持续失败耗尽 6 次记错误）、稳定录制重置预算（腿时长 ≥ 阈值且写入内容）**；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`monitorReconnectDelay`/`offlineConfirmDelay`/`stableResetAfter` 字段供测试压缩时延 |
 | biz | `room_test.go`（10） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；**registry Add/Update/Remove 实时同步与合并式变更通知（含退订）**、**RoomUsecase CRUD 落库后同步 registry（持久化失败不回写）**；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
 | biz | `session_policy_test.go`（4） | 决策矩阵逐行覆盖（`.scratch/session-policy/spec.md`）：RoomInfoArrived / RecordEnabledFlipped / SessionFinished 三种输入 × 阶段（idle / running / finishing）转移，收尾后续录（resumeOnFinish）语义（ADR-0001） |
 | biz | `account_test.go`（5） | fake PassportClient + CredentialRepo 脚本化：轮询确认才持久化凭据、未确认状态不落库、参数校验、账号状态（无凭据=已登出）、本地登出 |

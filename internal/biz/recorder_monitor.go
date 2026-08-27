@@ -56,7 +56,7 @@ func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChange <-chan str
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.roomRegistry.NoteError(roomID, err)
 		}
-		if utils.SleepCtx(ctx, uc.redialDelay) != nil {
+		if utils.SleepCtx(ctx, uc.monitorReconnectDelay) != nil {
 			return
 		}
 	}
