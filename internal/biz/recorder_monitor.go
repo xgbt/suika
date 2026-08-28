@@ -127,27 +127,23 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		roomInfoArrived(roomInfo)
 	}
 
-	// 监控刚启动（含每次重连）时立即探测一次，房间不存在等错误应尽快回填到管理后台，而不是让
-	// 用户长时间面对一个状态未知的新房间。
+	// 程序初始化时，先探测一次房间信息
 	probeRoomInfo("initial room info probe failed")
-
 	for {
-		// events / done 借助 nil 通道互斥启用：无活跃会话时排空弹幕事件通道；
-		// 有活跃会话时由录制协程独占消费事件，监控循环只监听其结束信号。
 		var events <-chan *DanmakuEvent
 		var done chan struct{}
-		if currSession == nil {
+		if currSession == nil { // 无录制, 但还是要丢弃弹幕事件
 			events = danmakuConn.Events()
-		} else {
+		} else { // 有录制, 要监听录制会话的结束信号
 			done = currSession.done
 		}
 
 		select {
-		// ctx 取消：优雅结束监控；若有活跃会话，先取消并等待其自然
-		// 结束，避免中途取消导致合并失败。
+		// ctx 取消：优雅结束监控
 		case <-ctx.Done():
 			if currSession != nil {
 				currSession.cancel()
+				// 等待会话收尾完成，避免中途取消导致合并失败。
 				<-currSession.done
 			}
 			return nil
