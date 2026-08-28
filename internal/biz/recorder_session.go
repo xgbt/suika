@@ -176,19 +176,25 @@ func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, session *Record
 			return
 		}
 		reconnects++
-		log.Warn("stream interrupted, reconnecting", "room", roomID, "err", recErr, "attempt", reconnects, "max", uc.rec.MaxReconnect, "delay", uc.rec.ReconnectDelay)
+		log.Warn(
+			"stream interrupted, reconnecting",
+			"room", roomID,
+			"err", recErr,
+			"attempt", reconnects,
+			"max", uc.rec.MaxReconnect,
+			"delay", uc.rec.ReconnectDelay,
+		)
 		if utils.SleepCtx(ctx, uc.rec.ReconnectDelay) != nil {
 			return
 		}
 	}
 }
 
-// probeLive 复查房间的直播状态并应用到注册表。单次探测说"在播"即成立
-// （录制优先）；"未开播"需要连续 offlineConfirmRounds 次确认，避免单次
-// 接口抖动或轮次切换瞬间把场次提前结束。探测失败不计入下播确认，累计
-// probeMaxAttempts 次仍无定论时记错误并返回 ok=false，调用方应结束场次；
-// 若失败由 ctx 取消引起（如监控已因下播事件取消了本场次），属正常结束
-// 路径，静默返回、不记错误。
+// probeLive 复查并落盘房态：
+// 1) 任意一次探测到在播立即返回 live=true；
+// 2) 需连续 offlineConfirmRounds 次未开播才判定下播；
+// 3) 探测失败不计入下播确认，超过 probeMaxAttempts 仍无结论则记错并返回 ok=false；
+// 4) 若由 ctx 取消导致失败，按正常收尾静默返回。
 func (uc *RecorderUsecase) probeLive(ctx context.Context) (live, ok bool) {
 	roomID := roomIDFromCtx(ctx)
 
@@ -197,6 +203,7 @@ func (uc *RecorderUsecase) probeLive(ctx context.Context) (live, ok bool) {
 	for attempt := range probeMaxAttempts {
 		if attempt > 0 {
 			if utils.SleepCtx(ctx, uc.offlineConfirmDelay) != nil {
+				// 监控或会话已取消，按正常结束路径返回。
 				return false, false
 			}
 		}
@@ -210,10 +217,12 @@ func (uc *RecorderUsecase) probeLive(ctx context.Context) (live, ok bool) {
 		}
 		uc.roomRegistry.ApplyRoomInfo(ctx, roomID, roomInfo)
 		if roomInfo.Live {
+			// 单次探测在播即可成立，录制优先。
 			return true, true
 		}
 		offlineStreak++
 		if offlineStreak >= offlineConfirmRounds {
+			// 连续多次未开播才判下播，降低接口抖动影响。
 			return false, true
 		}
 	}
