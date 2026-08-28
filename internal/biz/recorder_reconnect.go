@@ -17,7 +17,9 @@ const (
 )
 
 // runRecordingLoop 执行会话内的流录制和断流重连，直到直播结束或重连策略决定结束会话。
-func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, roomID int64, session *RecordingSession, events <-chan *DanmakuEvent) {
+func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, session *RecordingSession, events <-chan *DanmakuEvent) {
+	roomID := roomIDFromCtx(ctx)
+
 	reconnects := 0
 	cdnBudget := uc.rec.CDNTransientBudget
 	cdnAttempt := 0
@@ -37,8 +39,8 @@ func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, roomID int64, s
 			// 瞬时故障（CDN 404 等）最常见的原因是主播刚下播、流已被撤：
 			// 先复查房态，已下播则属正常结束，不记错误；仍在播则按 CDN
 			// 瞬时预算退避重试。
-			live, ok := uc.probeLive(ctx, roomID)
-			if !ok {
+			live, probeOK := uc.probeLive(ctx)
+			if !probeOK {
 				return
 			}
 			if !live {
@@ -86,8 +88,8 @@ func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, roomID int64, s
 		}
 
 		// 3. 探测直播状态
-		live, ok := uc.probeLive(ctx, roomID)
-		if !ok || !live {
+		live, probeOK := uc.probeLive(ctx)
+		if !probeOK || !live {
 			return
 		}
 
@@ -128,7 +130,9 @@ func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, roomID int64, s
 // probeMaxAttempts 次仍无定论时记错误并返回 ok=false，调用方应结束场次；
 // 若失败由 ctx 取消引起（如监控已因下播事件取消了本场次），属正常结束
 // 路径，静默返回、不记错误。
-func (uc *RecorderUsecase) probeLive(ctx context.Context, roomID int64) (live, ok bool) {
+func (uc *RecorderUsecase) probeLive(ctx context.Context) (live, ok bool) {
+	roomID := roomIDFromCtx(ctx)
+
 	var lastErr error
 	offlineStreak := 0
 	for attempt := range probeMaxAttempts {

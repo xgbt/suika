@@ -19,7 +19,7 @@ type sessionHandle struct {
 }
 
 // launchSession 异步启动录制会话，并返回其生命周期句柄。
-func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) *sessionHandle {
+func (uc *RecorderUsecase) launchSession(ctx context.Context, info *RoomInfo, events <-chan *DanmakuEvent) *sessionHandle {
 	sctx, cancel := context.WithCancel(ctx)
 	h := &sessionHandle{
 		cancel: cancel,
@@ -28,14 +28,16 @@ func (uc *RecorderUsecase) launchSession(ctx context.Context, roomID int64, info
 
 	go func() {
 		defer close(h.done)
-		uc.runSession(sctx, roomID, info, events)
+		uc.runSession(sctx, info, events)
 	}()
 
 	return h
 }
 
 // runSession 同步执行一次完整会话，包括准备、录制和收尾合并。
-func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *RoomInfo, events <-chan *DanmakuEvent) {
+func (uc *RecorderUsecase) runSession(ctx context.Context, info *RoomInfo, events <-chan *DanmakuEvent) {
+	roomID := roomIDFromCtx(ctx)
+
 	// 1. 准备会话目录和 meta.json
 	room := uc.roomRegistry.Room(roomID)
 	session := &RecordingSession{
@@ -52,7 +54,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, roomID int64, info *R
 	}
 
 	// 2. 录制循环：持续拉流直到连接结束，然后重新探测直播状态；要么重连并创建新分段，要么结束会话并保留已录内容。
-	uc.runRecordingLoop(ctx, roomID, session, events)
+	uc.runRecordingLoop(ctx, session, events)
 
 	// 3. 收尾脱离（可能已取消的）运行 context，保证关停期间合并标记
 	// 仍能落盘；遗留部分由下次启动时的 RecoverPending 接管。

@@ -33,6 +33,9 @@ func (h *monitorHandle) notifyRoomChange() {
 
 // launchMonitor 异步启动指定房间的监控，并返回其生命周期句柄。
 func (uc *RecorderUsecase) launchMonitor(ctx context.Context, roomID int64) *monitorHandle {
+	// 将 roomID 注入 ctx，便于 runMonitor 内部调用 roomIDFromCtx(ctx) 获取
+	ctx = withRoomID(ctx, roomID)
+
 	mctx, cancel := context.WithCancel(ctx)
 	h := &monitorHandle{
 		roomChange: make(chan struct{}, 1), // 缓冲 1，避免重复请求阻塞
@@ -42,17 +45,19 @@ func (uc *RecorderUsecase) launchMonitor(ctx context.Context, roomID int64) *mon
 
 	go func() {
 		defer close(h.done)
-		uc.runMonitor(mctx, h.roomChange, roomID)
+		uc.runMonitor(mctx, h.roomChange)
 	}()
 
 	return h
 }
 
 // runMonitor 维持房间的弹幕连接，断开后重拨，直到 ctx 被取消。
-func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChange <-chan struct{}, roomID int64) {
+func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChange <-chan struct{}) {
+	roomID := roomIDFromCtx(ctx)
+
 	for {
 		// 单次连接结束后重新拨号，直到 ctx 被取消。
-		if err := uc.runMonitorConnection(ctx, roomChange, roomID); err != nil && ctx.Err() == nil {
+		if err := uc.runMonitorConnection(ctx, roomChange); err != nil && ctx.Err() == nil {
 			log.Error("room monitor failed", "room", roomID, "err", err)
 			uc.roomRegistry.NoteError(roomID, err)
 		}
@@ -63,7 +68,9 @@ func (uc *RecorderUsecase) runMonitor(ctx context.Context, roomChange <-chan str
 }
 
 // runMonitorConnection 运行实际的房间监控连接，直到连接断开或 ctx 被取消。连接断开后返回错误，调用方可决定是否重拨
-func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange <-chan struct{}, roomID int64) error {
+func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange <-chan struct{}) error {
+	roomID := roomIDFromCtx(ctx)
+
 	// 1.1 开启弹幕连接：开播检测主通道，录制期间同时提供弹幕事件。
 	danmakuConn, err := uc.liveClient.DanmakuConn(ctx, roomID)
 	if err != nil {
@@ -76,13 +83,13 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 	poll := time.NewTimer(uc.nextPollDelay())
 	defer poll.Stop()
 
-	// 会话状态机：根据房间信息和录制开关，决定是否启动/停止录制会话。
+	// 2. 录制会话状态机：根据房间信息和录制开关，决定是否启动/停止录制会话。
 	policy := newSessionPolicy(uc.roomRegistry.Room(roomID).RecordEnabled)
-	var currentSession *sessionHandle
+	var currSession *sessionHandle
 	applyDecision := func(active *sessionHandle, action sessionAction) *sessionHandle {
 		switch action.kind {
 		case actionStart:
-			return uc.launchSession(ctx, roomID, action.info, danmakuConn.Events())
+			return uc.launchSession(ctx, action.info, danmakuConn.Events())
 		case actionStop:
 			if active == nil {
 				// 理论上 Stop 仅在 running 阶段产生；若出现 nil 句柄，记录异常便于排查策略/接线回归。
@@ -103,7 +110,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 	// 先应用到注册表，再投递给策略决策。
 	roomInfoArrived := func(roomInfo *RoomInfo) {
 		uc.roomRegistry.ApplyRoomInfo(ctx, roomID, roomInfo)
-		currentSession = applyDecision(currentSession, policy.RoomInfoArrived(roomInfo))
+		currSession = applyDecision(currSession, policy.RoomInfoArrived(roomInfo))
 	}
 
 	// probeRoomInfo 主动拉取一次房间信息：成功则推进会话策略，失败（如房间
@@ -129,26 +136,26 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		// 有活跃会话时由录制协程独占消费事件，监控循环只监听其结束信号。
 		var events <-chan *DanmakuEvent
 		var done chan struct{}
-		if currentSession == nil {
+		if currSession == nil {
 			events = danmakuConn.Events()
 		} else {
-			done = currentSession.done
+			done = currSession.done
 		}
 
 		select {
 		// ctx 取消：优雅结束监控；若有活跃会话，先取消并等待其自然
 		// 结束，避免中途取消导致合并失败。
 		case <-ctx.Done():
-			if currentSession != nil {
-				currentSession.cancel()
-				<-currentSession.done
+			if currSession != nil {
+				currSession.cancel()
+				<-currSession.done
 			}
 			return nil
 		// 无活跃会话：丢弃弹幕事件，防止陈旧事件积压混入下一个会话的录制
 		case <-events:
 		// 录制会话已结束
 		case <-done:
-			currentSession = applyDecision(nil, policy.SessionFinished())
+			currSession = applyDecision(nil, policy.SessionFinished())
 		// 弹幕连接推送了房间状态变化
 		case roomInfo := <-danmakuConn.RoomStateUpdates():
 			roomInfoArrived(roomInfo)
@@ -159,7 +166,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		// 管理后台变更了房间记录：重读最新录制开关投递给策略
 		case <-roomChange:
 			room := uc.roomRegistry.Room(roomID)
-			currentSession = applyDecision(currentSession, policy.RecordEnabledUpdated(room.RecordEnabled))
+			currSession = applyDecision(currSession, policy.RecordEnabledUpdated(room.RecordEnabled))
 		}
 	}
 }
