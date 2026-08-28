@@ -6,7 +6,7 @@ package biz
 // 策略是电平触发的：每次输入先更新世界状态，再按 shouldRecord
 // （record_enabled 打开且 latest 表示在播）对照 status 裁决。停止是异步
 // 的，因此 finishing 阶段只更新状态不直接重启，是否恢复留到
-// SessionFinished 时重算。
+// OnSessionFinished 时重算。
 //
 // 详细决策矩阵见 .scratch/session-policy/spec.md；设计背景见
 // docs/adr/0001-session-policy-module.md 与
@@ -86,24 +86,24 @@ func (p *sessionPolicy) decide() sessionAction {
 	}
 }
 
-// RoomInfoArrived 处理到达的房间信息——弹幕房间状态事件与回退轮询的共享
+// OnRoomInfo 处理到达的房间信息——弹幕房间状态事件与回退轮询的共享
 // 入口。最新房间信息总是更新，然后重算裁决。
-func (p *sessionPolicy) RoomInfoArrived(info *RoomInfo) sessionAction {
+func (p *sessionPolicy) OnRoomInfo(info *RoomInfo) sessionAction {
 	p.latest = info
 	return p.decide()
 }
 
-// RecordEnabledUpdated 处理房间录制开关状态的重评估信号（由监控的
+// OnRecordEnabled 处理房间录制开关状态的重评估信号（由监控的
 // roomChange 分支从注册表读取后投递）。值与当前状态一致时重算结果
 // 不变，从而吸收合并或重复的信号。
-func (p *sessionPolicy) RecordEnabledUpdated(recordEnabled bool) sessionAction {
+func (p *sessionPolicy) OnRecordEnabled(recordEnabled bool) sessionAction {
 	p.recordEnabled = recordEnabled
 	return p.decide()
 }
 
-// SessionFinished 处理会话结束事件。
+// OnSessionFinished 处理会话结束事件。
 // 收尾阶段的会话结束时，若世界状态已变回"该录"则立即恢复。
-func (p *sessionPolicy) SessionFinished() sessionAction {
+func (p *sessionPolicy) OnSessionFinished() sessionAction {
 	stopped := p.status == statusFinishing
 	p.status = statusIdle
 	if stopped && p.shouldRecord() {

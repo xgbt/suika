@@ -86,23 +86,23 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 	// 2. 录制会话状态机：根据房间信息和录制开关，决定是否启动/停止录制会话。
 	policy := newSessionPolicy(uc.roomRegistry.Room(roomID).RecordEnabled)
 	var currSession *sessionHandle
-	applyDecision := func(active *sessionHandle, action sessionAction) *sessionHandle {
+	applyDecision := func(session *sessionHandle, action sessionAction) *sessionHandle {
 		switch action.kind {
 		case actionStart:
 			return uc.launchSession(ctx, action.info, danmakuConn.Events())
 		case actionStop:
-			if active == nil {
+			if session == nil {
 				// 理论上 Stop 仅在 running 阶段产生；若出现 nil 句柄，记录异常便于排查策略/接线回归。
 				log.Error("session stop decision without active session", "room", roomID)
 				return nil
 			}
-			active.cancel()
-			return active
+			session.cancel()
+			return session
 		case actionNone:
-			return active
+			return session
 		default:
 			log.Error("unknown session action", "room", roomID, "action", action.kind.String())
-			return active
+			return session
 		}
 	}
 
@@ -110,7 +110,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 	// 先应用到注册表，再投递给策略决策。
 	roomInfoArrived := func(roomInfo *RoomInfo) {
 		uc.roomRegistry.ApplyRoomInfo(ctx, roomID, roomInfo)
-		currSession = applyDecision(currSession, policy.RoomInfoArrived(roomInfo))
+		currSession = applyDecision(currSession, policy.OnRoomInfo(roomInfo))
 	}
 
 	// probeRoomInfo 主动拉取一次房间信息：成功则推进会话策略，失败（如房间
@@ -155,7 +155,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		case <-events:
 		// 录制会话已结束
 		case <-done:
-			currSession = applyDecision(nil, policy.SessionFinished())
+			currSession = applyDecision(nil, policy.OnSessionFinished())
 		// 弹幕连接推送了房间状态变化
 		case roomInfo := <-danmakuConn.RoomStateUpdates():
 			roomInfoArrived(roomInfo)
@@ -166,7 +166,7 @@ func (uc *RecorderUsecase) runMonitorConnection(ctx context.Context, roomChange 
 		// 管理后台变更了房间记录：重读最新录制开关投递给策略
 		case <-roomChange:
 			room := uc.roomRegistry.Room(roomID)
-			currSession = applyDecision(currSession, policy.RecordEnabledUpdated(room.RecordEnabled))
+			currSession = applyDecision(currSession, policy.OnRecordEnabled(room.RecordEnabled))
 		}
 	}
 }
