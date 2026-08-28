@@ -4,7 +4,7 @@ package biz
 // Start(info) / Stop / None，不接触 registry、存储或 goroutine。
 //
 // 策略是电平触发的：每次输入先更新世界状态，再按 shouldRecord
-// （record_enabled 打开且 latest 表示在播）对照 phase 裁决。停止是异步
+// （record_enabled 打开且 latest 表示在播）对照 status 裁决。停止是异步
 // 的，因此 finishing 阶段只更新状态不直接重启，是否恢复留到
 // SessionFinished 时重算。
 //
@@ -16,17 +16,17 @@ type sessionPolicy struct {
 	recordEnabled bool
 	// latest 是最近一次到达的房间信息。
 	latest *RoomInfo
-	// phase 是会话阶段：空闲、录制中、收尾中（已发送停止、尚未结束）。
-	phase sessionPhase
+	// status 是会话状态：空闲、录制中、收尾中（已发送停止、尚未结束）。
+	status sessionStatus
 }
 
-// sessionPhase 是会话的三个阶段。
-type sessionPhase int
+// sessionStatus 是会话的三个状态。
+type sessionStatus int
 
 const (
-	phaseIdle      sessionPhase = iota // 空闲：无录制会话
-	phaseRunning                       // 录制中：有录制会话
-	phaseFinishing                     // 收尾中：已发送停止、尚未结束
+	statusIdle      sessionStatus = iota // 空闲：无录制会话
+	statusRunning                        // 录制中：有录制会话
+	statusFinishing                      // 收尾中：已发送停止、尚未结束
 )
 
 // sessionAction 是会话策略对单个事件的裁决。输出字母表为
@@ -60,7 +60,9 @@ func (k actionKind) String() string {
 
 // newSessionPolicy 创建会话策略，recordEnabled 为房间的初始录制开关状态。
 func newSessionPolicy(recordEnabled bool) *sessionPolicy {
-	return &sessionPolicy{recordEnabled: recordEnabled}
+	return &sessionPolicy{
+		recordEnabled: recordEnabled,
+	}
 }
 
 // shouldRecord 是策略的唯一判据：录制门控开着，且最新信息显示在播。
@@ -68,16 +70,16 @@ func (p *sessionPolicy) shouldRecord() bool {
 	return p.recordEnabled && p.latest != nil && p.latest.Live
 }
 
-// decide 按当前世界状态对照会话阶段做差额裁决，是房间信息到达与录制
+// decide 按当前世界状态对照会话状态做差额裁决，是房间信息到达与录制
 // 开关翻转两个入口共享的唯一决策逻辑。收尾阶段不产生决策：停止是异步的，
 // 收尾期间到达的输入只更新世界状态，恢复与否留待会话结束时裁决。
 func (p *sessionPolicy) decide() sessionAction {
 	switch {
-	case p.phase == phaseIdle && p.shouldRecord():
-		p.phase = phaseRunning
+	case p.status == statusIdle && p.shouldRecord():
+		p.status = statusRunning
 		return sessionAction{kind: actionStart, info: p.latest}
-	case p.phase == phaseRunning && !p.shouldRecord():
-		p.phase = phaseFinishing
+	case p.status == statusRunning && !p.shouldRecord():
+		p.status = statusFinishing
 		return sessionAction{kind: actionStop}
 	default:
 		return sessionAction{}
@@ -102,10 +104,10 @@ func (p *sessionPolicy) RecordEnabledUpdated(recordEnabled bool) sessionAction {
 // SessionFinished 处理会话结束事件。
 // 收尾阶段的会话结束时，若世界状态已变回"该录"则立即恢复。
 func (p *sessionPolicy) SessionFinished() sessionAction {
-	stopped := p.phase == phaseFinishing
-	p.phase = phaseIdle
+	stopped := p.status == statusFinishing
+	p.status = statusIdle
 	if stopped && p.shouldRecord() {
-		p.phase = phaseRunning
+		p.status = statusRunning
 		return sessionAction{kind: actionStart, info: p.latest}
 	}
 	return sessionAction{}

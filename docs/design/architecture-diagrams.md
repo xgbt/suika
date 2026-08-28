@@ -7,7 +7,7 @@
 | 宏观架构 | [系统/部署架构图](#1-系统部署架构图) | 划分服务边界：单进程、SQLite、录制文件目录、外部 B 站平台如何连接 |
 | 代码分层 | [应用架构图](#2-应用架构图) | 规定 server / service / biz / data 的调用层级与依赖方向 |
 | 动态交互 | [时序图](#3-时序图) | 梳理房间 CRUD、开播检测、录制会话的调用链，明确同步/异步与入参出参 |
-| 状态流转 | [状态机图](#4-状态机图) | Room 录制状态、会话策略阶段、meta.json 会话状态的变化与触发事件 |
+| 状态流转 | [状态机图](#4-状态机图) | Room 录制状态、会话策略状态、meta.json 会话状态的变化与触发事件 |
 | 数据建模 | [ER 图](#5-er-图) | rooms 表结构与录制会话（meta.json 逻辑实体）的一对多关系 |
 
 配套深读：`docs/design/bili-recorder.md`（录制器细节）、`docs/adr/0001-session-policy-module.md`（会话策略模块决策）。
@@ -222,7 +222,7 @@ sequenceDiagram
         M->>G: ApplyRoomInfo(roomID, info)
         G->>R: repo.UpdateRoom 回写（失败仅 warn，内存保留新值）
         M->>P: RoomInfoArrived(info)
-        P-->>M: Start(info)　（record_enabled 且 phase=idle 时）
+        P-->>M: Start(info)　（record_enabled 且 status=idle 时）
         M->>Sess: launchSession：启动会话协程
     and 兜底通道：轮询定时器到期
         M->>LC: GetRoomInfo(roomID)
@@ -335,9 +335,9 @@ stateDiagram-v2
 
 伴生的直播状态 `LiveStatus`：`UNSPECIFIED → PREPARING / LIVE`，由 `ApplyRoomInfo` 依据平台 `RoomInfo.Live` 双向切换。
 
-### 4.2 会话策略阶段 sessionPolicy.phase（ADR-0001）
+### 4.2 会话策略状态 sessionPolicy.status（ADR-0001）
 
-每个 Monitor 独享一个策略实例；阶段 + `record_enabled` 门控 + 最新房间信息共同裁决。"收尾中重新开启录制"由 `resumeOnFinish` 标志承接。
+每个 Monitor 独享一个策略实例；状态 + `record_enabled` 门控 + 最新房间信息共同裁决。"收尾中重新开启录制"由 `resumeOnFinish` 标志承接。
 
 ```mermaid
 stateDiagram-v2

@@ -6,7 +6,7 @@
 
 **Status:** resolved
 
-- [x] The session policy exists as one concrete biz module: it owns the enabled flag, the latest RoomInfo, the session phase (idle / running / finishing), and the resume-on-finish flag; it accepts the three inputs and returns Start(RoomInfo) / Stop / None per the feature spec's decision table. No interface, no registry or storage access, no mutex (owned by one Monitor goroutine).
+- [x] The session policy exists as one concrete biz module: it owns the enabled flag, the latest RoomInfo, the session status (idle / running / finishing), and the resume-on-finish flag; it accepts the three inputs and returns Start(RoomInfo) / Stop / None per the feature spec's decision table. No interface, no registry or storage access, no mutex (owned by one Monitor goroutine).
 - [x] Every row of the decision table in the feature spec has a test case, and the three must-preserve quirks are tested: stale-live resume, coalesced enable/disable signal netting out, and a stop trigger arriving while already finishing. Tests are pure and synchronous — no goroutines, no wall-clock waits, no fakes (prior art: the record loop's decision-tree tests).
 - [x] The Monitor's watch loop contains no session start/stop/resume decision logic: arms only apply room info to the registry, deliver inputs to the module, and execute its decisions; the enabled cache, latest-RoomInfo, and resume-flag locals are gone.
 - [x] The three existing watchRoom integration tests (offline control cancels the session; enabled gates sessions while live status stays visible; enable-during-stop resumes after finishing) pass unchanged as behaviour locks.
