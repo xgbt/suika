@@ -37,8 +37,6 @@ func (uc *RecorderUsecase) launchSession(ctx context.Context, info *RoomInfo, ev
 // runSession 同步执行一次完整会话，包括准备、录制和收尾合并。
 func (uc *RecorderUsecase) runSession(ctx context.Context, info *RoomInfo, events <-chan *DanmakuEvent) {
 	roomID := roomIDFromCtx(ctx)
-
-	// 1. 准备会话目录和 meta.json
 	room := uc.roomRegistry.Room(roomID)
 	session := &RecordingSession{
 		RoomID:        roomID,
@@ -46,6 +44,8 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, info *RoomInfo, event
 		Title:         info.Title,
 		LiveStartTime: info.LiveStartTime,
 	}
+
+	// 准备会话目录与 meta.json。
 	uc.roomRegistry.StartRecording(roomID)
 	if err := uc.repo.PrepareSession(ctx, session); err != nil {
 		log.Error("prepare session failed", "room", roomID, "err", err)
@@ -53,11 +53,10 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, info *RoomInfo, event
 		return
 	}
 
-	// 2. 录制循环：持续拉流直到连接结束，然后重新探测直播状态；要么重连并创建新分段，要么结束会话并保留已录内容。
+	// 持续录制，直到结束或被取消。
 	uc.runRecordingLoop(ctx, session, events)
 
-	// 3. 收尾脱离（可能已取消的）运行 context，保证关停期间合并标记
-	// 仍能落盘；遗留部分由下次启动时的 RecoverPending 接管。
+	// 收尾阶段使用脱离取消的 context，尽量保证 meta.json 的合并状态可落盘。
 	uc.roomRegistry.SetMerging(roomID)
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishGracePeriod)
 	defer cancel()

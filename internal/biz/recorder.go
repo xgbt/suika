@@ -86,7 +86,7 @@ type DanmakuEvent struct {
 	Raw      []byte // 原始 JSON Payload
 }
 
-// RecordingSession 是一次录制会话（同一房间的一次开播）。
+// RecordingSession 一次录制会话 DO
 type RecordingSession struct {
 	RoomID        int64
 	StreamerName  string
