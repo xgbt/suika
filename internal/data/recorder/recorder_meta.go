@@ -18,20 +18,20 @@ const (
 
 // sessionMeta 关键元数据，存储在 meta.json 中, 记录录制会话的状态、分段信息、错误日志等
 type sessionMeta struct {
-	RoomID        int64         `json:"room_id"`
-	RoomName      string        `json:"room_name"`
-	Title         string        `json:"title"`
-	LiveStartTime int64         `json:"live_start_time"`
-	EndTime       int64         `json:"end_time"`
-	Quality       qualityMeta   `json:"quality"`
-	Status        string        `json:"status"`
-	Segments      []segmentMeta `json:"segments"`
+	RoomID        int64         `json:"room_id"`         // 房间 ID
+	RoomName      string        `json:"room_name"`       // 主播名称（写入时的快照）
+	Title         string        `json:"title"`           // 直播标题（写入时的快照）
+	LiveStartTime int64         `json:"live_start_time"` // 开播时间（unix 秒）
+	EndTime       int64         `json:"end_time"`        // 收尾时间（unix 秒），录制中为 0
+	Quality       qualityMeta   `json:"quality"`         // 录制清晰度
+	Status        string        `json:"status"`          // 会话状态，取值见 metaStatus* 常量
+	Segments      []segmentMeta `json:"segments"`        // 已录制的分段列表
 	// MergedVideo / MergedDanmaku 是收尾合并产物的文件名；合并禁用、
 	// 尚未合并或合并失败时为空。
 	MergedVideo   string      `json:"merged_video,omitempty"`
 	MergedDanmaku string      `json:"merged_danmaku,omitempty"`
-	Errors        []errorMeta `json:"errors"`
-	UpdatedAt     int64       `json:"updated_at"`
+	Errors        []errorMeta `json:"errors"`     // 录制/合并过程中发生的错误
+	UpdatedAt     int64       `json:"updated_at"` // 最近一次保存时间（unix 秒），saveMeta 自动填充
 }
 
 // qualityMeta 记录录制的清晰度信息，存储在 meta.json 中
@@ -42,39 +42,42 @@ type qualityMeta struct {
 
 // segmentMeta 记录每个分段的元数据，存储在 meta.json 中
 type segmentMeta struct {
-	Part      int    `json:"part"`     // 分段编号
-	Video     string `json:"video"`    // 视频文件名
-	FLVKept   bool   `json:"flv_kept"` // 标记 FLV 文件是否保留
-	Danmaku   string `json:"danmaku"`
-	WallStart int64  `json:"wall_start"`
-	WallEnd   int64  `json:"wall_end"`
-	TsStart   int64  `json:"ts_start"`
-	TsEnd     int64  `json:"ts_end"`
-	Bytes     int64  `json:"bytes"` // 分段文件大小
+	Part      int    `json:"part"`       // 分段编号
+	Video     string `json:"video"`      // 视频文件名
+	FLVKept   bool   `json:"flv_kept"`   // 标记 FLV 文件是否保留
+	Danmaku   string `json:"danmaku"`    // 弹幕 JSONL 文件名，可能为空
+	WallStart int64  `json:"wall_start"` // 分段打开的墙钟时间（unix 秒）
+	WallEnd   int64  `json:"wall_end"`   // 分段关闭的墙钟时间（unix 秒）
+	TsStart   int64  `json:"ts_start"`   // 分段内首个标签的流内时间戳（毫秒）
+	TsEnd     int64  `json:"ts_end"`     // 分段内最后一个标签的流内时间戳（毫秒）
+	Bytes     int64  `json:"bytes"`      // 分段文件大小
 }
 
+// errorMeta 记录一次录制/合并过程中的错误，存储在 meta.json 中。
 type errorMeta struct {
-	Time  int64  `json:"time"`
-	Stage string `json:"stage"`
-	Msg   string `json:"msg"`
+	Time  int64  `json:"time"`  // 发生时间（unix 秒）
+	Stage string `json:"stage"` // 发生阶段，如 record / merge
+	Msg   string `json:"msg"`   // 错误信息
 }
 
+// danmuLine 是 biz.DanmakuEvent 落盘到弹幕 JSONL 的行结构，字段含义与
+// DanmakuEvent 一致。
 type danmuLine struct {
 	Ts       int64           `json:"ts"`                // 接收时刻（unix 毫秒）
 	SendTs   int64           `json:"send_ts,omitempty"` // 平台载荷中的发送时刻（unix 毫秒），未知省略
 	Type     string          `json:"type"`
 	UID      int64           `json:"uid,omitempty"`
 	Uname    string          `json:"uname,omitempty"`
-	Text     string          `json:"text,omitempty"`
-	Color    int32           `json:"color,omitempty"`
-	Mode     int32           `json:"mode,omitempty"`
-	GiftName string          `json:"gift_name,omitempty"`
-	Num      int32           `json:"num,omitempty"`
-	Price    int64           `json:"price,omitempty"`
-	CoinType string          `json:"coin_type,omitempty"`
-	Duration int32           `json:"duration,omitempty"`
-	Level    int32           `json:"level,omitempty"`
-	Raw      json.RawMessage `json:"raw,omitempty"`
+	Text     string          `json:"text,omitempty"`      // 弹幕文本 / SC 文本 / 进场特效文本
+	Color    int32           `json:"color,omitempty"`     // 弹幕颜色 / SC 颜色
+	Mode     int32           `json:"mode,omitempty"`      // 弹幕模式 / SC 模式
+	GiftName string          `json:"gift_name,omitempty"` // 礼物名称
+	Num      int32           `json:"num,omitempty"`       // 礼物/舰长数量
+	Price    int64           `json:"price,omitempty"`     // 礼物价格（金瓜子）/ SC 价格
+	CoinType string          `json:"coin_type,omitempty"` // 礼物类型：gold/silver
+	Duration int32           `json:"duration,omitempty"`  // SC 保留秒数
+	Level    int32           `json:"level,omitempty"`     // 舰长等级
+	Raw      json.RawMessage `json:"raw,omitempty"`       // 原始 JSON Payload
 }
 
 // loadMeta 读取 meta 文件

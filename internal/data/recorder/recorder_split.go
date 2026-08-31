@@ -15,8 +15,8 @@ const (
 
 // segmentSplitPolicy 负责分段判定策略：按大小和时长两个维度独立裁决。
 type segmentSplitPolicy struct {
-	maxSegmentBytes int64
-	segmentDuration time.Duration
+	maxSegmentBytes int64         // 分段大小上限，<= 0 时不按大小切分
+	segmentDuration time.Duration // 分段时长上限，<= 0 时不按时长切分
 }
 
 // shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先

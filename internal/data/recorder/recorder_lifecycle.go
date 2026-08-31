@@ -24,19 +24,12 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	r.statsFor(session.RoomID).reset() // 一次录制会话启动时，把写入进度清零
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 一次录制会话启动时, 把写入进度清零
-	ps, ok := r.stats[session.RoomID]
-	if !ok {
-		ps = &pumpStats{}
-		r.stats[session.RoomID] = ps
-	}
-	ps.reset()
-
-	// 读取 meta.json，
+	// 读取 meta.json
 	metaPath := filepath.Join(dir, base+".meta.json")
 	if meta, err := loadMeta(metaPath); err == nil {
 		if meta.Status == metaStatusDone && meta.MergedVideo != "" {
@@ -86,7 +79,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Recording
 	meta.Status = metaStatusMerging
 	meta.EndTime = time.Now().Unix()
 	meta.Title = session.Title
-	meta.Quality = qualityMeta{Qn: session.Quality.Qn, Desc: session.Quality.Desc}
+	meta.Quality = qualityMeta(session.Quality)
 	err = saveMeta(metaPath, meta)
 	r.mu.Unlock()
 	if err != nil {
@@ -198,7 +191,9 @@ func (r *recorderRepo) RecoverPending(ctx context.Context) error {
 			if meta.EndTime == 0 {
 				meta.EndTime = time.Now().Unix()
 			}
-			r.persistMeta(path, meta)
+			if err := r.persistMeta(path, meta); err != nil {
+				log.Warn("recover: persist meta failed", "path", path, "err", err)
+			}
 			if err := r.finalizeSession(ctx, path, meta); err != nil {
 				log.Warn("recover: finalize failed", "path", path, "err", err)
 			}

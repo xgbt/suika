@@ -17,9 +17,9 @@ import (
 // segmentHeaders 是分段层的头标签边界对象：维护缓存、检测序列头变化、
 // 以及为新分段提供可重注入的头标签集合。
 type segmentHeaders struct {
-	metadata *flv.Tag
-	videoSeq *flv.Tag
-	audioSeq *flv.Tag
+	metadata *flv.Tag // 最近一次 onMetaData 脚本标签
+	videoSeq *flv.Tag // 最近一次 AVC 序列头
+	audioSeq *flv.Tag // 最近一次 AAC 序列头
 }
 
 // changed 判断 tag 是否携带与缓存不同的序列头：流中途的序列头变化
@@ -69,11 +69,11 @@ type segmentFile struct {
 	vf        *os.File      // 视频文件句柄
 	df        *os.File      // 弹幕文件句柄
 	bw        *bufio.Writer // 视频文件缓冲写入器
-	hasStart  bool
-	startTs   int64
-	lastTs    int64
-	bytes     int64
-	wallStart time.Time
+	hasStart  bool          // 是否已写入首个正文标签
+	startTs   int64         // 首个正文标签的时间戳，切分时长以此为起点
+	lastTs    int64         // 最近一次写入标签的时间戳
+	bytes     int64         // 已写入字节数（含文件头与头标签）
+	wallStart time.Time     // 分段打开的墙钟时间
 }
 
 // openSegment 打开一个新的录制分段文件，返回 segmentFile 对象。
@@ -96,30 +96,36 @@ func openSegment(dir, base string, part int, header *flv.FileHeader, headers *se
 		bw:        bufio.NewWriterSize(vf, 1<<20),
 		wallStart: time.Now(),
 	}
-	// 写入 FLV 文件头
-	hb := header.Bytes()
-	if _, err := seg.bw.Write(hb); err != nil {
+	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
+	if err := seg.writeHeaderTags(header, headers); err != nil {
 		seg.close()
 		return nil, err
 	}
-	seg.bytes += int64(len(hb))
-	// 写入缓存的头标签
-	// 这些标签包括 metadata、video sequence header 和 audio sequence header，确保新分段文件可以独立播放。
+	return seg, nil
+}
+
+// writeHeaderTags 写入 FLV 文件头与缓存的头标签（metadata、video/audio
+// 序列头），使分段文件从第一帧起即可独立解码播放。
+func (s *segmentFile) writeHeaderTags(header *flv.FileHeader, headers *segmentHeaders) error {
+	hb := header.Bytes()
+	if _, err := s.bw.Write(hb); err != nil {
+		return err
+	}
+	s.bytes += int64(len(hb))
+
+	var writeErr error
 	headers.forEachReinject(func(tag *flv.Tag) {
-		if err != nil {
+		if writeErr != nil {
 			return
 		}
 		tb := tag.AppendTo(nil)
-		if _, err = seg.bw.Write(tb); err != nil {
-			seg.close()
+		if _, err := s.bw.Write(tb); err != nil {
+			writeErr = err
 			return
 		}
-		seg.bytes += int64(len(tb))
+		s.bytes += int64(len(tb))
 	})
-	if err != nil {
-		return nil, err
-	}
-	return seg, nil
+	return writeErr
 }
 
 // writeTag 将一个 FLV 标签写入分段文件，并更新分段文件的状态。

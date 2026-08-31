@@ -161,7 +161,7 @@ internal/data/
                          读写（tmp+rename 原子写）、分段簿记
                          （append/finishSegmentMeta）、errors 追加
   recorder_stats.go      pumpStats（原子 file/bytes/speed）与 SessionStats 读取
-  merge.go               纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
+  recorder_merge.go      纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
                          边界平移序列头时间戳）、弹幕 JSONL 拼接、
                          临时文件+字节数校验+原子改名，验证后才删源
   flv/                   FLV tag 解析子包：FileHeader / Tag 读写、关键帧与

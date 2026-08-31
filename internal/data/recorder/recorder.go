@@ -25,8 +25,8 @@ const (
 // 会话生命周期编排（Prepare/Finish/Recover）、recorder_meta.go meta.json
 // 的 schema 与 CRUD、recorder_segment.go 分段文件与头标签缓存、
 // recorder_split.go 切分策略、recorder_dedup.go CDN 循环吐流去重、
-// recorder_pathing.go 会话目录/文件名派生、recorder_stats.go 写入进度
-// 统计、merge.go 收尾合并。
+// recorder_paths.go 会话目录/文件名派生、recorder_stats.go 写入进度
+// 统计、recorder_merge.go 收尾合并。
 type recorderRepo struct {
 	// recordRoot 录制根目录
 	recordRoot string
@@ -39,9 +39,9 @@ type recorderRepo struct {
 	// healthFailRounds 连续健康检查失败轮数，达到该轮数则判定录制异常。
 	healthFailRounds int
 
-	mu        sync.Mutex
-	segmentMu sync.Mutex
-	stats     map[int64]*pumpStats
+	mu        sync.Mutex           // 保护 stats 与 meta.json 的读改写
+	segmentMu sync.Mutex           // 串行化分段编号探测与创建，避免并发录制泵选中同一 part
+	stats     map[int64]*pumpStats // 按房间 ID 索引的写入进度
 }
 
 func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {

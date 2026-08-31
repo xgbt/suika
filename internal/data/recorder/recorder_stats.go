@@ -10,9 +10,9 @@ import (
 // pumpStats 是 SessionStats 的内部实现，使用原子字段避免锁竞争。
 // 每个房间的录制守护进程在写入直播/录制状态时更新 pumpStats，然后通过 SessionStats() 读取快照
 type pumpStats struct {
-	file  atomic.Value // string
-	bytes atomic.Int64
-	speed atomic.Int64
+	file  atomic.Value // string，当前正在写入的分段文件名，可能为空
+	bytes atomic.Int64 // 当前分段已写入的字节数
+	speed atomic.Int64 // 当前下载速度（字节/秒）
 }
 
 func (ps *pumpStats) reset() {
@@ -37,6 +37,7 @@ func (ps *pumpStats) bytesWritten() int64 {
 	return ps.bytes.Load()
 }
 
+// snapshot 返回 pumpStats 当前状态的一次性拷贝。
 func (ps *pumpStats) snapshot() *biz.SessionStats {
 	file, _ := ps.file.Load().(string)
 	return &biz.SessionStats{
@@ -58,7 +59,7 @@ func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.Sessi
 	return ps.snapshot(), nil
 }
 
-// statsFor 返回指定房间的 pumpStats
+// statsFor 返回指定房间的 pumpStats，不存在时创建。
 func (r *recorderRepo) statsFor(roomID int64) *pumpStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()

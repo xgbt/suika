@@ -162,7 +162,7 @@ declared in `biz` and implemented in `data`:
   sleeps on risk itself.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
-  the session-end merge (`merge.go`). Implemented across `internal/data/recorder*.go`
+  the session-end merge (`recorder_merge.go`). Implemented across `internal/data/recorder*.go`
   (`recorder.go` session lifecycle + recovery, `recorder_segment.go`
   segment files, `recorder_session.go` `meta.json` bookkeeping,
   `recorder_stats.go` write-progress stats).

@@ -24,22 +24,22 @@ import (
 //
 // 铁律：输出先写临时文件，校验字节数无误后原子改名；只有改名成功后，
 // 调用方才允许删除源分段。任何失败都会清理临时文件并原样保留源文件。
-// 返回合并产物的文件名（相对 dir）；没有任何弹幕源时 danmuName 为 ""。
-func mergeSessionFiles(ctx context.Context, dir, base string, segs []segmentMeta) (videoName, danmuName string, err error) {
+// 返回合并产物的文件名（相对 dir）；没有任何弹幕源时 danmakuName 为 ""。
+func mergeSessionFiles(ctx context.Context, dir, base string, segs []segmentMeta) (videoName, danmakuName string, err error) {
 	videoName = base + ".flv"
 	if err := mergeFLV(ctx, dir, filepath.Join(dir, videoName), segs); err != nil {
 		return "", "", err
 	}
-	danmuName = base + ".danmu.jsonl"
-	hasDanmu, err := mergeDanmaku(ctx, dir, filepath.Join(dir, danmuName), segs)
+	danmakuName = base + ".danmu.jsonl"
+	hasDanmu, err := mergeDanmaku(ctx, dir, filepath.Join(dir, danmakuName), segs)
 	if err != nil {
 		_ = os.Remove(filepath.Join(dir, videoName))
 		return "", "", err
 	}
 	if !hasDanmu {
-		danmuName = ""
+		danmakuName = ""
 	}
-	return videoName, danmuName, nil
+	return videoName, danmakuName, nil
 }
 
 // mergeFLV 将各分段 FLV 合并写入 dst（临时文件 + 校验 + 原子改名）。
@@ -51,6 +51,7 @@ func mergeFLV(ctx context.Context, dir, dst string, segs []segmentMeta) error {
 	}
 	bw := bufio.NewWriterSize(out, 1<<20)
 	var written int64
+	// write 写入 b 并累计 written，供收尾时校验落盘字节数与目标文件大小一致。
 	write := func(b []byte) error {
 		n, werr := bw.Write(b)
 		written += int64(n)
