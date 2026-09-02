@@ -7,6 +7,11 @@ import (
 	"suika/internal/biz"
 )
 
+// NewSessionStatsRepo 将 RecorderRepo 转为 biz.SessionStatsRepo。
+func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
+	return repo.(biz.SessionStatsRepo)
+}
+
 // pumpStats 是 SessionStats 的内部实现，使用原子字段避免锁竞争。
 // 每个房间的录制守护进程在写入直播/录制状态时更新 pumpStats，然后通过 SessionStats() 读取快照
 type pumpStats struct {
