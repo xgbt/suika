@@ -146,8 +146,8 @@ func (s *segmentFile) writeTag(tag *flv.Tag) (int64, error) {
 // writeEvent 将一个弹幕事件写入分段文件，并更新分段文件的状态。
 func (s *segmentFile) writeEvent(ev *biz.DanmakuEvent) error {
 	line := danmuLine{
-		Ts:       ev.Ts.UnixMilli(),
-		SendTs:   ev.SendTs,
+		Ts:       ev.TS.UnixMilli(),
+		SendTs:   ev.SendTS,
 		Type:     ev.Type,
 		UID:      ev.UID,
 		Uname:    ev.Uname,

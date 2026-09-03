@@ -329,7 +329,7 @@ func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEv
 	if text == "" {
 		return nil
 	}
-	ev := &biz.DanmakuEvent{Ts: receivedAt, Type: biz.EventDanmaku, Text: text, Raw: raw, Mode: 1}
+	ev := &biz.DanmakuEvent{TS: receivedAt, Type: biz.EventDanmaku, Text: text, Raw: raw, Mode: 1}
 	if user, ok := m.Info[2].([]any); ok && len(user) >= 2 {
 		ev.UID = toInt64(user[0])
 		ev.Uname, _ = user[1].(string)
@@ -345,7 +345,7 @@ func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEv
 		}
 		if len(meta) > 4 {
 			if sendTs := toInt64(meta[4]); sendTs > 0 {
-				ev.SendTs = sendTs
+				ev.SendTS = sendTs
 			}
 		}
 	}
@@ -368,7 +368,7 @@ func parseGiftEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGift, Raw: raw,
+		TS: receivedAt, Type: biz.EventGift, Raw: raw,
 		UID: m.Data.UID, Uname: m.Data.Uname, GiftName: m.Data.GiftName,
 		Num: m.Data.Num, Price: m.Data.Price, CoinType: m.Data.CoinType,
 	}
@@ -391,7 +391,7 @@ func parseSuperChatEvent(raw json.RawMessage, receivedAt time.Time) *biz.Danmaku
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventSuperChat, Raw: raw,
+		TS: receivedAt, Type: biz.EventSuperChat, Raw: raw,
 		UID: m.Data.UID, Uname: m.Data.UserInfo.Uname,
 		Price: m.Data.Price, Text: m.Data.Message, Duration: m.Data.Time,
 	}
@@ -411,7 +411,7 @@ func parseGuardEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEven
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGuard, Raw: raw,
+		TS: receivedAt, Type: biz.EventGuard, Raw: raw,
 		UID: m.Data.UID, Uname: m.Data.Username, Level: m.Data.GuardLevel, Num: m.Data.Num,
 	}
 }
@@ -428,7 +428,7 @@ func parseEntryEffectEvent(raw json.RawMessage, receivedAt time.Time) *biz.Danma
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
+		TS: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
 		UID: m.Data.UID, Text: m.Data.CopyWriting,
 	}
 }

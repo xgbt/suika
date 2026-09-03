@@ -218,7 +218,7 @@ func TestParseDanmakuEvent(t *testing.T) {
 		t.Fatal("parseDanmakuEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, SendTs: 1755633600123, Type: biz.EventDanmaku, Text: "你好世界", Raw: raw,
+		TS: receivedAt, SendTS: 1755633600123, Type: biz.EventDanmaku, Text: "你好世界", Raw: raw,
 		UID: 42, Uname: "某用户", Mode: 6, Color: 16777215,
 	}
 	assertEventEqual(t, ev, want)
@@ -242,8 +242,8 @@ func TestParseDanmakuEventSendTs(t *testing.T) {
 			if ev == nil {
 				t.Fatal("parseDanmakuEvent returned nil")
 			}
-			if ev.SendTs != tc.want {
-				t.Fatalf("SendTs = %d, want %d", ev.SendTs, tc.want)
+			if ev.SendTS != tc.want {
+				t.Fatalf("SendTs = %d, want %d", ev.SendTS, tc.want)
 			}
 			if ev.Text != "text" || ev.UID != 1 {
 				t.Fatalf("other fields broken: %+v", ev)
@@ -291,7 +291,7 @@ func TestParseGiftEvent(t *testing.T) {
 		t.Fatal("parseGiftEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGift, Raw: raw,
+		TS: receivedAt, Type: biz.EventGift, Raw: raw,
 		UID: 7, Uname: "赠送者", GiftName: "辣条", Num: 3, Price: 100, CoinType: "silver",
 	}
 	assertEventEqual(t, ev, want)
@@ -308,7 +308,7 @@ func TestParseSuperChatEvent(t *testing.T) {
 		t.Fatal("parseSuperChatEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventSuperChat, Raw: raw,
+		TS: receivedAt, Type: biz.EventSuperChat, Raw: raw,
 		UID: 8, Uname: "醒目留言", Price: 50, Text: "主播好", Duration: 120,
 	}
 	assertEventEqual(t, ev, want)
@@ -325,7 +325,7 @@ func TestParseGuardEvent(t *testing.T) {
 		t.Fatal("parseGuardEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGuard, Raw: raw,
+		TS: receivedAt, Type: biz.EventGuard, Raw: raw,
 		UID: 9, Uname: "舰长", Level: 3, Num: 1,
 	}
 	assertEventEqual(t, ev, want)
@@ -342,7 +342,7 @@ func TestParseEntryEffectEvent(t *testing.T) {
 		t.Fatal("parseEntryEffectEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
+		TS: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
 		UID: 10, Text: "欢迎 <%大佬%> 进入房间",
 	}
 	assertEventEqual(t, ev, want)

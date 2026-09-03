@@ -308,10 +308,14 @@ func TestShouldSplit(t *testing.T) {
 		{"at duration keyframe splits", time.Minute, true, 1000 * ms, video(61_000*ms, key), true},
 		{"past duration inter within overrun waits", time.Minute, true, 0, video((minute+overrun-1)*ms, inter), false},
 		{"overrun exhausted forces split", time.Minute, true, 0, video((minute+overrun)*ms, inter), true},
-		{"overrun forces on audio too", time.Minute, true, 0,
-			&flv.Tag{Type: flv.TagAudio, Timestamp: (minute + overrun + 1) * ms, Data: audio}, true},
-		{"overrun forces on metadata too", time.Minute, true, 0,
-			&flv.Tag{Type: flv.TagScript, Timestamp: (minute + overrun) * ms, Data: script}, true},
+		{
+			"overrun forces on audio too", time.Minute, true, 0,
+			&flv.Tag{Type: flv.TagAudio, Timestamp: (minute + overrun + 1) * ms, Data: audio}, true,
+		},
+		{
+			"overrun forces on metadata too", time.Minute, true, 0,
+			&flv.Tag{Type: flv.TagScript, Timestamp: (minute + overrun) * ms, Data: script}, true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -575,12 +579,12 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	danmaku := &biz.DanmakuEvent{
-		Ts: time.Unix(123, 0), SendTs: 1755633600123, Type: biz.EventDanmaku,
+		TS: time.Unix(123, 0), SendTS: 1755633600123, Type: biz.EventDanmaku,
 		UID: 7, Uname: "user", Text: "你好", Color: 16777215, Mode: 1,
 		Raw: []byte(`{"info":"x"}`),
 	}
 	gift := &biz.DanmakuEvent{
-		Ts: time.Unix(124, 0), Type: biz.EventGift,
+		TS: time.Unix(124, 0), Type: biz.EventGift,
 		UID: 7, Uname: "user", GiftName: "火箭", Num: 2, Price: 1000, CoinType: "gold",
 	}
 	if err := seg.writeEvent(danmaku); err != nil {
@@ -1202,7 +1206,8 @@ func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
 
 	tags := append([]*flv.Tag{metaTag, videoSeq, audioSeq},
 		append(append(append(append(
-			blockA, blockB...), replayA...), replayB...), tail...)...)
+			blockA, blockB...,
+		), replayA...), replayB...), tail...)...)
 
 	stream := &biz.LiveStream{
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
@@ -1254,7 +1259,8 @@ func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq}
 	for i := range dupDisconnectStreak + 2 {
 		base := int64(i) * 100
-		tags = append(tags,
+		tags = append(
+			tags,
 			&flv.Tag{Type: flv.TagVideo, Timestamp: base, Data: loopKey},
 			&flv.Tag{Type: flv.TagVideo, Timestamp: base + 20, Data: loopInter},
 		)
@@ -1272,7 +1278,8 @@ func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
 		t.Fatalf("parts = %d, want 1", result.Parts)
 	}
 
-	want := []*flv.Tag{metaTag, videoSeq, audioSeq,
+	want := []*flv.Tag{
+		metaTag, videoSeq, audioSeq,
 		{Type: flv.TagVideo, Timestamp: 0, Data: loopKey},
 		{Type: flv.TagVideo, Timestamp: 20, Data: loopInter},
 	}

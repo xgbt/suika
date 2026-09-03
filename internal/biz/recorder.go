@@ -69,8 +69,8 @@ type LiveStream struct {
 // DanmakuEvent 是一条过滤后的弹幕房间事件。各字段的相关性取决于
 // Type；落盘的 JSON 形状由 RecorderRepo 决定。
 type DanmakuEvent struct {
-	Ts       time.Time // 接收时刻
-	SendTs   int64     // 平台载荷中的发送时刻（unix 毫秒）；未知为 0
+	TS       time.Time // 接收时刻
+	SendTS   int64     // 平台载荷中的发送时刻（unix 毫秒）；未知为 0
 	Type     string
 	UID      int64
 	Uname    string
@@ -230,7 +230,6 @@ func (uc *RecorderUsecase) Run(ctx context.Context) error {
 
 // reconcile 调和 RoomRegistry 快照与 monitors/stopping 的状态，确保每个房间的监控协程正确启动/停止。
 func (uc *RecorderUsecase) reconcile(ctx context.Context, monitors map[int64]*monitorHandle, stopping *[]*monitorHandle) {
-
 	// 回收 retired 中已完成收尾的被移除监控。
 	alive := (*stopping)[:0]
 	for _, h := range *stopping {
