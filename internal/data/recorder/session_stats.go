@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 
 	"suika/internal/biz"
+
+	"github.com/spf13/cast"
 )
 
 // NewSessionStatsRepo 将 RecorderRepo 转为 biz.SessionStatsRepo。
@@ -44,9 +46,8 @@ func (ps *pumpStats) bytesWritten() int64 {
 
 // snapshot 返回 pumpStats 当前状态的一次性拷贝。
 func (ps *pumpStats) snapshot() *biz.SessionStats {
-	file, _ := ps.file.Load().(string)
 	return &biz.SessionStats{
-		CurrentFile:   file,
+		CurrentFile:   cast.ToString(ps.file.Load()),
 		BytesWritten:  ps.bytes.Load(),
 		DownloadSpeed: ps.speed.Load(),
 	}
