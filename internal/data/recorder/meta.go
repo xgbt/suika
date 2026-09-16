@@ -59,7 +59,7 @@ type errorMeta struct {
 	Msg   string `json:"msg"`   // 错误信息
 }
 
-// loadMeta 读取 meta 文件
+// loadMeta 读取并解析 meta.json。
 func loadMeta(path string) (*sessionMeta, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -72,7 +72,7 @@ func loadMeta(path string) (*sessionMeta, error) {
 	return &meta, nil
 }
 
-// saveMeta 保存 meta 文件，使用原子写入方式，避免写入中断导致文件损坏。
+// saveMeta 原子替换 meta.json（写临时文件 → fsync → rename），并回填 meta.UpdatedAt。
 func saveMeta(path string, meta *sessionMeta) error {
 	meta.UpdatedAt = time.Now().Unix()
 	data, err := json.MarshalIndent(meta, "", "  ")
@@ -96,7 +96,7 @@ func saveMeta(path string, meta *sessionMeta) error {
 	return os.Rename(tmp, path)
 }
 
-// updateMeta 加载 meta.json，执行修改函数 fn，然后保存回 meta.json
+// updateMeta 持锁读改写 meta.json，失败只记日志。
 func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -105,13 +105,15 @@ func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	if err != nil {
 		return
 	}
+
 	fn(meta)
+
 	if err := saveMeta(metaPath, meta); err != nil {
 		log.Error("save meta failed", "path", metaPath, "err", err)
 	}
 }
 
-// persistMeta 保存 meta.json，使用原子写入方式，避免写入中断导致文件损坏。
+// persistMeta 持锁用整份 meta 覆盖 meta.json，会盖掉 updateMeta 的写入；错误向上返回。
 func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -119,7 +121,7 @@ func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
 	return saveMeta(metaPath, meta)
 }
 
-// appendSegmentMeta 将新分段信息追加到 meta.json
+// appendSegmentMeta 追加一条分段记录到 meta.json。
 func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *segmentFile) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Segments = append(meta.Segments, segmentMeta{
@@ -131,7 +133,7 @@ func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *segmentFile) {
 	})
 }
 
-// finishSegmentMeta 更新 meta.json 中指定分段的写入状态
+// finishSegmentMeta 回填指定分段的收尾字段（结束时间、时间戳、字节数）。
 func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *segmentFile) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		for i := range meta.Segments {
@@ -147,7 +149,7 @@ func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *segmentFile) {
 	})
 }
 
-// appendMetaError 将错误信息追加到 meta.json 中
+// appendMetaError 追加一条错误记录到 meta.json。
 func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
