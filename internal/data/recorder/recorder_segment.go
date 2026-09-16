@@ -143,6 +143,26 @@ func (s *segmentFile) writeTag(tag *flv.Tag) (int64, error) {
 	return int64(n), err
 }
 
+// danmuLine 是 biz.DanmakuEvent 落盘到弹幕 JSONL 的行结构，字段含义与
+// DanmakuEvent 一致。
+type danmuLine struct {
+	Ts       int64           `json:"ts"`                // 接收时刻（unix 毫秒）
+	SendTs   int64           `json:"send_ts,omitempty"` // 平台载荷中的发送时刻（unix 毫秒），未知省略
+	Type     string          `json:"type"`
+	UID      int64           `json:"uid,omitempty"`
+	Uname    string          `json:"uname,omitempty"`
+	Text     string          `json:"text,omitempty"`      // 弹幕文本 / SC 文本 / 进场特效文本
+	Color    int32           `json:"color,omitempty"`     // 弹幕颜色 / SC 颜色
+	Mode     int32           `json:"mode,omitempty"`      // 弹幕模式 / SC 模式
+	GiftName string          `json:"gift_name,omitempty"` // 礼物名称
+	Num      int32           `json:"num,omitempty"`       // 礼物/舰长数量
+	Price    int64           `json:"price,omitempty"`     // 礼物价格（金瓜子）/ SC 价格
+	CoinType string          `json:"coin_type,omitempty"` // 礼物类型：gold/silver
+	Duration int32           `json:"duration,omitempty"`  // SC 保留秒数
+	Level    int32           `json:"level,omitempty"`     // 舰长等级
+	Raw      json.RawMessage `json:"raw,omitempty"`       // 原始 JSON Payload
+}
+
 // writeEvent 将一个弹幕事件写入分段文件，并更新分段文件的状态。
 func (s *segmentFile) writeEvent(ev *biz.DanmakuEvent) error {
 	line := danmuLine{

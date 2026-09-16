@@ -67,16 +67,18 @@ func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 
 // PrepareSession 创建（或在重启后重新定位）会话目录和 meta.json。
 func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.RecordingSession) error {
-
 	// 获取目录和文件名前缀
 	dir, base, err := sessionPaths(r.recordRoot, session)
 	if err != nil {
 		return err
 	}
+
 	// 创建目录
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+
+	// 重置写入进度，确保新会话从零开始记录
 	r.statsFor(session.RoomID).reset() // 一次录制会话启动时，把写入进度清零
 
 	r.mu.Lock()
