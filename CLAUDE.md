@@ -32,9 +32,9 @@ from `buf.gen.yaml` / `buf.gen.config.yaml`, so nothing besides `buf` and
 
 All direct `go build` / `go test` / `go vet` invocations pass `-mod=mod`;
 vendor mode is never used. The sqlite driver (`mattn/go-sqlite3`) requires
-cgo. Setting `remux_enabled: true` with no `ffmpeg` in PATH fails startup
-by design (startup probe); the checked-in `config.yaml` ships with it
-`false`. There is no `third_party/` directory — buf resolves googleapis
+cgo. There are no external binary dependencies — recording and the
+session-end merge are pure Go; the checked-in `config.yaml` ships with
+`merge_enabled: true`. There is no `third_party/` directory — buf resolves googleapis
 from the BSR.
 
 Never hand-edit generated files: `*.pb.go`, `*_grpc.pb.go`, `*_http.pb.go`,
@@ -162,7 +162,7 @@ declared in `biz` and implemented in `data`:
   sleeps on risk itself.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
-  remux (`remux.go`). Implemented across `internal/data/recorder*.go`
+  the session-end merge (`recorder_merge.go`). Implemented across `internal/data/recorder*.go`
   (`recorder.go` session lifecycle + recovery, `recorder_segment.go`
   segment files, `recorder_session.go` `meta.json` bookkeeping,
   `recorder_stats.go` write-progress stats).
@@ -240,6 +240,8 @@ are `OUTPUT_ONLY` and must be populated by the service:
 - `record_status`: `RECORD_STATUS_UNSPECIFIED`, `RECORD_STATUS_IDLE`,
   `RECORD_STATUS_RECORDING`, `RECORD_STATUS_REMUXING`, or
   `RECORD_STATUS_ERROR`.
+- `granted_qn`, `granted_qn_desc`: the stream quality Bilibili actually
+  granted for the current recording session (zero/empty when not recording).
 - `current_file`, `bytes_written`, `download_speed_bps`,
   `session_started_at`, `last_error`, `create_time`, and `update_time`.
 
@@ -263,7 +265,10 @@ CRUD after each successful persist (`Add` / `Update` / `Remove`), and holds
 mutable live and recording state. The recorder updates the registry; room
 reads merge the registry snapshot with persisted fields. For an actively
 recording room, `SessionStatsRepo` best-effort supplies `current_file`,
-`bytes_written`, and `download_speed_bps`. CRUD changes take effect on the recorder in real time via
+`bytes_written`, and `download_speed_bps`; the granted stream quality
+(`granted_qn` / `granted_qn_desc`) is registry state itself —
+`SetStreamQuality` records what each opened stream actually got, and the
+quality resets when a session starts and when it finishes. CRUD changes take effect on the recorder in real time via
 its supervisor loop (no restart): created rooms are monitored immediately
 regardless of `record_enabled`, deleting a room stops its monitor immediately
 (gracefully stopping any active session, recorded files are kept), and
@@ -280,8 +285,9 @@ and the in-memory snapshot keeps the new values.
 
 `web/` is a React + TypeScript + Vite + Ant Design SPA and the only
 graphical consumer of the HTTP API (`RoomList`: table with runtime
-status, create/edit, recording on/off confirmation, delete confirmation,
-auto-refresh). The header also carries an account bar (`AccountBar`) with
+status, create, recording on/off confirmation, delete confirmation,
+auto-refresh; the recording badge of an actively recording room carries a
+tooltip with the granted quality). The header also carries an account bar (`AccountBar`) with
 a QR-login modal (`QRLoginModal`) for obtaining the Bilibili credential,
 plus status display and logout. It is decoupled from the Go build —
 `npm install` / `npm run dev`, with vite proxying `/v1` to
@@ -311,9 +317,9 @@ isolation: service tests fake the usecase, biz tests fake the repo, data
 tests exercise repo implementations at the storage boundary. Room service
 tests in `internal/service/room_test.go` exercise CRUD, pagination,
 optional query filtering, runtime merging, and validation against real sqlite
-(`t.TempDir()` db file, wired like `wireApp`; pass `RemuxEnabled: false`
-to skip the ffmpeg probe). Data-layer tests use the real filesystem and
-a scripted fake ffmpeg binary, so no real ffmpeg is needed.
+(`t.TempDir()` db file, wired like `wireApp`; pass `MergeEnabled: false`
+to disable the session-end merge). Data-layer tests use the real
+filesystem; the merge is pure Go, so nothing external is needed.
 
 ## Naming & error reasons
 
@@ -335,7 +341,7 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
   `configs/credentials.yaml` is no longer needed (see
   `credentials.example.yaml`). See ADR-0003.
 - Config governance: `config.yaml` holds only deployment-varying items
-  (addrs, database path, record root, concurrency cap, remux switch). The
+  (addrs, database path, record root, concurrency cap, merge switch). The
   `cookie` field is a deprecated placeholder kept for compatibility and is
   ignored — the credential comes from QR login. Behavioral tuning (segment
   length, reconnect policy, poll interval, stream quality) is code
@@ -347,11 +353,16 @@ a scripted fake ffmpeg binary, so no real ffmpeg is needed.
 `docs/design/bili-recorder.md` (Chinese) is the deep-dive on the
 recorder service: goroutine structure, room states, stream-drop decision
 tree, on-disk layout (`meta.json`, danmaku JSONL), risk control, config
-defaults, and failure handling. `docs/design/ddd-domain-model.md` is its
-companion DDD view: subdomains, domain class diagram, and the
-repository/ACL seam relationships. Both defer repo-level conventions
+defaults, and failure handling. `docs/design/architecture-diagrams.md` is
+its companion diagram set: system/app architecture, sequence diagrams for
+room CRUD / live detection / recording / query, state machines, and the ER
+view. `docs/design/recorder-comparison.md` is a research note comparing
+the core recording pipeline against the four upstream recorders in the
+workspace (BililiveRecorder / biliup / blrec(bilive) / DDTV) with
+candidate improvements — it is analysis, not decisions; anything adopted
+from it gets its own ADR. All three defer repo-level conventions
 (layering, naming, build commands) to this file — when changing template
-rules, keep the three consistent.
+rules, keep them consistent.
 
 ## Agent skills
 

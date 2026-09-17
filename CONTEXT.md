@@ -16,12 +16,16 @@ _Avoid_: recording (ambiguous between the act and the files), broadcast
 The per-room goroutine that holds the room's danmaku connection and translates room events into session starts and stops. Every room has exactly one monitor, regardless of its `record_enabled` flag.
 _Avoid_: watcher, poller (the fallback poll is only one of a monitor's inputs)
 
+**Monitor handle** (监控句柄):
+The supervisor-owned lifecycle handle for one Monitor. It carries cancellation, completion notification, and the buffered room-change signal. Monitor execution functions should receive only the dependencies they use (`context`, `roomID`, and the room-change channel), rather than the whole handle; the handle is not a container for Monitor business context.
+_Avoid_: using the handle as a general-purpose parameter bundle
+
 **Fallback poll** (回退轮询):
 Periodic polling of the platform's room-info API that backs up the danmaku connection as the live-detection channel.
 _Avoid_: heartbeat, health check
 
 **Session policy** (会话启停策略):
-The rules deciding when a room's session starts, stops, and resumes. Level-triggered: every input (room info arrival, `record_enabled` flip, session finish) re-evaluates one criterion — the record gate is open and the latest info says live — against the session phase (idle / running / finishing). A stopped session resumes when its finish completes if the world then says record; a naturally ended session waits for fresh world state.
+The rules deciding when a room's session starts, stops, and resumes. Level-triggered: every input (room info arrival, `record_enabled` flip, session finish) re-evaluates one criterion — the record gate is open and the latest info says live — against the session status (idle / running / finishing). A stopped session resumes when its finish completes if the world then says record; a naturally ended session waits for fresh world state.
 _Avoid_: scheduler, controller
 
 **Reconcile** (调和):

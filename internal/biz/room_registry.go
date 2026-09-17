@@ -81,23 +81,23 @@ func (reg *RoomRegistry) Room(roomID int64) Room {
 // 唤醒信号是合并式的：多次变更只会触发一次唤醒，订阅者应在收到唤醒后主动拉取最新房间列表。
 // 订阅者应在不再需要时调用取消订阅函数，否则会造成内存泄漏。
 func (reg *RoomRegistry) Subscribe() (<-chan struct{}, func()) {
-	changes := make(chan struct{}, 1)
+	wakeup := make(chan struct{}, 1)
 	reg.mu.Lock()
-	reg.subscribers = append(reg.subscribers, changes)
+	reg.subscribers = append(reg.subscribers, wakeup)
 	reg.mu.Unlock()
 
 	unsubscribe := func() {
 		reg.mu.Lock()
 		defer reg.mu.Unlock()
 		for i, sub := range reg.subscribers {
-			if sub == changes {
+			if sub == wakeup {
 				reg.subscribers = append(reg.subscribers[:i], reg.subscribers[i+1:]...)
 				return
 			}
 		}
 	}
 
-	return changes, unsubscribe
+	return wakeup, unsubscribe
 }
 
 // Add 在房间创建落库成功后登记到注册表，使其立即对录制守护进程可见。
@@ -196,6 +196,9 @@ func (reg *RoomRegistry) ApplyRoomInfo(ctx context.Context, roomID int64, info *
 	roomSnapshot := st.room
 	reg.mu.Unlock()
 
+	if reg.repo == nil {
+		return
+	}
 	if _, err := reg.repo.UpdateRoom(ctx, &roomSnapshot); err != nil {
 		log.Warn("room registry: persist room identity update failed", "room", roomID, "err", err)
 	}
@@ -216,9 +219,9 @@ func (reg *RoomRegistry) SetStreamQuality(roomID int64, quality StreamQuality) {
 	reg.setState(roomID, func(st *roomState) { st.quality = quality })
 }
 
-// SetRemuxing 将房间会话标记为收尾中（正在转封装）。
-func (reg *RoomRegistry) SetRemuxing(roomID int64) {
-	reg.setState(roomID, func(st *roomState) { st.recordStatus = RecordStatusRemuxing })
+// SetMerging 将房间会话标记为收尾中（正在合并分段）。
+func (reg *RoomRegistry) SetMerging(roomID int64) {
+	reg.setState(roomID, func(st *roomState) { st.recordStatus = RecordStatusMerging })
 }
 
 // FailRecording 将房间会话标记为失败并记录错误。

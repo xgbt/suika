@@ -88,10 +88,13 @@ const (
 	RecordStatus_RECORD_STATUS_IDLE RecordStatus = 1
 	// 正在录制直播流。
 	RecordStatus_RECORD_STATUS_RECORDING RecordStatus = 2
-	// 录制结束，正在合并文件。
+	// 已废弃：历史遗留值（当时的收尾是 ffmpeg 转封装）。保留以避免破坏性
+	// 变更，新流程使用 RECORD_STATUS_MERGING。
 	RecordStatus_RECORD_STATUS_REMUXING RecordStatus = 3
 	// 录制任务发生错误。
 	RecordStatus_RECORD_STATUS_ERROR RecordStatus = 4
+	// 录制结束，正在合并分段文件。
+	RecordStatus_RECORD_STATUS_MERGING RecordStatus = 5
 )
 
 // Enum value maps for RecordStatus.
@@ -102,6 +105,7 @@ var (
 		2: "RECORD_STATUS_RECORDING",
 		3: "RECORD_STATUS_REMUXING",
 		4: "RECORD_STATUS_ERROR",
+		5: "RECORD_STATUS_MERGING",
 	}
 	RecordStatus_value = map[string]int32{
 		"RECORD_STATUS_UNSPECIFIED": 0,
@@ -109,6 +113,7 @@ var (
 		"RECORD_STATUS_RECORDING":   2,
 		"RECORD_STATUS_REMUXING":    3,
 		"RECORD_STATUS_ERROR":       4,
+		"RECORD_STATUS_MERGING":     5,
 	}
 )
 
@@ -858,13 +863,14 @@ const file_room_v1_room_proto_rawDesc = "" +
 	"LiveStatus\x12\x1b\n" +
 	"\x17LIVE_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15LIVE_STATUS_PREPARING\x10\x01\x12\x14\n" +
-	"\x10LIVE_STATUS_LIVE\x10\x02*\x97\x01\n" +
+	"\x10LIVE_STATUS_LIVE\x10\x02*\xb2\x01\n" +
 	"\fRecordStatus\x12\x1d\n" +
 	"\x19RECORD_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12RECORD_STATUS_IDLE\x10\x01\x12\x1b\n" +
 	"\x17RECORD_STATUS_RECORDING\x10\x02\x12\x1a\n" +
 	"\x16RECORD_STATUS_REMUXING\x10\x03\x12\x17\n" +
-	"\x13RECORD_STATUS_ERROR\x10\x042\xf0\x03\n" +
+	"\x13RECORD_STATUS_ERROR\x10\x04\x12\x19\n" +
+	"\x15RECORD_STATUS_MERGING\x10\x052\xf0\x03\n" +
 	"\vRoomService\x12b\n" +
 	"\n" +
 	"CreateRoom\x12\x1a.room.v1.CreateRoomRequest\x1a\x1b.room.v1.CreateRoomResponse\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/rooms/create\x12]\n" +

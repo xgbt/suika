@@ -27,7 +27,7 @@ import (
 const (
 	// danmakuEventBuffer 是弹幕事件通道（events）的缓冲容量。
 	// 缓冲满时新事件直接丢弃（见 emit），因此容量要足够大，
-	// 能吸收录制端短暂变慢（如切分段、remux）时的事件峰值。
+	// 能吸收录制端短暂变慢（如切分段、收尾合并）时的事件峰值。
 	danmakuEventBuffer = 4096
 
 	// danmakuRoomStateUpdateBuffer 是房间状态通道（roomStateUpdates）的缓冲容量。
@@ -315,6 +315,9 @@ func (c *danmakuConn) emit(ev *biz.DanmakuEvent) {
 // parseDanmakuEvent 解析 DANMU_MSG：弹幕文本、发送者、模式与颜色。
 // 载荷形状是数组（info[0]=弹幕元数据, info[1]=文本, info[2]=用户信息），
 // 字段缺失或形状不符时返回 nil（该事件被丢弃）。
+// info[0][4] 是平台侧的发送时刻（unix 毫秒），比接收时刻更贴近视频时间
+// 轴（录制积压、网络抖动时差异明显），解析为 SendTs 供切片对齐；缺失或
+// 非正数时保持 0（未知）。
 func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent {
 	var m struct {
 		Info []any `json:"info"`
@@ -326,7 +329,7 @@ func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEv
 	if text == "" {
 		return nil
 	}
-	ev := &biz.DanmakuEvent{Ts: receivedAt, Type: biz.EventDanmaku, Text: text, Raw: raw, Mode: 1}
+	ev := &biz.DanmakuEvent{TS: receivedAt, Type: biz.EventDanmaku, Text: text, Raw: raw, Mode: 1}
 	if user, ok := m.Info[2].([]any); ok && len(user) >= 2 {
 		ev.UID = toInt64(user[0])
 		ev.Uname, _ = user[1].(string)
@@ -339,6 +342,11 @@ func parseDanmakuEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEv
 		}
 		if len(meta) > 3 {
 			ev.Color = int32(toInt64(meta[3]))
+		}
+		if len(meta) > 4 {
+			if sendTs := toInt64(meta[4]); sendTs > 0 {
+				ev.SendTS = sendTs
+			}
 		}
 	}
 	return ev
@@ -360,7 +368,7 @@ func parseGiftEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEvent
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGift, Raw: raw,
+		TS: receivedAt, Type: biz.EventGift, Raw: raw,
 		UID: m.Data.UID, Uname: m.Data.Uname, GiftName: m.Data.GiftName,
 		Num: m.Data.Num, Price: m.Data.Price, CoinType: m.Data.CoinType,
 	}
@@ -383,7 +391,7 @@ func parseSuperChatEvent(raw json.RawMessage, receivedAt time.Time) *biz.Danmaku
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventSuperChat, Raw: raw,
+		TS: receivedAt, Type: biz.EventSuperChat, Raw: raw,
 		UID: m.Data.UID, Uname: m.Data.UserInfo.Uname,
 		Price: m.Data.Price, Text: m.Data.Message, Duration: m.Data.Time,
 	}
@@ -403,7 +411,7 @@ func parseGuardEvent(raw json.RawMessage, receivedAt time.Time) *biz.DanmakuEven
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGuard, Raw: raw,
+		TS: receivedAt, Type: biz.EventGuard, Raw: raw,
 		UID: m.Data.UID, Uname: m.Data.Username, Level: m.Data.GuardLevel, Num: m.Data.Num,
 	}
 }
@@ -420,7 +428,7 @@ func parseEntryEffectEvent(raw json.RawMessage, receivedAt time.Time) *biz.Danma
 		return nil
 	}
 	return &biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
+		TS: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
 		UID: m.Data.UID, Text: m.Data.CopyWriting,
 	}
 }

@@ -109,7 +109,8 @@ func newTestUsecaseWithRooms(t *testing.T, rooms map[int64]*Room, repo RecorderR
 	uc := NewRecorderUsecase(&conf.Recorder{}, reg, repo, lc)
 	uc.rec.ReconnectDelay = time.Millisecond
 	uc.cdnBackoffBase = time.Millisecond
-	uc.redialDelay = time.Millisecond
+	uc.monitorReconnectDelay = time.Millisecond
+	uc.offlineConfirmDelay = time.Millisecond
 	if mutate != nil {
 		mutate(uc)
 	}
@@ -153,12 +154,12 @@ func liveInfo(roomID int64, live bool) *RoomInfo {
 	return &RoomInfo{RoomID: roomID, Live: live, Title: "t", StreamerName: "s"}
 }
 
-func TestRecordLoopStopsWhenOffline(t *testing.T) {
+func TestRunRecordingLoopStopsWhenOffline(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{BytesWritten: 10}, err: stderrors.New("eof")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, false)}}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
@@ -168,7 +169,7 @@ func TestRecordLoopStopsWhenOffline(t *testing.T) {
 	}
 }
 
-func TestRecordLoopReconnectsWhileLive(t *testing.T) {
+func TestRunRecordingLoopReconnectsWhileLive(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{
 		{result: &RecordingResult{}, err: stderrors.New("reset")},
 		{result: &RecordingResult{}, err: stderrors.New("eof")},
@@ -179,21 +180,21 @@ func TestRecordLoopReconnectsWhileLive(t *testing.T) {
 	}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 2 {
 		t.Fatalf("recordCalls = %d, want 2", repo.recordCalls)
 	}
 }
 
-func TestRecordLoopBudgetExhaustedKeepsContent(t *testing.T) {
+func TestRunRecordingLoopBudgetExhaustedKeepsContent(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{BytesWritten: 1}, err: stderrors.New("reset")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
 		u.rec.MaxReconnect = 1
 	})
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	// 首次尝试 + 1 次重连，随后放弃并保留已录内容。
 	if repo.recordCalls != 2 {
@@ -201,21 +202,21 @@ func TestRecordLoopBudgetExhaustedKeepsContent(t *testing.T) {
 	}
 }
 
-func TestRecordLoopAutoReconnectDisabled(t *testing.T) {
+func TestRunRecordingLoopAutoReconnectDisabled(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: stderrors.New("reset")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
 		u.rec.AutoReconnect = false
 	})
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
 	}
 }
 
-func TestRecordLoopCDNTransientUsesSeparateBudget(t *testing.T) {
+func TestRunRecordingLoopCDNTransientUsesSeparateBudget(t *testing.T) {
 	transient := fmt.Errorf("cdn 404: %w", ErrStreamTransient)
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: transient}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
@@ -224,7 +225,7 @@ func TestRecordLoopCDNTransientUsesSeparateBudget(t *testing.T) {
 		u.rec.CDNTransientBudget = 2
 	})
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	// 首次尝试 + 2 次 CDN 预算内重试。
 	if repo.recordCalls != 3 {
@@ -232,12 +233,12 @@ func TestRecordLoopCDNTransientUsesSeparateBudget(t *testing.T) {
 	}
 }
 
-func TestRecordLoopOpenLiveStreamFailureEndsSession(t *testing.T) {
+func TestRunRecordingLoopOpenLiveStreamFailureEndsSession(t *testing.T) {
 	repo := &fakeRepo{}
 	lc := &fakeLiveClient{openErrs: []error{fmt.Errorf("risk: %w", ErrRiskControl)}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 0 {
 		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
@@ -245,12 +246,12 @@ func TestRecordLoopOpenLiveStreamFailureEndsSession(t *testing.T) {
 	if lc.statusCalls != 0 {
 		t.Fatalf("statusCalls = %d, want 0 (no probe on non-transient open error)", lc.statusCalls)
 	}
-	if got := uc.registry.runtime(42).LastError; got == "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got == "" {
 		t.Fatalf("LastError is empty, want the open error recorded")
 	}
 }
 
-func TestRecordLoopOpenTransientOfflineEndsSessionQuietly(t *testing.T) {
+func TestRunRecordingLoopOpenTransientOfflineEndsSessionQuietly(t *testing.T) {
 	// 主播刚下播、CDN 已撤流：瞬时拉流失败 + 复查已下播 → 正常收尾，不记错误。
 	transient := fmt.Errorf("stream http status 404: %w", ErrStreamTransient)
 	repo := &fakeRepo{}
@@ -260,7 +261,7 @@ func TestRecordLoopOpenTransientOfflineEndsSessionQuietly(t *testing.T) {
 	}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 0 {
 		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
@@ -268,12 +269,12 @@ func TestRecordLoopOpenTransientOfflineEndsSessionQuietly(t *testing.T) {
 	if lc.openCalls != 1 {
 		t.Fatalf("openCalls = %d, want 1 (no retry after offline probe)", lc.openCalls)
 	}
-	if got := uc.registry.runtime(42).LastError; got != "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got != "" {
 		t.Fatalf("LastError = %q, want empty for a normal stream end", got)
 	}
 }
 
-func TestRecordLoopOpenTransientLiveRetriesWithinBudget(t *testing.T) {
+func TestRunRecordingLoopOpenTransientLiveRetriesWithinBudget(t *testing.T) {
 	// 瞬时拉流失败但仍在播：按 CDN 瞬时预算退避重试，耗尽后保内容收尾。
 	transient := fmt.Errorf("stream http status 404: %w", ErrStreamTransient)
 	repo := &fakeRepo{}
@@ -285,7 +286,7 @@ func TestRecordLoopOpenTransientLiveRetriesWithinBudget(t *testing.T) {
 		u.rec.CDNTransientBudget = 2
 	})
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	// 首次尝试 + 2 次预算内重试，每次失败后都复查房态。
 	if repo.recordCalls != 0 {
@@ -299,7 +300,7 @@ func TestRecordLoopOpenTransientLiveRetriesWithinBudget(t *testing.T) {
 	}
 }
 
-func TestRecordLoopOpenTransientProbeFailureEndsSession(t *testing.T) {
+func TestRunRecordingLoopOpenTransientProbeFailureEndsSession(t *testing.T) {
 	// 瞬时拉流失败且复查也失败：记错误并结束场次。
 	transient := fmt.Errorf("stream http status 404: %w", ErrStreamTransient)
 	repo := &fakeRepo{}
@@ -309,7 +310,7 @@ func TestRecordLoopOpenTransientProbeFailureEndsSession(t *testing.T) {
 	}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 0 {
 		t.Fatalf("recordCalls = %d, want 0", repo.recordCalls)
@@ -317,7 +318,7 @@ func TestRecordLoopOpenTransientProbeFailureEndsSession(t *testing.T) {
 	if lc.openCalls != 1 {
 		t.Fatalf("openCalls = %d, want 1", lc.openCalls)
 	}
-	if got := uc.registry.runtime(42).LastError; got == "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got == "" {
 		t.Fatalf("LastError is empty, want the probe error recorded")
 	}
 }
@@ -331,35 +332,134 @@ func TestProbeLiveContextCanceledEndsQuietly(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	live, ok := uc.probeLive(ctx, 42)
+	live, ok := uc.probeLive(withRoomID(ctx, 42))
 	if live || ok {
 		t.Fatalf("probeLive = (%v, %v), want (false, false)", live, ok)
 	}
-	if got := uc.registry.runtime(42).LastError; got != "" {
+	if got := uc.roomRegistry.runtime(42).LastError; got != "" {
 		t.Fatalf("LastError = %q, want empty for a ctx-canceled probe", got)
 	}
 }
 
-func TestRecordLoopProbeFailureEndsSession(t *testing.T) {
+func TestRunRecordingLoopProbeFailureEndsSession(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: stderrors.New("reset")}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{err: stderrors.New("probe down")}}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
-	uc.recordLoop(context.Background(), 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
 	}
 }
 
-func TestRecordLoopContextCancelStopsImmediately(t *testing.T) {
+func TestRunRecordingLoopOfflineRequiresRepeatedConfirmation(t *testing.T) {
+	// 首次探测说"未开播"但随后复活在播：单次下播结论不得结束场次，
+	// 应继续重连；之后连续多次"未开播"才确认下播并收尾。
+	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: stderrors.New("reset")}}}
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{
+		{info: liveInfo(42, false)}, // 第一次确认的首轮：未开播
+		{info: liveInfo(42, true)},  // 次轮复活在播 → 确认不成立，重连
+		{info: liveInfo(42, false)}, // 第二次确认起粘滞未开播 → 三轮后确认
+	}}
+	uc := newTestUsecase(t, repo, lc, nil)
+
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+
+	// 若单次下播即结束，recordCalls 只会是 1。
+	if repo.recordCalls != 2 {
+		t.Fatalf("recordCalls = %d, want 2 (single offline probe must not end the session)", repo.recordCalls)
+	}
+}
+
+// slowStableRepo 的每次泵送都睡眠一小段时间再产出内容，模拟"稳定录制
+// 了一段时间"的腿，用于触发预算重置。
+type slowStableRepo struct {
+	sleep       time.Duration
+	result      *RecordingResult
+	err         error
+	recordCalls int
+}
+
+func (r *slowStableRepo) PrepareSession(context.Context, *RecordingSession) error { return nil }
+
+func (r *slowStableRepo) RecordSession(_ context.Context, _ *RecordingSession, stream *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
+	if stream != nil && stream.Body != nil {
+		stream.Body.Close()
+	}
+	time.Sleep(r.sleep)
+	r.recordCalls++
+	return r.result, r.err
+}
+
+func (r *slowStableRepo) FinishSession(context.Context, *RecordingSession) error { return nil }
+func (r *slowStableRepo) RecoverPending(context.Context) error                   { return nil }
+
+func TestRunRecordingLoopStableRecordingResetsBudget(t *testing.T) {
+	// 泵送稳定录制超过阈值后重置重连预算：长直播中的偶发断流不再累计
+	// 到耗尽。MaxReconnect=1 下，不重置时第二次探测在播就会因预算耗尽
+	// 结束（recordCalls=2）；重置后可持续到第三次探测确认下播（=3）。
+	repo := &slowStableRepo{
+		sleep:  3 * time.Millisecond,
+		result: &RecordingResult{BytesWritten: 1024},
+		err:    stderrors.New("reset"),
+	}
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{
+		{info: liveInfo(42, true)},
+		{info: liveInfo(42, true)},
+		{info: liveInfo(42, false)},
+	}}
+	uc := newTestUsecase(t, repo, lc, func(u *RecorderUsecase) {
+		u.rec.MaxReconnect = 1
+		u.stableResetAfter = time.Millisecond
+	})
+
+	uc.runRecordingLoop(withRoomID(context.Background(), 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+
+	if repo.recordCalls != 3 {
+		t.Fatalf("recordCalls = %d, want 3 (stable legs must reset the reconnect budget)", repo.recordCalls)
+	}
+}
+
+func TestProbeLiveSingleLiveProbeSuffices(t *testing.T) {
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
+	uc := newTestUsecase(t, &fakeRepo{}, lc, nil)
+
+	live, ok := uc.probeLive(withRoomID(context.Background(), 42))
+	if !live || !ok {
+		t.Fatalf("probeLive = (%v, %v), want (true, true)", live, ok)
+	}
+	// "在播"单次探测即成立，不做多余确认。
+	if lc.statusCalls != 1 {
+		t.Fatalf("statusCalls = %d, want 1", lc.statusCalls)
+	}
+}
+
+func TestProbeLiveExhaustsAttemptsOnPersistentFailure(t *testing.T) {
+	// 探测持续失败：耗尽尝试次数后记错误并返回 (false, false)。
+	lc := &fakeLiveClient{statusQueue: []statusOutcome{{err: stderrors.New("probe down")}}}
+	uc := newTestUsecase(t, &fakeRepo{}, lc, nil)
+
+	live, ok := uc.probeLive(withRoomID(context.Background(), 42))
+	if live || ok {
+		t.Fatalf("probeLive = (%v, %v), want (false, false)", live, ok)
+	}
+	if lc.statusCalls != probeMaxAttempts {
+		t.Fatalf("statusCalls = %d, want %d", lc.statusCalls, probeMaxAttempts)
+	}
+	if got := uc.roomRegistry.runtime(42).LastError; got == "" {
+		t.Fatalf("LastError is empty, want the probe error recorded")
+	}
+}
+
+func TestRunRecordingLoopContextCancelStopsImmediately(t *testing.T) {
 	repo := &fakeRepo{recordQueue: []recordOutcome{{result: &RecordingResult{}, err: context.Canceled}}}
 	lc := &fakeLiveClient{statusQueue: []statusOutcome{{info: liveInfo(42, true)}}}
 	uc := newTestUsecase(t, repo, lc, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	uc.recordLoop(ctx, 42, &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
+	uc.runRecordingLoop(withRoomID(ctx, 42), &RecordingSession{RoomID: 42}, make(chan *DanmakuEvent))
 
 	if repo.recordCalls != 1 {
 		t.Fatalf("recordCalls = %d, want 1", repo.recordCalls)
@@ -383,25 +483,6 @@ func TestNewRecorderUsecaseNilConfig(t *testing.T) {
 	}
 }
 
-func TestNewRecorderUsecaseMaxConcurrent(t *testing.T) {
-	c := &conf.Recorder{MaxConcurrent: 2}
-	roomRepo := &fakeRoomRepo{rooms: map[int64]*Room{
-		1: {RoomID: 1, StreamerName: "a", RecordEnabled: true},
-		2: {RoomID: 2, StreamerName: "b"},
-	}}
-	reg, err := NewRoomRegistry(roomRepo)
-	if err != nil {
-		t.Fatalf("NewRoomRegistry() error = %v", err)
-	}
-	uc := NewRecorderUsecase(c, reg, &fakeRepo{}, &fakeLiveClient{})
-	if uc.maxConcurrent != 2 {
-		t.Fatalf("maxConcurrent = %d, want 2", uc.maxConcurrent)
-	}
-	if uc.slots == nil || cap(uc.slots) != 2 {
-		t.Fatalf("slots cap = %d, want 2", cap(uc.slots))
-	}
-}
-
 func TestNextPollDelayWithinBand(t *testing.T) {
 	base := 600 * time.Second
 	uc := &RecorderUsecase{pollInterval: base}
@@ -414,7 +495,7 @@ func TestNextPollDelayWithinBand(t *testing.T) {
 	}
 }
 
-// fakeDanmakuConn 是 watchRoom 测试用的脚本化 DanmakuConn。
+// fakeDanmakuConn 是 runMonitorConnection 测试用的脚本化 DanmakuConn。
 type fakeDanmakuConn struct {
 	events           chan *DanmakuEvent
 	roomStateUpdates chan *RoomInfo
@@ -448,15 +529,20 @@ func (c *fakeDanmakuConn) isClosed() bool {
 
 // watchClient 是完全经由弹幕连接驱动的 LiveClient；状态探测默认恒报未
 // 开播，pollInfo 非 nil 时固定返回该信息（回退轮询接线测试用），
+// pollErr 非 nil 时固定返回该错误（房间不存在等探测失败场景测试用），
 // pollCalls 计数探测次数。
 type watchClient struct {
 	conn      DanmakuConn
 	pollInfo  *RoomInfo
+	pollErr   error
 	pollCalls atomic.Int64
 }
 
 func (c *watchClient) GetRoomInfo(_ context.Context, roomID int64) (*RoomInfo, error) {
 	c.pollCalls.Add(1)
+	if c.pollErr != nil {
+		return nil, c.pollErr
+	}
 	if c.pollInfo != nil {
 		return c.pollInfo, nil
 	}
@@ -491,7 +577,7 @@ func (r *pumpBlockRepo) FinishSession(_ context.Context, session *RecordingSessi
 
 func (r *pumpBlockRepo) RecoverPending(context.Context) error { return nil }
 
-func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
+func TestRunMonitorConnectionCancelsSessionOnOfflineControl(t *testing.T) {
 	repo := &pumpBlockRepo{}
 	conn := &fakeDanmakuConn{
 		events:           make(chan *DanmakuEvent),
@@ -504,18 +590,18 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		if err := uc.watchRoom(ctx, make(chan struct{}, 1), 42); err != nil {
-			t.Errorf("watchRoom: %v", err)
+		if err := uc.runMonitorConnection(withRoomID(ctx, 42), make(chan struct{}, 1)); err != nil {
+			t.Errorf("runMonitorConnection: %v", err)
 		}
 	}()
 
 	conn.roomStateUpdates <- liveInfo(42, true)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start recording after live control event")
 	}
 
 	conn.roomStateUpdates <- liveInfo(42, false)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusIdle) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusIdle) {
 		t.Fatal("offline control event did not cancel the active session")
 	}
 	if len(repo.finished) != 1 {
@@ -526,10 +612,10 @@ func TestWatchRoomCancelsSessionOnOfflineControl(t *testing.T) {
 	<-watchDone
 }
 
-// TestWatchRoomGatesSessionsOnRecordEnabled 验证监控与录制的分离：未配置
+// TestRunMonitorConnectionGatesSessionsOnRecordEnabled 验证监控与录制的分离：未配置
 // 录制的房间照常接收房间状态事件（直播状态可见），但不开启会话；配置录
 // 制后若仍在播则立即开录，再关闭录制则立即停止。
-func TestWatchRoomGatesSessionsOnRecordEnabled(t *testing.T) {
+func TestRunMonitorConnectionGatesSessionsOnRecordEnabled(t *testing.T) {
 	repo := &pumpBlockRepo{}
 	conn := &fakeDanmakuConn{
 		events:           make(chan *DanmakuEvent),
@@ -537,39 +623,39 @@ func TestWatchRoomGatesSessionsOnRecordEnabled(t *testing.T) {
 	}
 	// 房间 42 初始未配置录制。
 	uc := newTestUsecaseWithRooms(t, map[int64]*Room{42: {RoomID: 42, StreamerName: "tester"}}, repo, &watchClient{conn: conn}, nil)
-	roomChanged := make(chan struct{}, 1)
+	signalCh := make(chan struct{}, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		if err := uc.watchRoom(ctx, roomChanged, 42); err != nil {
-			t.Errorf("watchRoom: %v", err)
+		if err := uc.runMonitorConnection(withRoomID(ctx, 42), signalCh); err != nil {
+			t.Errorf("runMonitorConnection: %v", err)
 		}
 	}()
 
 	// 未配置录制的房间收到开播事件：直播状态更新，但不得开启会话。
 	conn.roomStateUpdates <- liveInfo(42, true)
 	waitFor(t, "live status applied", func() bool {
-		return uc.registry.runtime(42).LiveStatus == LiveStatusOnAir
+		return uc.roomRegistry.runtime(42).LiveStatus == LiveStatusOnAir
 	})
 	time.Sleep(50 * time.Millisecond)
-	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
+	if got := uc.roomRegistry.runtime(42).RecordStatus; got != RecordStatusIdle {
 		t.Fatalf("room with record_enabled=false started recording: record status = %v", got)
 	}
 
 	// 开启录制：仍在播，应立即开录。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
-	roomChanged <- struct{}{}
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
+	signalCh <- struct{}{}
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start after turning on recording for a live room")
 	}
 
 	// 关闭录制：立即优雅停止。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
-	roomChanged <- struct{}{}
-	if !waitRecordStatus(uc.registry, 42, RecordStatusIdle) {
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester"})
+	signalCh <- struct{}{}
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusIdle) {
 		t.Fatal("turning off recording did not stop the active session")
 	}
 	if len(repo.finished) != 1 {
@@ -579,7 +665,7 @@ func TestWatchRoomGatesSessionsOnRecordEnabled(t *testing.T) {
 	// 关闭录制后的开播事件同样不得开启会话。
 	conn.roomStateUpdates <- liveInfo(42, true)
 	time.Sleep(50 * time.Millisecond)
-	if got := uc.registry.runtime(42).RecordStatus; got != RecordStatusIdle {
+	if got := uc.roomRegistry.runtime(42).RecordStatus; got != RecordStatusIdle {
 		t.Fatalf("room with record_enabled=false started recording again: record status = %v", got)
 	}
 
@@ -587,10 +673,10 @@ func TestWatchRoomGatesSessionsOnRecordEnabled(t *testing.T) {
 	<-watchDone
 }
 
-// TestWatchRoomFallbackPollStartsSession 验证回退轮询的端到端接线：弹幕
+// TestRunMonitorConnectionFallbackPollStartsSession 验证回退轮询的端到端接线：弹幕
 // 通道全程沉默，轮询定时器（经同一延迟旋钮模式压缩至毫秒级）触发房间信
 // 息拉取，信息投递给会话策略后启动会话。
-func TestWatchRoomFallbackPollStartsSession(t *testing.T) {
+func TestRunMonitorConnectionFallbackPollStartsSession(t *testing.T) {
 	repo := &pumpBlockRepo{}
 	conn := &fakeDanmakuConn{
 		events:           make(chan *DanmakuEvent),
@@ -606,13 +692,13 @@ func TestWatchRoomFallbackPollStartsSession(t *testing.T) {
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		if err := uc.watchRoom(ctx, make(chan struct{}, 1), 42); err != nil {
-			t.Errorf("watchRoom: %v", err)
+		if err := uc.runMonitorConnection(withRoomID(ctx, 42), make(chan struct{}, 1)); err != nil {
+			t.Errorf("runMonitorConnection: %v", err)
 		}
 	}()
 
 	// 弹幕房间状态事件一个不发：会话只能由"定时器 → 拉取 → 策略"路径启动。
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("fallback poll did not start the session")
 	}
 	if lc.pollCalls.Load() == 0 {
@@ -623,7 +709,43 @@ func TestWatchRoomFallbackPollStartsSession(t *testing.T) {
 	<-watchDone
 }
 
-// gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的转封装收尾，
+// TestRunMonitorConnectionImmediateProbeReportsError 验证监控启动时会立即探测一次房间
+// 信息（不等待兜底轮询的首个周期）：房间不存在等错误应尽快回填到 LastError，
+// 供管理后台发现。
+func TestRunMonitorConnectionImmediateProbeReportsError(t *testing.T) {
+	repo := &pumpBlockRepo{}
+	conn := &fakeDanmakuConn{
+		events:           make(chan *DanmakuEvent),
+		roomStateUpdates: make(chan *RoomInfo),
+	}
+	probeErr := stderrors.New("getInfoByRoom code=1 message=直播间不存在")
+	lc := &watchClient{conn: conn, pollErr: probeErr}
+	// 兜底轮询间隔保持默认（10 分钟量级）：错误必须来自启动时的立即探测，
+	// 而不是等待轮询定时器。
+	uc := newTestUsecase(t, repo, lc, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		if err := uc.runMonitorConnection(withRoomID(ctx, 42), make(chan struct{}, 1)); err != nil {
+			t.Errorf("runMonitorConnection: %v", err)
+		}
+	}()
+
+	waitFor(t, "initial probe error recorded", func() bool {
+		return uc.roomRegistry.runtime(42).LastError == probeErr.Error()
+	})
+	if lc.pollCalls.Load() != 1 {
+		t.Fatalf("pollCalls = %d, want 1 (immediate probe only)", lc.pollCalls.Load())
+	}
+
+	cancel()
+	<-watchDone
+}
+
+// gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的合并收尾，
 // 让测试可以稳定命中"会话正在停止中"的窗口。
 type gatedFinishRepo struct {
 	gate     chan struct{}
@@ -651,47 +773,47 @@ func (r *gatedFinishRepo) FinishSession(ctx context.Context, _ *RecordingSession
 
 func (r *gatedFinishRepo) RecoverPending(context.Context) error { return nil }
 
-// TestWatchRoomEnableRecordingDuringStopResumesSession 验证竞态路径：关闭
-// 录制触发的停止尚在收尾（转封装中）时又重新开启录制，收尾完成后若仍在播
+// TestRunMonitorConnectionEnableRecordingDuringStopResumesSession 验证竞态路径：关闭
+// 录制触发的停止尚在收尾（合并中）时又重新开启录制，收尾完成后若仍在播
 // 应立即恢复录制。
-func TestWatchRoomEnableRecordingDuringStopResumesSession(t *testing.T) {
+func TestRunMonitorConnectionEnableRecordingDuringStopResumesSession(t *testing.T) {
 	repo := &gatedFinishRepo{gate: make(chan struct{})}
 	conn := &fakeDanmakuConn{
 		events:           make(chan *DanmakuEvent),
 		roomStateUpdates: make(chan *RoomInfo),
 	}
 	uc := newTestUsecase(t, repo, &watchClient{conn: conn}, nil)
-	roomChanged := make(chan struct{}, 1)
+	signalCh := make(chan struct{}, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		if err := uc.watchRoom(ctx, roomChanged, 42); err != nil {
-			t.Errorf("watchRoom: %v", err)
+		if err := uc.runMonitorConnection(withRoomID(ctx, 42), signalCh); err != nil {
+			t.Errorf("runMonitorConnection: %v", err)
 		}
 	}()
 
 	conn.roomStateUpdates <- liveInfo(42, true)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not start recording")
 	}
 
-	// 关闭录制：会话进入收尾并阻塞在转封装 gate 上。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester"})
-	roomChanged <- struct{}{}
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRemuxing) {
+	// 关闭录制：会话进入收尾并阻塞在合并 gate 上。
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester"})
+	signalCh <- struct{}{}
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusMerging) {
 		t.Fatal("turning off recording did not drive the session into finishing")
 	}
 
 	// 收尾完成前重新开启录制。
-	uc.registry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
-	roomChanged <- struct{}{}
+	uc.roomRegistry.Update(Room{RoomID: 42, StreamerName: "tester", RecordEnabled: true})
+	signalCh <- struct{}{}
 
 	// 放行收尾：仍在播，应立即恢复录制（第二个会话）。
 	close(repo.gate)
-	if !waitRecordStatus(uc.registry, 42, RecordStatusRecording) {
+	if !waitRecordStatus(uc.roomRegistry, 42, RecordStatusRecording) {
 		t.Fatal("session did not resume after finishing completed while live")
 	}
 	if got := repo.prepares.Load(); got != 2 {
@@ -750,7 +872,7 @@ func TestRunReconcilesRoomAddAndRemove(t *testing.T) {
 	}
 	client := &connSignalingClient{}
 	uc := NewRecorderUsecase(&conf.Recorder{}, reg, &fakeRepo{}, client)
-	uc.redialDelay = time.Millisecond
+	uc.monitorReconnectDelay = time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

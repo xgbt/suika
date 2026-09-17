@@ -211,17 +211,45 @@ func assertEventEqual(t *testing.T, got *biz.DanmakuEvent, want biz.DanmakuEvent
 }
 
 func TestParseDanmakuEvent(t *testing.T) {
-	raw := json.RawMessage(`{"cmd":"DANMU_MSG","info":[[0,6,25,16777215],"你好世界",[42,"某用户"]]}`)
+	raw := json.RawMessage(`{"cmd":"DANMU_MSG","info":[[0,6,25,16777215,1755633600123],"你好世界",[42,"某用户"]]}`)
 
 	ev := parseDanmakuEvent(raw, receivedAt)
 	if ev == nil {
 		t.Fatal("parseDanmakuEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventDanmaku, Text: "你好世界", Raw: raw,
+		TS: receivedAt, SendTS: 1755633600123, Type: biz.EventDanmaku, Text: "你好世界", Raw: raw,
 		UID: 42, Uname: "某用户", Mode: 6, Color: 16777215,
 	}
 	assertEventEqual(t, ev, want)
+}
+
+func TestParseDanmakuEventSendTs(t *testing.T) {
+	// 发送时刻缺失、非数字或非正数时保持未知（0），不影响其余字段。
+	cases := map[string]struct {
+		raw  json.RawMessage
+		want int64
+	}{
+		"meta shorter than 5":  {json.RawMessage(`{"info":[[0,1,0,0],"text",[1,"n"]]}`), 0},
+		"send ts zero":         {json.RawMessage(`{"info":[[0,1,0,0,0],"text",[1,"n"]]}`), 0},
+		"send ts negative":     {json.RawMessage(`{"info":[[0,1,0,0,-5],"text",[1,"n"]]}`), 0},
+		"send ts not a number": {json.RawMessage(`{"info":[[0,1,0,0,"x"],"text",[1,"n"]]}`), 0},
+		"send ts as string":    {json.RawMessage(`{"info":[[0,1,0,0,"1755633600123"],"text",[1,"n"]]}`), 1755633600123},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ev := parseDanmakuEvent(tc.raw, receivedAt)
+			if ev == nil {
+				t.Fatal("parseDanmakuEvent returned nil")
+			}
+			if ev.SendTS != tc.want {
+				t.Fatalf("SendTs = %d, want %d", ev.SendTS, tc.want)
+			}
+			if ev.Text != "text" || ev.UID != 1 {
+				t.Fatalf("other fields broken: %+v", ev)
+			}
+		})
+	}
 }
 
 func TestParseDanmakuEventStringUID(t *testing.T) {
@@ -263,7 +291,7 @@ func TestParseGiftEvent(t *testing.T) {
 		t.Fatal("parseGiftEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGift, Raw: raw,
+		TS: receivedAt, Type: biz.EventGift, Raw: raw,
 		UID: 7, Uname: "赠送者", GiftName: "辣条", Num: 3, Price: 100, CoinType: "silver",
 	}
 	assertEventEqual(t, ev, want)
@@ -280,7 +308,7 @@ func TestParseSuperChatEvent(t *testing.T) {
 		t.Fatal("parseSuperChatEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventSuperChat, Raw: raw,
+		TS: receivedAt, Type: biz.EventSuperChat, Raw: raw,
 		UID: 8, Uname: "醒目留言", Price: 50, Text: "主播好", Duration: 120,
 	}
 	assertEventEqual(t, ev, want)
@@ -297,7 +325,7 @@ func TestParseGuardEvent(t *testing.T) {
 		t.Fatal("parseGuardEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventGuard, Raw: raw,
+		TS: receivedAt, Type: biz.EventGuard, Raw: raw,
 		UID: 9, Uname: "舰长", Level: 3, Num: 1,
 	}
 	assertEventEqual(t, ev, want)
@@ -314,7 +342,7 @@ func TestParseEntryEffectEvent(t *testing.T) {
 		t.Fatal("parseEntryEffectEvent returned nil")
 	}
 	want := biz.DanmakuEvent{
-		Ts: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
+		TS: receivedAt, Type: biz.EventEntryEffect, Raw: raw,
 		UID: 10, Text: "欢迎 <%大佬%> 进入房间",
 	}
 	assertEventEqual(t, ev, want)

@@ -4,16 +4,16 @@ A Bilibili live-stream recording service built on
 [Kratos](https://github.com/go-kratos/kratos) (go-kratos/v3). Suika
 monitors a set of live rooms and, the moment a streamer goes live,
 records the original-quality FLV stream plus every danmaku event to
-disk, splits long streams into segments, and remuxes the result to MP4
-with container metadata. Rooms are managed through a CRUD API and a web
-dashboard.
+disk, splits long streams into segments, and merges each finished
+session's segments into a single FLV file (pure Go, no external tools).
+Rooms are managed through a CRUD API and a web dashboard.
 
 ## Features
 
 - **Live detection**: resident danmaku WebSocket per room (reconnect +
   room-state re-probe built in), with a jittered polling fallback.
-- **Recording**: FLV pulled and parsed in pure Go — no ffmpeg involved
-  while recording, so files stay valid even if the process dies.
+- **Recording**: FLV pulled and parsed in pure Go — no external tools
+  involved at all, so files stay valid even if the process dies.
 - **Segmentation**: time-based splits on video keyframes (default
   120 min/part); every part gets the stream headers re-injected and is
   independently playable.
@@ -21,9 +21,10 @@ dashboard.
   guard purchases, and entry effects (raw payload kept).
 - **Resilience**: auto-reconnect on stream drops (separate
   CDN-transient budget), health watchdog, crash-safe `meta.json`,
-  startup recovery for interrupted remuxes.
-- **Remux**: FLV → MP4 via ffmpeg stream copy, with
-  title/artist/date container metadata (optional; requires ffmpeg).
+  startup recovery for interrupted merges.
+- **Session merge**: at session end, all segment FLVs are merged into a
+  single file and the danmaku JSONL files concatenated — pure Go, no
+  ffmpeg (default on; set `merge_enabled: false` to keep the parts).
 - **Room management**: sqlite-backed room CRUD API (HTTP + gRPC) and a
   React + Ant Design dashboard.
 - **Risk-control handling**: WBI signing, buvid fingerprints, one-shot
@@ -32,9 +33,7 @@ dashboard.
 ## Requirements
 
 - Go 1.25+ with **cgo** (the sqlite driver is `mattn/go-sqlite3`).
-- `ffmpeg` on `PATH` if you enable remux — with `remux_enabled: true`
-  and no ffmpeg, startup fails by design. The checked-in
-  `configs/config.yaml` ships with it `false`.
+- No external binaries: recording and the session merge are pure Go.
 - Node.js only if you want to run the web dashboard.
 
 ## Quick start
@@ -42,16 +41,16 @@ dashboard.
 ```bash
 make init        # once: installs wire + buf
 
-cp configs/credentials.example.yaml configs/credentials.yaml
-# put your real Bilibili cookie (must include SESSDATA) into
-# configs/credentials.yaml — it is gitignored and auto-merged at startup.
-# Optional: set remux_enabled: true in configs/config.yaml if ffmpeg is installed.
-
 go run ./cmd/suika -conf ./configs     # HTTP :8000, gRPC :9000
 ```
 
-Add a room to monitor (the recorder picks new rooms up on the next
-restart):
+The Bilibili login cookie is not a config item — open the web dashboard
+(`web/`, see below) and scan the QR code in the header's account bar.
+The credential is persisted in the sqlite `credentials` table and
+hot-swapped into the recorder without a restart (source quality requires
+a logged-in account).
+
+Add a room to monitor (the recorder picks it up immediately, no restart):
 
 ```bash
 curl -X POST localhost:8000/v1/rooms/create \
@@ -63,8 +62,8 @@ each session's `meta.json` is the history source of truth.
 
 ## API
 
-All five RPCs are exposed on both HTTP and gRPC; HTTP routes are all
-`POST` with a JSON body:
+`RoomService`'s five RPCs are exposed on both HTTP and gRPC; HTTP routes
+are all `POST` with a JSON body:
 
 | RPC | HTTP route | Purpose |
 |---|---|---|
@@ -75,7 +74,20 @@ All five RPCs are exposed on both HTTP and gRPC; HTTP routes are all
 | DeleteRoom | `POST /v1/rooms/delete` | Delete a room |
 
 `CreateRoom` only requires `room_id` and `record_enabled`. The streamer name
-and room title are output-only and are filled from Bilibili room information.
+and room title are output-only and are filled from Bilibili room information;
+the runtime fields (`live_status`, `record_status`, write progress, the
+granted stream quality `granted_qn` / `granted_qn_desc`, …) are output-only
+as well. `UpdateRoom` only toggles `record_enabled` via `update_mask`.
+
+`AccountService` manages the Bilibili account the recorder acts as
+(`api/account/v1/account.proto`, also HTTP + gRPC):
+
+| RPC | HTTP route | Purpose |
+|---|---|---|
+| CreateQRLogin | `POST /v1/account/qr-login/create` | Generate a QR login session (~180s expiry) |
+| PollQRLogin | `POST /v1/account/qr-login/poll` | Poll scan status; on confirm, persist the cookie and hot-swap it |
+| GetAccountStatus | `POST /v1/account/status/get` | Report the logged-in account (verified against Bilibili) |
+| Logout | `POST /v1/account/logout` | Local logout: delete the stored credential |
 
 The generated `openapi.yaml` at the repo root is regenerated by
 `make api`.
@@ -83,12 +95,14 @@ The generated `openapi.yaml` at the repo root is regenerated by
 ## Configuration
 
 `-conf` points at a directory; every yaml inside is merged into one
-config (`config.yaml` + `credentials.yaml`). Key settings live under
-`recorder:` — `record_root`, `quality_qn` (10000 = source),
-`max_concurrent`, `segment_minutes`, `remux_enabled`,
-`fallback_poll_interval`, and reconnect/health tuning. See
-`docs/design/bili-recorder.md` §7 for the full field list and
-defaults.
+config (the repo ships only `config.yaml`). Key settings live under
+`recorder:` — `record_root` and
+`merge_enabled` (merge segments into one file per session at session
+end, default true). The deprecated `cookie` field is ignored — the
+credential comes from web QR login (sqlite `credentials` table).
+Behavioral tuning (segment length, reconnect policy, poll interval,
+stream quality) is code constants, not config fields. See
+`docs/design/bili-recorder.md` §7 for the full list and defaults.
 
 ## Development
 
@@ -98,7 +112,7 @@ make config    # regenerate internal/conf from conf.proto
 make all       # api + config + wire + go mod tidy
 make build     # build all packages into ./bin/
 
-go test -mod=mod ./...     # all tests (sqlite via t.TempDir(), scripted fake ffmpeg)
+go test -mod=mod ./...     # all tests (sqlite via t.TempDir())
 ```
 
 ### Web dashboard
@@ -121,9 +135,9 @@ docker run --rm \
   suika
 ```
 
-The image includes ffmpeg, so `remux_enabled: true` works out of the
-box. Mount your config directory at `/data/conf` (it must contain
-`config.yaml` and, optionally, `credentials.yaml`); `/app/data`
+The image needs no external tools — recording and merging are pure Go.
+Mount your config directory at `/data/conf` (it must contain
+`config.yaml`); `/app/data`
 (sqlite) and `/app/recordings` are the runtime data directories.
 
 ## Documentation
@@ -131,8 +145,9 @@ box. Mount your config directory at `/data/conf` (it must contain
 - [`docs/design/bili-recorder.md`](docs/design/bili-recorder.md) —
   deep-dive technical doc (Chinese): runtime model, core flows, risk
   control, on-disk layout, config, failure handling.
-- [`docs/design/ddd-domain-model.md`](docs/design/ddd-domain-model.md) —
-  domain model: subdomains, class diagram, seam relationships.
+- [`docs/design/architecture-diagrams.md`](docs/design/architecture-diagrams.md) —
+  architecture diagrams: system/app architecture, sequence diagrams,
+  state machines, ER view.
 - [`CLAUDE.md`](CLAUDE.md) — repo conventions: layering, naming,
   build commands, the add-a-resource checklist.
 
@@ -140,14 +155,16 @@ box. Mount your config directory at `/data/conf` (it must contain
 
 ```text
 api/room/v1/          RoomService proto (DTO) + generated bindings
+api/account/v1/       AccountService proto (DTO) + generated bindings
 cmd/suika/            Entrypoint + Wire wiring
-configs/              config.yaml + credentials template
+configs/              config.yaml + credentials example (deprecated; login
+                      now comes from web QR login into the credentials table)
 docs/design/          Technical design docs
 internal/server/      HTTP / gRPC servers + recorder Daemon
 internal/service/     DTO <-> DO conversion, request validation
 internal/biz/         Domain objects, usecases, repo/client interfaces
 internal/data/        sqlite repos, Bilibili API client, danmaku WS,
-                      FLV pump, remux
+                      FLV pump, session merge
 web/                  React + Ant Design dashboard
 openapi.yaml          Generated OpenAPI document
 ```

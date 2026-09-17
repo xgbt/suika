@@ -9,18 +9,15 @@ import (
 
 	"suika/internal/biz"
 	"suika/internal/conf"
-
-	"google.golang.org/protobuf/proto"
 )
 
-// newTestCredentialData 构建以全新 sqlite 文件为后端的真实 *Data，
-// 关闭转封装以跳过 ffmpeg 探测。
+// newTestCredentialData 构建以全新 sqlite 文件为后端的真实 *Data。
 func newTestCredentialData(t *testing.T) *Data {
 	t.Helper()
 	confData := &conf.Data{
 		Database: &conf.Data_Database{Source: filepath.Join(t.TempDir(), "test.db")},
 	}
-	d, cleanup, err := NewData(confData, &conf.Recorder{RemuxEnabled: proto.Bool(false)})
+	d, cleanup, err := NewData(confData, &conf.Recorder{})
 	if err != nil {
 		t.Fatalf("NewData() error = %v", err)
 	}

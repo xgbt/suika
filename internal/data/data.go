@@ -4,13 +4,13 @@ import (
 	stderrors "errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"suika/internal/biz"
 	"suika/internal/conf"
 	"suika/internal/data/bili"
+	"suika/internal/data/recorder"
 
 	"github.com/go-kratos/kratos/v3/log"
 	"github.com/google/wire"
@@ -29,10 +29,6 @@ type Data struct {
 	// bili 是与 B 站平台交互的共享客户端：携带 cookie 的 HTTP 客户端、
 	// 当前生效的登录态与风控助手（WBI 签名器、buvid 存储）。
 	bili *bili.Client
-
-	// 录制器配置（已应用默认值；proto 零值与未设置无法区分）。
-	remuxEnabled bool
-	ffmpegPath   string
 }
 
 // NewLiveClient 提供 biz.LiveClient；B 站直播流量全部实现在 bili 子包。
@@ -41,12 +37,22 @@ func NewLiveClient(d *Data) biz.LiveClient { return bili.NewLiveClient(d.bili) }
 // NewPassportClient 提供 biz.PassportClient；实现位于 bili 子包。
 func NewPassportClient(d *Data) biz.PassportClient { return bili.NewPassportClient(d.bili) }
 
+// NewRecorderRepo 将共享数据配置适配为录制子包的仓库实现。
+func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
+	_ = d
+	return recorder.NewRecorderRepo(c)
+}
+
+// NewSessionStatsRepo 暴露录制仓库提供的实时写入统计。
+func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
+	return recorder.NewSessionStatsRepo(repo)
+}
+
 // Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。
 // 登录态由 bili 客户端持有，这里只是读快照的委托。
 func (d *Data) Cookie() string { return d.bili.Cookie() }
 
-// NewData 构建共享客户端。开启转封装但找不到 ffmpeg 时快速失败
-// （设计如此：启动期探测）。
+// NewData 构建共享客户端。
 func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	db, err := openDatabase(c.GetDatabase())
 	if err != nil {
@@ -63,23 +69,12 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	}
 
 	d := &Data{
-		db:           db,
-		bili:         bili.NewClient(cookie),
-		remuxEnabled: true,
+		db:   db,
+		bili: bili.NewClient(cookie),
 	}
 
-	if rc != nil && rc.RemuxEnabled != nil {
-		d.remuxEnabled = rc.GetRemuxEnabled()
-	}
-	if rc != nil && d.remuxEnabled {
-		ffmpegPath, err := exec.LookPath("ffmpeg")
-		if err != nil {
-			return nil, nil, fmt.Errorf("recorder: remux enabled but ffmpeg not found in PATH: %w", err)
-		}
-		d.ffmpegPath = ffmpegPath
-		if _, err := exec.LookPath("ffprobe"); err != nil {
-			log.Warn("ffprobe not found; remux verification limited to output existence")
-		}
+	if rc != nil && rc.MergeEnabled != nil {
+		log.Warn("recorder: config field recorder.merge_enabled is deprecated and ignored; recorder sessions are always merged at finish")
 	}
 	if rc != nil && rc.GetCookie() != "" {
 		log.Warn("recorder: config field recorder.cookie is deprecated and ignored; the credential is managed in the database via web QR login")

@@ -8,7 +8,7 @@ This repo is **single-context**: one `CONTEXT.md` at the root plus `docs/adr/`.
 
 - **`CONTEXT.md`** at the repo root.
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in.
-- **`docs/design/`** — pre-existing deep-dive design docs live here (`bili-recorder.md` on the recorder service, `ddd-domain-model.md` for its DDD view). These predate the ADR convention; resolved architectural decisions belong in `docs/adr/`.
+- **`docs/design/`** — pre-existing deep-dive design docs live here (`bili-recorder.md` on the recorder service, `architecture-diagrams.md` for the diagram set). These predate the ADR convention; resolved architectural decisions belong in `docs/adr/`.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
