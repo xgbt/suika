@@ -85,7 +85,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 	defer r.mu.Unlock()
 
 	// 读取 meta.json
-	metaPath := filepath.Join(dir, base+".meta.json")
+	metaPath := metaFilePath(dir, base)
 	if meta, err := loadMeta(metaPath); err == nil {
 		if meta.Status == metaStatusDone && meta.MergedVideo != "" {
 			if err := archiveMergedSession(dir, base, meta); err != nil {
@@ -120,7 +120,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Recording
 	if err != nil {
 		return err
 	}
-	metaPath := filepath.Join(dir, base+".meta.json")
+	metaPath := metaFilePath(dir, base)
 
 	r.mu.Lock()
 	meta, err := loadMeta(metaPath)
@@ -147,7 +147,7 @@ func (r *recorderRepo) FinishSession(ctx context.Context, session *biz.Recording
 // 场次关闭录制后再次开启时，可以继续追加而不是覆盖旧产物。
 func archiveMergedSession(dir, base string, meta *sessionMeta) error {
 	part := nextPartNumber(dir, base)
-	videoName := fmt.Sprintf("%s_part%d.flv", base, part)
+	videoName := segmentVideoName(base, part)
 	videoPath := filepath.Join(dir, videoName)
 	mergedVideoPath := filepath.Join(dir, meta.MergedVideo)
 	fi, err := os.Stat(mergedVideoPath)
@@ -160,7 +160,7 @@ func archiveMergedSession(dir, base string, meta *sessionMeta) error {
 
 	danmuName := ""
 	if meta.MergedDanmaku != "" {
-		danmuName = fmt.Sprintf("%s_part%d.danmu.jsonl", base, part)
+		danmuName = segmentDanmakuName(base, part)
 		if err := os.Rename(filepath.Join(dir, meta.MergedDanmaku), filepath.Join(dir, danmuName)); err != nil {
 			_ = os.Rename(videoPath, mergedVideoPath)
 			return fmt.Errorf("archive merged danmaku: %w", err)
@@ -223,7 +223,7 @@ func (r *recorderRepo) finalizeSession(ctx context.Context, metaPath string, met
 // RecoverPending 扫描录制根目录下的所有 meta.json，完成上次运行遗留
 // 的合并工作。
 func (r *recorderRepo) RecoverPending(ctx context.Context) error {
-	pattern := filepath.Join(r.recordRoot, "*", "*", "*.meta.json")
+	pattern := filepath.Join(r.recordRoot, "*", "*", "*"+metaExt)
 	paths, err := filepath.Glob(pattern)
 	if err != nil {
 		return err

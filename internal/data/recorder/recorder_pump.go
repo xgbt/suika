@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"suika/internal/biz"
@@ -30,7 +29,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	metaPath := filepath.Join(dir, base+".meta.json")
+	metaPath := metaFilePath(dir, base)
 
 	// 读取 FLV 文件头
 	header, err := flv.ParseHeader(stream.Body)

@@ -26,11 +26,14 @@ import (
 // 调用方才允许删除源分段。任何失败都会清理临时文件并原样保留源文件。
 // 返回合并产物的文件名（相对 dir）；没有任何弹幕源时 danmakuName 为 ""。
 func mergeSessionFiles(ctx context.Context, dir, base string, segs []segmentMeta) (videoName, danmakuName string, err error) {
-	videoName = base + ".flv"
+	// 合并视频文件
+	videoName = mergedVideoName(base)
 	if err := mergeFLV(ctx, dir, filepath.Join(dir, videoName), segs); err != nil {
 		return "", "", err
 	}
-	danmakuName = base + ".danmu.jsonl"
+
+	// 合并弹幕文件
+	danmakuName = mergedDanmakuName(base)
 	hasDanmu, err := mergeDanmaku(ctx, dir, filepath.Join(dir, danmakuName), segs)
 	if err != nil {
 		_ = os.Remove(filepath.Join(dir, videoName))
@@ -229,5 +232,5 @@ func allSegmentSourcesExist(dir string, segs []segmentMeta) bool {
 
 // sessionBaseFromMetaPath 从 meta.json 路径反推会话文件名前缀。
 func sessionBaseFromMetaPath(metaPath string) string {
-	return strings.TrimSuffix(filepath.Base(metaPath), ".meta.json")
+	return strings.TrimSuffix(filepath.Base(metaPath), metaExt)
 }

@@ -12,12 +12,43 @@ import (
 	"suika/internal/biz"
 )
 
+const (
+	videoExt   = ".flv"         // 分段/合并视频文件扩展名
+	danmakuExt = ".danmu.jsonl" // 分段/合并弹幕文件扩展名
+	metaExt    = ".meta.json"   // 会话 meta 文件扩展名
+)
+
 var (
 	// unsafeChars 匹配文件名不安全字符：控制字符、路径分隔符及 Unicode 空白，
 	// + 折叠连续匹配为单个下划线。
-	unsafeChars       = regexp.MustCompile(`[\x00-\x1f\x7f\\/:*?"<>|\s\p{Z}]+`)
+	unsafeChars = regexp.MustCompile(`[\x00-\x1f\x7f\\/:*?"<>|\s\p{Z}]+`)
 	partSuffixPattern = regexp.MustCompile(`_part(\d+)\.(flv|mp4)$`)
 )
+
+// metaFilePath 返回会话 meta 文件的完整路径。
+func metaFilePath(dir, base string) string {
+	return filepath.Join(dir, base+metaExt)
+}
+
+// segmentVideoName 返回分段视频文件名（不含目录）。
+func segmentVideoName(base string, part int) string {
+	return fmt.Sprintf("%s_part%d%s", base, part, videoExt)
+}
+
+// segmentDanmakuName 返回分段弹幕文件名（不含目录）。
+func segmentDanmakuName(base string, part int) string {
+	return fmt.Sprintf("%s_part%d%s", base, part, danmakuExt)
+}
+
+// mergedVideoName 返回合并后视频文件名（不含目录）。
+func mergedVideoName(base string) string {
+	return base + videoExt
+}
+
+// mergedDanmakuName 返回合并后弹幕文件名（不含目录）。
+func mergedDanmakuName(base string) string {
+	return base + danmakuExt
+}
 
 // sessionPaths 计算会话目录和文件名前缀（所有分段与 meta 文件共享的日期/时间/标题前缀）。
 //

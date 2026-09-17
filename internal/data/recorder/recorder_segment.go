@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	stderrors "errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -78,8 +77,8 @@ type segmentFile struct {
 
 // openSegment 打开一个新的录制分段文件，返回 segmentFile 对象。
 func openSegment(dir, base string, part int, header *flv.FileHeader, headers *segmentHeaders) (*segmentFile, error) {
-	videoPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.flv", base, part))
-	danmuPath := filepath.Join(dir, fmt.Sprintf("%s_part%d.danmu.jsonl", base, part))
+	videoPath := filepath.Join(dir, segmentVideoName(base, part))
+	danmuPath := filepath.Join(dir, segmentDanmakuName(base, part))
 	vf, err := os.OpenFile(videoPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return nil, err
