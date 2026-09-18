@@ -33,9 +33,9 @@ from `buf.gen.yaml` / `buf.gen.config.yaml`, so nothing besides `buf` and
 All direct `go build` / `go test` / `go vet` invocations pass `-mod=mod`;
 vendor mode is never used. The sqlite driver (`mattn/go-sqlite3`) requires
 cgo. There are no external binary dependencies — recording and the
-session-end merge are pure Go; the checked-in `config.yaml` ships with
-`merge_enabled: true`. There is no `third_party/` directory — buf resolves googleapis
-from the BSR.
+session-end merge are pure Go, and the merge always runs at session finish
+(`recorder.merge_enabled` is deprecated and ignored). There is no
+`third_party/` directory — buf resolves googleapis from the BSR.
 
 Never hand-edit generated files: `*.pb.go`, `*_grpc.pb.go`, `*_http.pb.go`,
 `wire_gen.go`, `openapi.yaml`. Regenerated files belong in the same commit
@@ -163,9 +163,12 @@ declared in `biz` and implemented in `data`:
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
   the session-end merge (`recorder_merge.go`). Implemented across `internal/data/recorder*.go`
-  (`recorder.go` session lifecycle + recovery, `recorder_segment.go`
-  segment files, `recorder_session.go` `meta.json` bookkeeping,
-  `recorder_stats.go` write-progress stats).
+  (`recorder.go` session lifecycle + recovery, `paths.go` session layout
+  and file naming, `meta.go` `meta.json` bookkeeping, `recorder_pump.go`
+  the stream pump, `recorder_segment.go` segment files, `stats.go`
+  write-progress stats); the atomic write-temp-then-rename shared by
+  `meta.json` and the merge outputs lives in `internal/utils/file.go`
+  (`utils.WriteFileAtomic`).
 - `PassportClient` — the account platform seam; QR-login and nav traffic
   (passport.bilibili.com / api.bilibili.com) goes through it, explicitly
   outside `riskGuard` (no WBI signing, no retry). Implemented in

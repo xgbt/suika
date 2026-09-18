@@ -277,7 +277,7 @@ sequenceDiagram
     Sess->>G: SetMerging(roomID)
     Sess->>RR: FinishSession（脱离运行 ctx，30s 宽限）
     RR->>FS: meta.json status=merging，记 end_time
-    RR->>FS: 全部分段合并为单个 FLV、弹幕拼接（merge_enabled=true；<br/>临时文件+字节数校验+原子改名；成功后删源分段，失败保留源并置 partial）
+    RR->>FS: 全部分段合并为单个 FLV、弹幕拼接（收尾总是合并；<br/>临时文件+字节数校验+原子改名；成功后删源分段，失败保留源并置 partial）
     RR->>FS: meta.json status=done（合并成功）/ partial（合并失败）
     Sess->>G: FinishRecording(roomID)
 ```
@@ -361,7 +361,7 @@ stateDiagram-v2
     partial --> done : RecoverPending 重试（源分段齐全时）
 ```
 
-分段级 `flv_kept` 标记源文件是否保留；合并产物记在会话级 `merged_video` / `merged_danmaku`。旧版本的 `remuxing` 等未知状态在恢复时跳过（不兼容旧数据）。
+分段源文件是否还在磁盘上以文件系统为准，不在 meta.json 里另记一份；合并产物记在会话级 `merged_video` / `merged_danmaku`。旧版本的 `remuxing` 等未知状态在恢复时跳过（不兼容旧数据）。
 
 ---
 
@@ -417,7 +417,6 @@ erDiagram
     SEGMENT {
         int part "分段编号，会话内单调递增（扫描目录推导）"
         string video "flv 文件名"
-        bool flv_kept "合并失败或禁用合并时保留源文件"
         int64 wall_start "墙钟开始（unix）"
         int64 wall_end "墙钟结束（unix）"
         int64 ts_start "FLV 时间戳起点（ms）"

@@ -107,8 +107,7 @@ internal/biz/
 
 internal/data/
   data.go                Data：db（gorm sqlite，单连接）/
-                         bili.Client（bili 子包：全部 B 站流量与登录态）/
-                         解析后的 recorder 配置项（mergeEnabled）
+                         bili.Client（bili 子包：全部 B 站流量与登录态）
                          NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error)：
                          打开 sqlite（openDatabase，source 路径校验见 §7.1）→
                          AutoMigrate rooms/credentials 表 → 载入凭据 cookie →
@@ -150,20 +149,22 @@ internal/data/
                          （无 WBI 签名、无重试）
   recorder.go            recorderRepo 实现 biz.RecorderRepo（NewRecorderRepo
                          返回接口；NewSessionStatsRepo 把同一实例转发为
-                         biz.SessionStatsRepo）：会话目录/文件名基座推导、
-                         PrepareSession（重启续录复用 + 在途 stats 清零）、
-                         RecordSession 泵送循环（切段判定、健康巡检）、
-                         FinishSession / finalizeSession 收尾合并、
-                         RecoverPending 启动补跑
+                         biz.SessionStatsRepo）：PrepareSession（重启续录
+                         复用 + 在途 stats 清零）、FinishSession /
+                         finalizeSession 收尾合并、RecoverPending 启动补跑
+  paths.go               sessionLayout（会话目录 + 文件名前缀）与全部会话内
+                         文件名的派生；nextPartNumber 扫描目录推导分段编号
+  meta.go                sessionMeta / segmentMeta / danmuLine PO：meta.json
+                         读写、分段簿记（append/finishSegmentMeta）、
+                         errors 追加
+  recorder_pump.go       RecordSession 泵送循环（切段判定、健康巡检）
   recorder_segment.go    segmentFile：FLV part + 弹幕 JSONL 文件对，头标签
                          缓存与重注入，writeTag / writeEvent / close
-  recorder_session.go    sessionMeta / segmentMeta / danmuLine PO：meta.json
-                         读写（tmp+rename 原子写）、分段簿记
-                         （append/finishSegmentMeta）、errors 追加
-  recorder_stats.go      pumpStats（原子 file/bytes/speed）与 SessionStats 读取
+  recorder_split.go      切分策略：按大小 / 按时长两个独立维度裁决
+  recorder_dedup.go      CDN 循环吐流去重（dupGuard）
+  stats.go               pumpStats（原子 file/bytes/speed）与 SessionStats 读取
   recorder_merge.go      纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
-                         边界平移序列头时间戳）、弹幕 JSONL 拼接、
-                         临时文件+字节数校验+原子改名，验证后才删源
+                         边界平移序列头时间戳）、弹幕 JSONL 拼接，验证后才删源
   flv/                   FLV tag 解析子包：FileHeader / Tag 读写、关键帧与
                          sequence header 识别（切段点的判定依据）
 
@@ -195,6 +196,12 @@ internal/conf/
   conf.proto             Bootstrap{server, data, recorder}；Recorder 与
                          Data.Database 消息全字段见 §7（房间列表不在配置里）
   conf.pb.go             make config 生成，禁止手改
+
+internal/utils/
+  file.go                WriteFileAtomic：临时文件 → fsync → 校验字节数 →
+                         原子改名；meta.json 与合并产物共用同一套替换协议
+  time.go                SleepCtx：可被 ctx 取消的等待（biz 侧重连延迟、
+                         下播确认间隔用）
 
 cmd/suika/
   main.go                配置加载（file source 目录合并）→ wireApp(bc.Server, bc.Data,
@@ -229,7 +236,7 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
-| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / RecordSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / recorder_segment.go / recorder_session.go / recorder_stats.go）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
+| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / RecordSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / recorder_segment.go / recorder_split.go / recorder_dedup.go / stats.go / recorder_merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
 | 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤；UpdateRoom 仅供平台信息回写 |
 | 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站直播 HTTP API 与弹幕 WS 流量、风控 |
 | 凭据存储缝 | `CredentialRepo`（GetCredential / SaveCredential / DeleteCredential） | `credentialRepo`（`NewCredentialRepo(d *Data)` 返回接口；credentials 表单例行） | 登录凭据持久化；Save/Delete 落库后热替换内存 cookie |
@@ -575,9 +582,9 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 2. `finalizeSession` 把整场会话的分段合并为单个文件（纯 Go，无任何外部
    工具）：
 
-   - `merge_enabled = false`：所有段标 `flv_kept = true`，直接 `done`，
-     保留散装分段。
-   - `merge_enabled = true`：`mergeSessionFiles` 将全部 `_partN.flv` 合并
+   - 会话收尾总是执行合并：`recorder.merge_enabled` 已废弃且被忽略
+     （`internal/data/data.go` 启动时告警），不存在保留散装分段的分支。
+   - `mergeSessionFiles` 将全部 `_partN.flv` 合并
      为 `{base}.flv`，弹幕 JSONL 按 part 顺序拼接为 `{base}.danmu.jsonl`。
      FLV 合并规则：
      - 第 2 段起跳过 FLV 文件头；所有分段的 onMetaData 脚本标签一律跳过
@@ -683,7 +690,6 @@ cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并�
     {
       "part": 1,
       "video": "..._part1.flv",
-      "flv_kept": false,
       "danmaku": "..._part1.danmu.jsonl",
       "wall_start": 1754912400,
       "wall_end": 1754919600,
@@ -751,14 +757,17 @@ message Recorder {
   string cookie = 2 [deprecated = true];  // 已废弃：凭据来自扫码登录写入
                                           // credentials 表，此字段不再被读取
   string record_root = 3;     // 默认 ./recordings
-  optional bool merge_enabled = 8;  // 未设置默认 true；显式 false = 保留散装分段
+  optional bool merge_enabled = 8 [deprecated = true];  // 已废弃：会话收尾
+                                          // 总是合并，此字段不再被读取
 }
 ```
 
-配置治理原则：**只保留随部署环境变化的项**（路径、端口、
-收尾是否合并；凭据不再是配置项，见 §7.3）。行为调优不做配置，默认值写死在代码里（§7.2）；被移除的
-字段在 proto 中 `reserved` 其字段号与名称。`merge_enabled` 用
-`optional`，使"显式 false"与"未设置"可区分（proto 标量零值歧义）。
+配置治理原则：**只保留随部署环境变化的项**（路径、端口；凭据与收尾合并
+策略都已不是配置项，分别见 §7.3 与 §4.6）。行为调优不做配置，默认值写死在
+代码里（§7.2）；被移除的字段在 proto 中 `reserved` 其字段号与名称。
+`cookie` / `merge_enabled` 是仅有的两个例外：字段保留但标
+`[deprecated = true]`，读取路径已删，留着只为在启动时对仍在配置里设置
+它们的部署打一条 warn（`internal/data/data.go`）。
 
 **数据库**：只支持 sqlite（driver 不做配置），`openDatabase` 在 source
 为空时启动失败；source 即 sqlite 文件路径（config.yaml 配
@@ -775,12 +784,11 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 
 ### 7.2 代码默认值与应用位置
 
-配置项只剩三个有默认值的（其余必填或由环境决定）：
+配置项只剩两个有默认值的（其余必填或由环境决定）：
 
 | 配置项 | 代码默认 | 应用位置 |
 |---|---|---|
 | record_root | ./recordings | data.NewRecorderRepo |
-| merge_enabled | true | data.NewData（optional，nil→true） |
 | server http/grpc addr | kratos 内置默认 | server.NewHTTPServer / NewGRPCServer |
 
 行为调优不做配置，全部是代码常量：
@@ -838,7 +846,8 @@ ErrRoomInvalidArgument。
   rooms 表里，经 CRUD API 管理；全新安装首次启动时 rooms 表为空，
   recorder 记 warn 空转但对后续加房保持响应，CreateRoom 加房后立即
   开始监控（§8.1）；
-- `merge_enabled: true`（收尾合并分段；设 false 则保留散装分段）；
+- 不再列出 `merge_enabled`：字段已废弃且不再被读取（收尾总是合并分段），
+  但键只要存在就会在启动时打一条 deprecation warn，因此默认配置里省略；
 - `cookie: ""` 废弃占位，不再被读取（凭据来自扫码登录，§7.3）。
 
 ---

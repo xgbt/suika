@@ -98,10 +98,11 @@ type Recorder struct {
 	Cookie string `protobuf:"bytes,2,opt,name=cookie,proto3" json:"cookie,omitempty"`
 	// Directory recordings are written under. Default ./recordings.
 	RecordRoot string `protobuf:"bytes,3,opt,name=record_root,json=recordRoot,proto3" json:"record_root,omitempty"`
-	// Merge the recorded FLV segments of a finished session into a single
-	// FLV file (pure Go, no external tools). Optional so an explicit false
-	// (keep the separate segments) is distinguishable from unset (unset
-	// defaults to true).
+	// Deprecated: a finished session is always merged into a single file, so
+	// this field is no longer read. It is retained (and ignored) only so that
+	// deployments which still set it get a startup warning.
+	//
+	// Deprecated: Marked as deprecated in conf/conf.proto.
 	MergeEnabled  *bool `protobuf:"varint,8,opt,name=merge_enabled,json=mergeEnabled,proto3,oneof" json:"merge_enabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -152,6 +153,7 @@ func (x *Recorder) GetRecordRoot() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in conf/conf.proto.
 func (x *Recorder) GetMergeEnabled() bool {
 	if x != nil && x.MergeEnabled != nil {
 		return *x.MergeEnabled
@@ -396,12 +398,12 @@ const file_conf_conf_proto_rawDesc = "" +
 	"\tBootstrap\x12*\n" +
 	"\x06server\x18\x01 \x01(\v2\x12.kratos.api.ServerR\x06server\x12$\n" +
 	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\x120\n" +
-	"\brecorder\x18\x03 \x01(\v2\x14.kratos.api.RecorderR\brecorder\"\x95\x02\n" +
+	"\brecorder\x18\x03 \x01(\v2\x14.kratos.api.RecorderR\brecorder\"\x99\x02\n" +
 	"\bRecorder\x12\x1a\n" +
 	"\x06cookie\x18\x02 \x01(\tB\x02\x18\x01R\x06cookie\x12\x1f\n" +
 	"\vrecord_root\x18\x03 \x01(\tR\n" +
-	"recordRoot\x12(\n" +
-	"\rmerge_enabled\x18\b \x01(\bH\x00R\fmergeEnabled\x88\x01\x01B\x10\n" +
+	"recordRoot\x12,\n" +
+	"\rmerge_enabled\x18\b \x01(\bB\x02\x18\x01H\x00R\fmergeEnabled\x88\x01\x01B\x10\n" +
 	"\x0e_merge_enabledJ\x04\b\x01\x10\x02J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
 	"\x10\vR\x16fallback_poll_intervalR\n" +

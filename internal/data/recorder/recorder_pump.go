@@ -22,14 +22,13 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	defer stream.Body.Close()
 
 	// 获取会话目录和文件名前缀
-	dir, base, err := sessionPaths(r.recordRoot, session)
+	lay, err := sessionPaths(r.recordRoot, session)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(lay.dir, 0o755); err != nil {
 		return nil, err
 	}
-	metaPath := metaFilePath(dir, base)
 
 	// 读取 FLV 文件头
 	header, err := flv.ParseHeader(stream.Body)
@@ -44,12 +43,12 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	stats.setCurrentFile("")
 
 	// 把 CDN 实际授予的清晰度记入 meta
-	r.updateMeta(metaPath, func(meta *sessionMeta) {
+	r.updateMeta(lay.metaPath(), func(meta *sessionMeta) {
 		meta.Quality = qualityMeta(stream.Quality)
 		meta.Title = session.Title
 	})
 
-	loop := newRecordSessionLoop(r, session, dir, base, metaPath, header, stats, baseBytes)
+	loop := newRecordSessionLoop(r, session, lay, header, stats, baseBytes)
 	tagCh := startTagReader(stream.Body)
 
 	health := time.NewTicker(r.healthInterval)
@@ -115,9 +114,7 @@ func startTagReader(body io.Reader) <-chan tagRead {
 type recordSessionLoop struct {
 	repo    *recorderRepo         // 所属仓储，读取切分/健康检查配置
 	session *biz.RecordingSession // 本次录制的会话信息
-	dir     string                // 会话目录
-	base    string                // 会话文件名前缀
-	meta    string                // meta.json 路径
+	lay     sessionLayout         // 会话在磁盘上的位置（目录 + 文件名前缀）
 	header  *flv.FileHeader       // 拉流解析出的 FLV 文件头
 
 	stats     *pumpStats // 房间级写入进度，跨多次 RecordSession 调用（重连）共享
@@ -140,7 +137,7 @@ type recordSessionLoop struct {
 func newRecordSessionLoop(
 	repo *recorderRepo,
 	session *biz.RecordingSession,
-	dir, base, metaPath string,
+	lay sessionLayout,
 	header *flv.FileHeader,
 	stats *pumpStats,
 	baseBytes int64,
@@ -148,9 +145,7 @@ func newRecordSessionLoop(
 	return &recordSessionLoop{
 		repo:         repo,
 		session:      session,
-		dir:          dir,
-		base:         base,
-		meta:         metaPath,
+		lay:          lay,
 		header:       header,
 		stats:        stats,
 		baseBytes:    baseBytes,
@@ -175,7 +170,7 @@ func (l *recordSessionLoop) handleTag(tag *flv.Tag) error {
 			return nil
 		}
 		if err := l.openNewSegment(); err != nil {
-			l.repo.appendMetaError(l.meta, "record", err)
+			l.repo.appendMetaError(l.lay.metaPath(), "record", err)
 			return err
 		}
 	} else if l.guard.boundary(tag) {
@@ -257,8 +252,8 @@ func (l *recordSessionLoop) openNewSegment() error {
 	l.repo.segmentMu.Lock()
 	defer l.repo.segmentMu.Unlock()
 
-	part := nextPartNumber(l.dir, l.base)
-	seg, err := openSegment(l.dir, l.base, part, l.header, &l.headers)
+	part := nextPartNumber(l.lay)
+	seg, err := openSegment(l.lay, part, l.header, &l.headers)
 	if err != nil {
 		return err
 	}
@@ -274,7 +269,7 @@ func (l *recordSessionLoop) openNewSegment() error {
 		l.addWrittenBytes(int64(len(ht.Data)) + flv.TagEnvelopeSize)
 	})
 
-	l.repo.appendSegmentMeta(l.meta, seg)
+	l.repo.appendSegmentMeta(l.lay.metaPath(), seg)
 	log.Info("segment opened", "room", l.session.RoomID, "part", part, "file", seg.videoPath)
 	return nil
 }
@@ -286,7 +281,7 @@ func (l *recordSessionLoop) closeSegment() {
 	if err := l.seg.close(); err != nil {
 		log.Error("close segment failed", "room", l.session.RoomID, "file", l.seg.videoPath, "err", err)
 	}
-	l.repo.finishSegmentMeta(l.meta, l.seg)
+	l.repo.finishSegmentMeta(l.lay.metaPath(), l.seg)
 	l.seg = nil
 }
 
@@ -305,7 +300,7 @@ func (l *recordSessionLoop) rotateSegment() error {
 	}
 	l.closeSegment()
 	if err := l.openNewSegment(); err != nil {
-		l.repo.appendMetaError(l.meta, "record", err)
+		l.repo.appendMetaError(l.lay.metaPath(), "record", err)
 		return err
 	}
 	return nil
@@ -342,7 +337,7 @@ func (l *recordSessionLoop) writeTag(tag *flv.Tag, persistError bool) error {
 	n, err := l.seg.writeTag(tag)
 	l.addWrittenBytes(n)
 	if err != nil && persistError {
-		l.repo.appendMetaError(l.meta, "record", err)
+		l.repo.appendMetaError(l.lay.metaPath(), "record", err)
 	}
 	return err
 }
