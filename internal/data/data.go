@@ -35,7 +35,9 @@ type Data struct {
 func NewLiveClient(d *Data) biz.LiveClient { return bili.NewLiveClient(d.bili) }
 
 // NewPassportClient 提供 biz.PassportClient；实现位于 bili 子包。
-func NewPassportClient(d *Data) biz.PassportClient { return bili.NewPassportClient(d.bili) }
+// 不依赖 *Data：passport 流量刻意不走风控，不碰共享客户端的签名与指纹，
+// 自带一个无 cookie jar 的 HTTP 客户端。
+func NewPassportClient() biz.PassportClient { return bili.NewPassportClient() }
 
 // NewRecorderRepo 将共享数据配置适配为录制子包的仓库实现。
 func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {

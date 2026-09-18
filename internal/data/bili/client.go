@@ -29,10 +29,6 @@ type Client struct {
 	// 取消经请求 context 传递。
 	streamClient *resty.Client
 
-	// passportHTTP 专用于 B 站登录/账号平台接口；必须无 cookie jar，
-	// 避免登录响应的 Set-Cookie 串染房间 API 请求。
-	passportHTTP *resty.Client
-
 	// cookie 是当前生效的唯一登录态，读写必须经 Cookie()/SetCookie()。
 	mu     sync.RWMutex
 	cookie string
@@ -46,13 +42,10 @@ type Client struct {
 
 func NewClient(cookie string) *Client {
 	apiClient := resty.New().SetTimeout(15 * time.Second)
-	// passport 调用不需要携带也不会保留 cookie，禁用 jar。
-	passportHTTP := resty.New().SetTimeout(15 * time.Second).SetCookieJar(nil)
 
 	c := &Client{
 		apiClient:    apiClient,
 		streamClient: resty.New(),
-		passportHTTP: passportHTTP,
 		cookie:       cookie,
 	}
 	c.signer = NewWBISigner(apiClient, c.Cookie)

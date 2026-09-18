@@ -152,8 +152,10 @@ declared in `biz` and implemented in `data`:
 
 - `LiveClient` — the platform seam; ALL live-room Bilibili traffic goes
   through it (room info, stream URLs, danmaku websocket). Implemented in
-  the `data/bili/` subpackage by `live.go` / `danmaku.go` plus the
-  risk-control helpers `wbi.go` (WBI signing) and `buvid.go`. All risk
+  the `data/bili/` subpackage by `live.go`, `danmaku_conn.go` (with
+  `danmaku_proto/event/info.go`), and the shared HTTP primitives in
+  `http.go`, plus the risk-control helpers `wbi.go` (WBI signing) and
+  `buvid.go`. All risk
   orchestration lives in the single `riskGuard` module (`risk.go`):
   cooldown gates, 412/403/429 and
   -352 refresh-and-retry, legacy-API fallback, error classification, and
