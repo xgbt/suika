@@ -1,8 +1,9 @@
+// buvid.go 获取并缓存 B 站设备指纹 buvid3/buvid4：向 spi 接口请求，按
+// cookie 分桶缓存 24 小时，注入 cookie 头时以替换语义覆盖同名段。
 package bili
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -42,9 +43,6 @@ func newBuvidStore(httpc *resty.Client) *buvidStore {
 
 // getBuvids 返回 cookieHeader 对应的 buvid3/buvid4，缓存 24 小时。
 func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3, buvid4 string, err error) {
-	if s == nil {
-		return "", "", nil
-	}
 	now := time.Now()
 	s.mu.Lock()
 	if cached, ok := s.cache[cookieHeader]; ok && now.Before(cached.expiresAt) {
@@ -52,23 +50,6 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 		return cached.buvid3, cached.buvid4, nil
 	}
 	s.mu.Unlock()
-
-	req := s.httpClient.R().
-		SetContext(ctx).
-		SetHeader("User-Agent", biliUserAgent).
-		SetHeader("Referer", "https://www.bilibili.com").
-		SetHeader("Origin", "https://www.bilibili.com")
-	if cookieHeader != "" {
-		req.SetHeader("Cookie", cookieHeader)
-	}
-
-	resp, err := req.Get(s.spiURL)
-	if err != nil {
-		return "", "", err
-	}
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-		return "", "", fmt.Errorf("get buvids http status %d", resp.StatusCode())
-	}
 
 	var result struct {
 		Code    int    `json:"code"`
@@ -78,7 +59,8 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 			B4 string `json:"b_4"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+	req := browserRequest(s.httpClient, biliWWWURL, biliWWWURL, cookieHeader).SetContext(ctx)
+	if _, err := doJSON(req, s.spiURL, &result); err != nil {
 		return "", "", err
 	}
 	if result.Code != 0 {
@@ -101,9 +83,6 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 // invalidate 丢弃 cookieHeader 的缓存指纹，使下次 getBuvids 重新获取
 // （风控重试前使用）。
 func (s *buvidStore) invalidate(cookieHeader string) {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	delete(s.cache, cookieHeader)
 	s.mu.Unlock()

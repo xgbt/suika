@@ -1,8 +1,9 @@
+// passport.go 实现 biz.PassportClient：扫码登录的二维码生成与轮询、登录
+// 响应 Set-Cookie 的拼装，以及登录状态核验。刻意不走风控编排。
 package bili
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,8 +21,6 @@ const (
 
 	// qrCodeTTL 是二维码有效期（B 站侧固定 180 秒）。
 	qrCodeTTL = 180 * time.Second
-	// passportReferer 是 passport/nav 请求携带的 Referer。
-	passportReferer = "https://www.bilibili.com"
 )
 
 // B 站扫码轮询的内层业务码。
@@ -149,30 +148,15 @@ func (pc *passportClient) AccountInfo(ctx context.Context, cookie string) (*biz.
 }
 
 // getJSON 携带 UA/Referer 发 GET 请求并把 JSON 响应体解码到 out。
-// 网络与 HTTP 层错误统一包装为 biz.ErrPassportUnavailable。
+// 网络、HTTP 层与解码错误统一包装为 biz.ErrPassportUnavailable。
 func (pc *passportClient) getJSON(ctx context.Context, endpoint string, query map[string]string, cookie string, out any) (*resty.Response, error) {
-	req := pc.httpClient.R().
-		SetContext(ctx).
-		SetHeader("User-Agent", biliUserAgent).
-		SetHeader("Referer", passportReferer)
+	req := browserRequest(pc.httpClient, biliWWWURL, "", cookie).SetContext(ctx)
 	for k, v := range query {
 		req.SetQueryParam(k, v)
 	}
-	if cookie != "" {
-		req.SetHeader("Cookie", cookie)
-	}
-
-	resp, err := req.Get(endpoint)
+	resp, err := doJSON(req, endpoint, out)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrPassportUnavailable, err)
-	}
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-		return nil, fmt.Errorf("%w: http status %d", biz.ErrPassportUnavailable, resp.StatusCode())
-	}
-	if out != nil {
-		if err := json.Unmarshal(resp.Body(), out); err != nil {
-			return nil, fmt.Errorf("%w: parse response: %v", biz.ErrPassportUnavailable, err)
-		}
 	}
 	return resp, nil
 }
@@ -199,22 +183,14 @@ func qrPollStatus(code int) (biz.QRLoginStatus, error) {
 func assembleLoginCookie(cookies []*http.Cookie) (string, error) {
 	seen := make(map[string]bool)
 	var parts []string
-	hasSessdata := false
-	hasDedeUserID := false
 	for _, c := range cookies {
 		if c == nil || c.Name == "" || seen[c.Name] {
 			continue
 		}
 		seen[c.Name] = true
 		parts = append(parts, c.Name+"="+c.Value)
-		switch c.Name {
-		case "SESSDATA":
-			hasSessdata = true
-		case "DedeUserID":
-			hasDedeUserID = true
-		}
 	}
-	if !hasSessdata || !hasDedeUserID {
+	if !seen["SESSDATA"] || !seen["DedeUserID"] {
 		return "", fmt.Errorf("login cookies missing SESSDATA or DedeUserID")
 	}
 	return strings.Join(parts, "; "), nil

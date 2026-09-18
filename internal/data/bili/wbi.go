@@ -1,12 +1,12 @@
+// wbi.go 实现 WBI 签名：从 nav 接口取密钥并缓存 1 小时，按置换表推导
+// mixin key，为请求 URL 附加 wts 与 w_rid 参数。
 package bili
 
 import (
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	stderrors "errors"
 	"fmt"
-	"io"
 	"net/url"
 	"path"
 	"sort"
@@ -18,11 +18,7 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// errWBIKeyUnavailable 表示 WBI 签名密钥获取失败。
-var errWBIKeyUnavailable = stderrors.New("wbi key unavailable")
-
-// mixinKeyEncTab 是 WBI 签名使用的 64 元素置换表。
-// 移植自 hikami-go/internal/biliutil/wbi.go。
+// mixinKeyEncTab 是 WBI 签名使用的 64 元素置换表
 var mixinKeyEncTab = [64]int{
 	46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
 	27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
@@ -40,8 +36,11 @@ type wbiSigner struct {
 	updatedAt  time.Time
 }
 
-func newWBISigner(httpc *resty.Client, cookie func() string) *wbiSigner {
-	return &wbiSigner{httpClient: httpc, cookie: cookie}
+func NewWBISigner(client *resty.Client, cookie func() string) *wbiSigner {
+	return &wbiSigner{
+		httpClient: client,
+		cookie:     cookie,
+	}
 }
 
 // signURL 为 rawURL 追加 wts 和 w_rid 查询参数。
@@ -84,11 +83,7 @@ func (s *wbiSigner) signURL(rawURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-// refreshKeys 强制从 nav API 刷新密钥。
-func (s *wbiSigner) refreshKeys() error {
-	return s.fetchKeys()
-}
-
+// ensureKeys 确保 mixinKey 是最新的,  过期或不存在时触发 fetchKeys
 func (s *wbiSigner) ensureKeys() error {
 	s.mu.Lock()
 	fresh := s.mixinKey != "" && time.Since(s.updatedAt) < time.Hour
@@ -100,34 +95,8 @@ func (s *wbiSigner) ensureKeys() error {
 }
 
 func (s *wbiSigner) fetchKeys() error {
-	const navURL = "https://api.bilibili.com/x/web-interface/nav"
-	req := s.httpClient.R().
-		SetHeader("User-Agent", biliUserAgent).
-		SetHeader("Referer", "https://www.bilibili.com").
-		SetDoNotParseResponse(true)
-	if cookie := s.cookie(); cookie != "" {
-		req.SetHeader("Cookie", cookie)
-	}
-
-	resp, err := req.Get(navURL)
-	if err != nil {
-		return fmt.Errorf("%w: nav request: %v", errWBIKeyUnavailable, err)
-	}
-	bodyReader := resp.RawBody()
-	if bodyReader == nil {
-		return fmt.Errorf("%w: nav response body is empty", errWBIKeyUnavailable)
-	}
-	defer bodyReader.Close()
-
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-		return fmt.Errorf("%w: nav http status %d", errWBIKeyUnavailable, resp.StatusCode())
-	}
-
-	body, err := io.ReadAll(bodyReader)
-	if err != nil {
-		return fmt.Errorf("%w: read nav response: %v", errWBIKeyUnavailable, err)
-	}
-
+	// 获取 nav API 以刷新 WBI 签名所需的 mixinKey。
+	navURL := "https://api.bilibili.com/x/web-interface/nav"
 	var navResp struct {
 		Code int `json:"code"`
 		Data struct {
@@ -137,14 +106,17 @@ func (s *wbiSigner) fetchKeys() error {
 			} `json:"wbi_img"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &navResp); err != nil {
-		return fmt.Errorf("%w: parse nav response: %v", errWBIKeyUnavailable, err)
-	}
 
+	// 本请求由不接收 ctx 的 signURL 触发，故不设置 context
+	// 获取加密密钥 mixinKey 所需的 imgKey 和 subKey
+	req := browserRequest(s.httpClient, biliWWWURL, "", s.cookie())
+	if _, err := doJSON(req, navURL, &navResp); err != nil {
+		return fmt.Errorf("wbi nav: %w", err)
+	}
 	imgKey := extractKeyFromURL(navResp.Data.WbiImg.ImgURL)
 	subKey := extractKeyFromURL(navResp.Data.WbiImg.SubURL)
 	if imgKey == "" || subKey == "" {
-		return errWBIKeyUnavailable
+		return stderrors.New("wbi nav returned empty img_key or sub_key")
 	}
 
 	mixinKey := getMixinKey(imgKey, subKey)
@@ -168,9 +140,9 @@ func extractKeyFromURL(rawURL string) string {
 func getMixinKey(imgKey, subKey string) string {
 	combined := imgKey + subKey
 	var result strings.Builder
-	for _, idx := range mixinKeyEncTab {
-		if idx < len(combined) {
-			result.WriteByte(combined[idx])
+	for _, i := range mixinKeyEncTab {
+		if i < len(combined) {
+			result.WriteByte(combined[i])
 		}
 	}
 	mixed := result.String()
@@ -180,13 +152,12 @@ func getMixinKey(imgKey, subKey string) string {
 	return mixed
 }
 
-// sanitizeWBIValue 剔除值中的特殊字符 !'()*。
-func sanitizeWBIValue(v string) string {
-	var sb strings.Builder
-	for _, ch := range v {
-		if !strings.ContainsRune("!'()*", ch) {
-			sb.WriteRune(ch)
+// sanitizeWBIValue 剔除值中的特殊字符 !'()*（WBI 签名规则要求）。
+func sanitizeWBIValue(str string) string {
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune("!'()*", r) {
+			return -1 // 负值表示丢弃该字符
 		}
-	}
-	return sb.String()
+		return r
+	}, str)
 }

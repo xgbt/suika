@@ -1,3 +1,5 @@
+// live.go 实现 biz.LiveClient 的直播侧：查询房间开播状态与元数据、从播放
+// 信息中挑选并打开 FLV 流，以及弹幕连接的创建入口。
 package bili
 
 import (
@@ -92,19 +94,14 @@ func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.Li
 		return nil, err
 	}
 
-	req := lc.client.streamClient.R().
+	req := browserRequest(lc.client.streamClient, liveReferer(roomID), "", lc.client.Cookie()).
 		SetContext(ctx).
-		SetHeader("User-Agent", biliUserAgent).
-		SetHeader("Referer", liveReferer(roomID)).
 		SetDoNotParseResponse(true)
-	if cookie := lc.client.Cookie(); cookie != "" {
-		req.SetHeader("Cookie", cookie)
-	}
 	resp, err := req.Get(streamURL)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
+	if !resp.IsSuccess() {
 		if resp.RawBody() != nil {
 			_ = resp.RawBody().Close()
 		}
@@ -223,6 +220,7 @@ func isFLVStream(baseURL string) bool {
 	return strings.Contains(strings.ToLower(baseURL), ".flv")
 }
 
+// liveReferer 返回房间页的 Referer URL，用于构造浏览器伪装请求头。
 func liveReferer(roomID int64) string {
 	return "https://live.bilibili.com/" + strconv.FormatInt(roomID, 10)
 }

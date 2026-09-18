@@ -1,11 +1,11 @@
+// client.go 持有与 B 站交互的共享长生命周期状态：三个用途不同的 HTTP
+// 客户端、当前生效的登录态、WBI 签名器与 buvid 缓存，以及它们的接线。
 package bili
 
 import (
 	"context"
-	"encoding/json"
 	stderrors "errors"
-	"fmt"
-	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,9 +17,6 @@ var (
 	errRiskControl352  = stderrors.New("bilibili -352 risk control")
 	errHTTPRiskControl = stderrors.New("bilibili http-layer risk control")
 )
-
-// biliUserAgent 是所有 B 站请求使用的 User-Agent。
-const biliUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 // Client 持有所有与 B 站交互共享的长生命周期状态：携带 cookie 的
 // HTTP 客户端、当前生效的登录态、以及风控助手（WBI 签名器、buvid
@@ -58,7 +55,7 @@ func NewClient(cookie string) *Client {
 		passportHTTP: passportHTTP,
 		cookie:       cookie,
 	}
-	c.signer = newWBISigner(apiClient, c.Cookie)
+	c.signer = NewWBISigner(apiClient, c.Cookie)
 	c.buvids = newBuvidStore(apiClient)
 	return c
 }
@@ -102,10 +99,21 @@ func (c *Client) injectAntiRisk(ctx context.Context) string {
 
 // refreshRisk 在风控重试前刷新 WBI 密钥并丢弃缓存的 buvid。
 func (c *Client) refreshRisk() {
-	if err := c.signer.refreshKeys(); err != nil {
+	if err := c.signer.fetchKeys(); err != nil {
 		log.Warn("wbi key refresh failed, retrying with existing keys", "err", err)
 	}
 	c.buvids.invalidate(c.Cookie())
+}
+
+// cookieValue 从 Cookie 头字符串中提取指定名称的值，不存在时返回空串。
+func cookieValue(cookieHeader, name string) string {
+	for item := range strings.SplitSeq(cookieHeader, ";") {
+		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
+		if len(parts) == 2 && parts[0] == name {
+			return parts[1]
+		}
+	}
+	return ""
 }
 
 // signURL 对 endpoint 做 WBI 签名；失败时退化为未签名 URL。
@@ -116,33 +124,4 @@ func (c *Client) signURL(endpoint string) string {
 		return endpoint
 	}
 	return signed
-}
-
-// fetchJSON 携带抗风控 header 发 GET 请求，并把 JSON 响应体解码到 out。
-// HTTP 412/403/429 映射为 errHTTPRiskControl。
-func (c *Client) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
-	req := c.apiClient.R().
-		SetContext(ctx).
-		SetHeader("User-Agent", biliUserAgent).
-		SetHeader("Referer", liveReferer(roomID)).
-		SetHeader("Origin", "https://live.bilibili.com")
-	if cookie != "" {
-		req.SetHeader("Cookie", cookie)
-	}
-	resp, err := req.Get(endpoint)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-		switch resp.StatusCode() {
-		case http.StatusPreconditionFailed, http.StatusForbidden, http.StatusTooManyRequests:
-			return fmt.Errorf("%w: status=%d", errHTTPRiskControl, resp.StatusCode())
-		default:
-			return fmt.Errorf("bilibili http status %d", resp.StatusCode())
-		}
-	}
-	if err := json.Unmarshal(resp.Body(), out); err != nil {
-		return err
-	}
-	return nil
 }
