@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -104,7 +105,7 @@ func (pc *passportClient) PollQRLogin(ctx context.Context, qrcodeKey string) (*b
 			Message      string `json:"message"`
 		} `json:"data"`
 	}
-	resp, err := pc.getJSON(ctx, pc.pollURL, map[string]string{"qrcode_key": qrcodeKey}, "", &result)
+	resp, err := pc.getJSON(ctx, pc.pollURL, url.Values{"qrcode_key": {qrcodeKey}}, "", &result)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -159,14 +160,17 @@ func (pc *passportClient) AccountInfo(ctx context.Context, cookie string) (*biz.
 	}
 }
 
-// getJSON 携带 UA/Referer 发 GET 请求并把 JSON 响应体解码到 out。
-// 网络、HTTP 层与解码错误统一包装为 biz.ErrPassportUnavailable。
-func (pc *passportClient) getJSON(ctx context.Context, endpoint string, query map[string]string, cookie string, out any) (*resty.Response, error) {
-	req := browserRequest(pc.httpClient, biliWWWURL, "", cookie).SetContext(ctx)
-	for k, v := range query {
-		req.SetQueryParam(k, v)
-	}
-	resp, err := doJSON(req, endpoint, out)
+// getJSON 以主站 Referer（不发 Origin）发 GET 请求并把 JSON 响应体解码到
+// out。网络、HTTP 层与解码错误统一包装为 biz.ErrPassportUnavailable。
+func (pc *passportClient) getJSON(ctx context.Context, endpoint string, query url.Values, cookie string, out any) (*resty.Response, error) {
+	resp, err := getJSON(ctx, jsonGet{
+		client:   pc.httpClient,
+		referer:  biliWWWURL,
+		cookie:   cookie,
+		endpoint: endpoint,
+		query:    query,
+		out:      out,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrPassportUnavailable, err)
 	}

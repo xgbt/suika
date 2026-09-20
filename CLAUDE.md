@@ -157,14 +157,19 @@ declared in `biz` and implemented in `data`:
   `http.go`, plus the risk-control helpers `wbi.go` (WBI signing) and
   `buvid.go`. All risk
   orchestration lives in the single `riskGuard` module (`risk.go`):
+  building the compliant request (fingerprint injection, WBI signing),
   cooldown gates, 412/403/429 and
   -352 refresh-and-retry, legacy-API fallback, error classification, and
-  the per-room cooldown ladder. Endpoint code only builds requests,
-  parses responses, and translates business codes — never retries or
-  sleeps on risk itself.
+  the per-room cooldown ladder. Endpoint code declares the request shape
+  (`riskRequest`: path, query, whether to sign, decode target) and
+  translates business codes — it never builds the request itself, never
+  retries, and never sleeps on risk.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
-  the session-end merge (`recorder_merge.go`). Implemented across `internal/data/recorder*.go`
+  the session-end merge (`recorder_merge.go`). It embeds
+  `SessionStatsRepo` — write-progress stats come from the same
+  implementation's in-memory state, so the wiring narrows the interface
+  instead of asserting it. Implemented across `internal/data/recorder/`
   (`recorder.go` session lifecycle + recovery, `paths.go` session layout
   and file naming, `meta.go` `meta.json` bookkeeping, `recorder_pump.go`
   the stream pump, `recorder_segment.go` segment files, `stats.go`

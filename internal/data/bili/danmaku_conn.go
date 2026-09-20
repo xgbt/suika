@@ -127,7 +127,7 @@ func (c *danmakuConn) connectAndServe(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- c.readLoop(conn)
+		errCh <- c.readLoop(ctx, conn)
 	}()
 
 	heartbeat := time.NewTicker(danmakuHeartbeatInterval)
@@ -204,8 +204,9 @@ func (c *danmakuConn) dialAndAuth(ctx context.Context, address, token string, pr
 // readLoop 循环读取入站帧、解包并分发，每收到一帧就刷新读超时。
 // 返回的错误由 connectAndServe 上报给 run 触发重连；返回 nil 表示
 // 连接已被主动关闭。在独立 goroutine 中运行，与心跳写入并发
-// （gorilla/websocket 允许一读一写并发）。
-func (c *danmakuConn) readLoop(conn *websocket.Conn) error {
+// （gorilla/websocket 允许一读一写并发）。ctx 透传给 dispatch，房态
+// 重探因此随连接一起取消，不会在连接关闭后继续打接口。
+func (c *danmakuConn) readLoop(ctx context.Context, conn *websocket.Conn) error {
 	if err := conn.SetReadDeadline(time.Now().Add(danmakuReadTimeout)); err != nil {
 		return err
 	}
@@ -226,7 +227,7 @@ func (c *danmakuConn) readLoop(conn *websocket.Conn) error {
 		}
 		receivedAt := time.Now()
 		for _, raw := range messages {
-			c.dispatch(context.Background(), raw, receivedAt)
+			c.dispatch(ctx, raw, receivedAt)
 		}
 	}
 }

@@ -45,9 +45,11 @@ func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 	return recorder.NewRecorderRepo(c)
 }
 
-// NewSessionStatsRepo 暴露录制仓库提供的实时写入统计。
+// NewSessionStatsRepo 把录制仓库收窄为房间管理需要的写入统计视图。
+// RecorderRepo 内嵌 SessionStatsRepo，所以这里是纯粹的接口收窄——不再有
+// 运行时的类型断言。
 func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
-	return recorder.NewSessionStatsRepo(repo)
+	return repo
 }
 
 // Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。

@@ -637,7 +637,10 @@ img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；�
 再追加（B 站取同名第一个，替换语义保证新指纹生效）。buvid 获取失败
 降级为裸 cookie。
 
-**-352 / HTTP 风控处理**（统一由 `riskGuard` 编排，`bili/risk.go`）：
+**-352 / HTTP 风控处理**（统一由 `riskGuard` 编排，`bili/risk.go`）。端点在
+这里只声明端点形状（`riskRequest`：路径、查询参数、是否需要 WBI 签名、
+响应落点），拼路径、编码参数、注入 buvid 指纹与签名都由 guard 的 `fetch`
+完成 —— 端点没有机会漏掉其中任何一步：
 
 1. 风控命中（-352 或 HTTP 412/403/429）→ `refreshRisk()`（强刷 WBI 密钥 +
    作废 buvid 缓存）→ 原请求重试一次。
@@ -1028,7 +1031,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | data/bili | `live_test.go`（11） | pickFLVStream 纯函数：**仅接受 avc（hevc/av1 候选被跳过、无 avc 则无候选报错，ADR-0004）** / 多个 avc 行取首个 / 过滤非 FLV 与空 URL、**排除 `.mcdn.` P2P 主机（普通 CDN 优先；候选全为 P2P 时退回全量）**、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |
 | data/bili | `danmaku_proto_test.go`（15） | 包编解码往返、zlib/brotli 嵌套解包、认证包 uid 跟随 cookie（登录/匿名） |
 | data/bili | `danmaku_event_test.go`（10） | 事件解析（弹幕/礼物/SC/上舰/进场）、**弹幕发送时刻 `send_ts`（载荷 `info[0][4]`；缺失/非数字/非正数保持未知、字符串数字可解析）** |
-| data/bili | `risk_test.go`（16） | riskGuard：成功清冷却、冷却闸门拦截、HTTP 风控与 -352 刷新重试一次/耗尽、fallback 成功/失败/非零码、非零码不记账、阶梯冷却升级、并发安全 |
+| data/bili | `risk_test.go`（20） | riskGuard：成功清冷却、冷却闸门拦截、HTTP 风控与 -352 刷新重试一次/耗尽、fallback 成功/失败/非零码/兜底 done 报错、非零码不记账、阶梯冷却升级、并发安全；**请求构造（假 `riskTransport` 断言路径与查询参数编码、`sign` 开关、注入的指纹快照、`done` 钩子时机）** |
 | data/bili | `wbi_test.go`（5） | mixin_key 已知向量/短输入/32 截断、签名值 sanitize、URL 提取密钥 |
 | data/bili | `buvid_test.go`（5） | 注入替换语义（替换已有/空串追加/跳过空值/修剪空白）、cookie 取值 |
 | data/bili | `passport_test.go`（7） | assembleLoginCookie 拼装、轮询状态码映射、QR 创建（成功/平台错误）、轮询确认捕获 Set-Cookie / 各 pending 态、账号信息核验 |

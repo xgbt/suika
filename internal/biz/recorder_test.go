@@ -12,8 +12,15 @@ import (
 	"suika/internal/conf"
 )
 
+// sessionStatsStub 满足 RecorderRepo 内嵌的 SessionStatsRepo：决策树的测试
+// 替身都不关心写入进度，共用这一个空实现，避免每个替身各写一遍。
+type sessionStatsStub struct{}
+
+func (sessionStatsStub) SessionStats(context.Context, int64) (*SessionStats, error) { return nil, nil }
+
 // fakeRepo 为决策树测试模拟 RecorderRepo 行为。
 type fakeRepo struct {
+	sessionStatsStub
 	prepareErr  error
 	recordQueue []recordOutcome // 每次调用弹出一个；最后一项固定复用
 	recordCalls int
@@ -375,6 +382,7 @@ func TestRunRecordingLoopOfflineRequiresRepeatedConfirmation(t *testing.T) {
 // slowStableRepo 的每次泵送都睡眠一小段时间再产出内容，模拟"稳定录制
 // 了一段时间"的腿，用于触发预算重置。
 type slowStableRepo struct {
+	sessionStatsStub
 	sleep       time.Duration
 	result      *RecordingResult
 	err         error
@@ -560,6 +568,7 @@ func (c *watchClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
 // pumpBlockRepo 使 RecordSession 阻塞到 context 取消，模拟一路永不
 // 断开的直播流。
 type pumpBlockRepo struct {
+	sessionStatsStub
 	finished []*RecordingSession
 }
 
@@ -748,6 +757,7 @@ func TestRunMonitorConnectionImmediateProbeReportsError(t *testing.T) {
 // gatedFinishRepo 的 FinishSession 阻塞在 gate 上，模拟缓慢的合并收尾，
 // 让测试可以稳定命中"会话正在停止中"的窗口。
 type gatedFinishRepo struct {
+	sessionStatsStub
 	gate     chan struct{}
 	prepares atomic.Int64
 }

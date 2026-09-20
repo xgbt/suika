@@ -5,6 +5,7 @@ package bili
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,19 +48,20 @@ type liveClient struct {
 func NewLiveClient(client *Client) biz.LiveClient {
 	return &liveClient{
 		client: client,
-		risk:   newRiskGuard(client.refreshRisk),
+		risk:   newRiskGuard(client),
 	}
 }
 
 // GetRoomInfo 经 getInfoByRoom 返回房间当前的开播状态。
 func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	var resp roomInfoResponse
-	attempt := func(ctx context.Context) (int, error) {
-		cookie := lc.client.injectAntiRisk(ctx)
-		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + strconv.FormatInt(roomID, 10)
-		return resp.Code, lc.client.fetchJSON(ctx, lc.client.signURL(endpoint), roomID, cookie, &resp)
-	}
-	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getInfoByRoom", attempt: attempt})
+	code, err := lc.risk.call(ctx, roomID, riskCall{attempt: riskRequest{
+		op:    "getInfoByRoom",
+		path:  "/xlive/web-room/v1/index/getInfoByRoom",
+		query: url.Values{"room_id": {strconv.FormatInt(roomID, 10)}},
+		sign:  true,
+		out:   &resp,
+	}})
 	if err != nil {
 		return nil, err
 	}
@@ -117,16 +119,21 @@ func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.Li
 
 // selectStreamURL 调用 B 站接口获取房间的播放信息，并选择最优 FLV 流地址。
 func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string, biz.StreamQuality, error) {
-	endpoint := liveAPIBase + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
-		strconv.FormatInt(roomID, 10) +
-		"&protocol=0,1&format=0,1,2&codec=0&qn=" + strconv.Itoa(sourceQualityQN) + "&platform=web"
-
 	var resp playInfoResponse
-	attempt := func(ctx context.Context) (int, error) {
-		cookie := lc.client.injectAntiRisk(ctx)
-		return resp.Code, lc.client.fetchJSON(ctx, lc.client.signURL(endpoint), roomID, cookie, &resp)
-	}
-	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getRoomPlayInfo", attempt: attempt})
+	code, err := lc.risk.call(ctx, roomID, riskCall{attempt: riskRequest{
+		op:   "getRoomPlayInfo",
+		path: "/xlive/web-room/v2/index/getRoomPlayInfo",
+		query: url.Values{
+			"room_id":  {strconv.FormatInt(roomID, 10)},
+			"protocol": {"0,1"},
+			"format":   {"0,1,2"},
+			"codec":    {"0"}, // codec 只请求 0（avc），见 ADR-0004
+			"qn":       {strconv.Itoa(sourceQualityQN)},
+			"platform": {"web"},
+		},
+		sign: true,
+		out:  &resp,
+	}})
 	if err != nil {
 		return "", biz.StreamQuality{}, err
 	}
@@ -243,6 +250,9 @@ type roomInfoResponse struct {
 	} `json:"data"`
 }
 
+// bizCode 让响应体满足 codedResponse，供 riskGuard 读业务码。
+func (r *roomInfoResponse) bizCode() int { return r.Code }
+
 type playInfoResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -252,6 +262,9 @@ type playInfoResponse struct {
 		} `json:"playurl_info"`
 	} `json:"data"`
 }
+
+// bizCode 让响应体满足 codedResponse，供 riskGuard 读业务码。
+func (r *playInfoResponse) bizCode() int { return r.Code }
 
 // playURL 是 getRoomPlayInfo 返回的流地址清单。
 type playURL struct {

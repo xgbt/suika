@@ -1,5 +1,6 @@
-// http.go 提供所有 B 站请求共用的 HTTP 原语：浏览器伪装头、状态码判定
-// 与 JSON 解码。各端点的 URL 构造与业务码翻译不在这里。
+// http.go 提供所有 B 站请求共用的 HTTP 原语：浏览器伪装头、JSON GET 与
+// 状态码判定。各端点的 URL 构造、鉴权与业务码翻译不在这里 —— 直播侧经
+// riskGuard（risk.go）声明端点形状，passport 侧自带端点常量。
 package bili
 
 import (
@@ -7,7 +8,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
-	"net/http"
+	"net/url"
 
 	"github.com/go-resty/resty/v2"
 )
@@ -40,23 +41,30 @@ func browserRequest(client *resty.Client, referer, origin, cookie string) *resty
 	return req
 }
 
-// fetchJSON 携带抗风控 header 发 GET 请求，并把 JSON 响应体解码到 out。
-// HTTP 412/403/429 映射为 errHTTPRiskControl。
-func (c *Client) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
-	// 构造携带浏览器伪装头的请求，Referer 为房间页，Origin 为直播站，注入 cookie
-	req := browserRequest(c.apiClient, liveReferer(roomID), liveOrigin, cookie).SetContext(ctx)
+// jsonGet 描述一次 JSON GET：HTTP 客户端、浏览器伪装头的 Referer/Origin、
+// cookie、端点与查询参数、解码落点。直播侧与 passport 侧都经 getJSON 发送，
+// 差别只在填哪几个字段。
+type jsonGet struct {
+	client   *resty.Client
+	referer  string
+	origin   string // 为空时不发送 Origin 头（部分端点从不发送）
+	cookie   string
+	endpoint string
+	query    url.Values
+	out      any
+}
 
-	// 发送请求并处理 JSON 响应，非 2xx 状态码会被映射为 httpStatusError。
-	if _, err := doJSON(req, endpoint, out); err != nil {
-		if code, ok := httpStatusOf(err); ok {
-			switch code {
-			case http.StatusPreconditionFailed, http.StatusForbidden, http.StatusTooManyRequests:
-				return fmt.Errorf("%w: status=%d", errHTTPRiskControl, code)
-			}
+// getJSON 按描述发一次 GET，把 2xx 响应体解码到 out。返回的响应供调用方
+// 读取 Set-Cookie 等头部：解码成功时 resp 非 nil，出错时 resp 恒为 nil。
+// 非 2xx 状态返回 *httpStatusError。
+func getJSON(ctx context.Context, g jsonGet) (*resty.Response, error) {
+	req := browserRequest(g.client, g.referer, g.origin, g.cookie).SetContext(ctx)
+	for k, values := range g.query {
+		for _, v := range values {
+			req.SetQueryParam(k, v)
 		}
-		return err
 	}
-	return nil
+	return doJSON(req, g.endpoint, g.out)
 }
 
 // doJSON 发送 req 并把 2xx 响应体解码到 out。

@@ -36,7 +36,7 @@ type wbiSigner struct {
 	updatedAt  time.Time
 }
 
-func NewWBISigner(client *resty.Client, cookie func() string) *wbiSigner {
+func newWBISigner(client *resty.Client, cookie func() string) *wbiSigner {
 	return &wbiSigner{
 		httpClient: client,
 		cookie:     cookie,

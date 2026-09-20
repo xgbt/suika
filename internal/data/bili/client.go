@@ -1,10 +1,14 @@
-// client.go 持有与 B 站交互的共享长生命周期状态：三个用途不同的 HTTP
-// 客户端、当前生效的登录态、WBI 签名器与 buvid 缓存，以及它们的接线。
+// client.go 持有直播侧与 B 站交互的共享长生命周期状态：两个用途不同的
+// HTTP 客户端（API 调用 / 无超时的拉流）、当前生效的登录态、WBI 签名器与
+// buvid 缓存，以及它们的接线。passport 流量刻意不经过这里，自带客户端
+// （见 passport.go）。
 package bili
 
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -48,7 +52,7 @@ func NewClient(cookie string) *Client {
 		streamClient: resty.New(),
 		cookie:       cookie,
 	}
-	c.signer = NewWBISigner(apiClient, c.Cookie)
+	c.signer = newWBISigner(apiClient, c.Cookie)
 	c.buvids = newBuvidStore(apiClient)
 	return c
 }
@@ -96,6 +100,33 @@ func (c *Client) refreshRisk() {
 		log.Warn("wbi key refresh failed, retrying with existing keys", "err", err)
 	}
 	c.buvids.invalidate(c.Cookie())
+}
+
+// fetchJSON 以直播站伪装头发一次 GET 并把 JSON 响应体解码到 out：Referer
+// 取房间页，Origin 取直播站，cookie 由调用方注入。直播 API 的 HTTP 层风控
+// （412/403/429）映射为 errHTTPRiskControl，供 riskGuard 的重试分支识别。
+//
+// 只被 riskGuard.fetch 调用 —— 端点不直接使用它，因此不会漏掉注入指纹与
+// 签名这两步（见 risk.go 的 riskRequest）。
+func (c *Client) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
+	_, err := getJSON(ctx, jsonGet{
+		client:   c.apiClient,
+		referer:  liveReferer(roomID),
+		origin:   liveOrigin,
+		cookie:   cookie,
+		endpoint: endpoint,
+		out:      out,
+	})
+	if err != nil {
+		if code, ok := httpStatusOf(err); ok {
+			switch code {
+			case http.StatusPreconditionFailed, http.StatusForbidden, http.StatusTooManyRequests:
+				return fmt.Errorf("%w: status=%d", errHTTPRiskControl, code)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // cookieValue 从 Cookie 头字符串中提取指定名称的值，不存在时返回空串。
