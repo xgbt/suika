@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 	"time"
 
@@ -89,11 +90,8 @@ func (reg *RoomRegistry) Subscribe() (<-chan struct{}, func()) {
 	unsubscribe := func() {
 		reg.mu.Lock()
 		defer reg.mu.Unlock()
-		for i, sub := range reg.subscribers {
-			if sub == wakeup {
-				reg.subscribers = append(reg.subscribers[:i], reg.subscribers[i+1:]...)
-				return
-			}
+		if i := slices.Index(reg.subscribers, wakeup); i >= 0 {
+			reg.subscribers = slices.Delete(reg.subscribers, i, i+1)
 		}
 	}
 
@@ -216,12 +214,16 @@ func (reg *RoomRegistry) StartRecording(roomID int64) {
 
 // SetStreamQuality 记录当前录制会话实际获得的 B 站流清晰度。
 func (reg *RoomRegistry) SetStreamQuality(roomID int64, quality StreamQuality) {
-	reg.setState(roomID, func(st *roomState) { st.quality = quality })
+	reg.setState(roomID, func(st *roomState) {
+		st.quality = quality
+	})
 }
 
 // SetMerging 将房间会话标记为收尾中（正在合并分段）。
 func (reg *RoomRegistry) SetMerging(roomID int64) {
-	reg.setState(roomID, func(st *roomState) { st.recordStatus = RecordStatusMerging })
+	reg.setState(roomID, func(st *roomState) {
+		st.recordStatus = RecordStatusMerging
+	})
 }
 
 // FailRecording 将房间会话标记为失败并记录错误。
@@ -242,7 +244,9 @@ func (reg *RoomRegistry) FinishRecording(roomID int64) {
 }
 
 func (reg *RoomRegistry) NoteError(roomID int64, err error) {
-	reg.setState(roomID, func(st *roomState) { st.lastError = err.Error() })
+	reg.setState(roomID, func(st *roomState) {
+		st.lastError = err.Error()
+	})
 }
 
 func (reg *RoomRegistry) setState(roomID int64, fn func(*roomState)) {
