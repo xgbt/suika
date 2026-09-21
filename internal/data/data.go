@@ -31,23 +31,19 @@ type Data struct {
 	bili *bili.Client
 }
 
-// NewLiveClient 提供 biz.LiveClient；B 站直播流量全部实现在 bili 子包。
-func NewLiveClient(d *Data) biz.LiveClient { return bili.NewLiveClient(d.bili) }
+func NewLiveClient(d *Data) biz.LiveClient {
+	return bili.NewLiveClient(d.bili)
+}
 
-// NewPassportClient 提供 biz.PassportClient；实现位于 bili 子包。
-// 不依赖 *Data：passport 流量刻意不走风控，不碰共享客户端的签名与指纹，
-// 自带一个无 cookie jar 的 HTTP 客户端。
-func NewPassportClient() biz.PassportClient { return bili.NewPassportClient() }
+func NewPassportClient() biz.PassportClient {
+	return bili.NewPassportClient()
+}
 
-// NewRecorderRepo 将共享数据配置适配为录制子包的仓库实现。
 func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 	_ = d
 	return recorder.NewRecorderRepo(c)
 }
 
-// NewSessionStatsRepo 把录制仓库收窄为房间管理需要的写入统计视图。
-// RecorderRepo 内嵌 SessionStatsRepo，所以这里是纯粹的接口收窄——不再有
-// 运行时的类型断言。
 func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
 	return repo
 }
@@ -77,10 +73,10 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 		bili: bili.NewClient(cookie),
 	}
 
-	if rc != nil && rc.MergeEnabled != nil {
+	if rc != nil {
 		log.Warn("recorder: config field recorder.merge_enabled is deprecated and ignored; recorder sessions are always merged at finish")
 	}
-	if rc != nil && rc.GetCookie() != "" {
+	if rc != nil {
 		log.Warn("recorder: config field recorder.cookie is deprecated and ignored; the credential is managed in the database via web QR login")
 	}
 	if cookie == "" {
