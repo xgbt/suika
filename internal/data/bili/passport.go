@@ -38,25 +38,19 @@ const navCodeNotLogin = -101
 // passportClient 实现 biz.PassportClient：扫码登录的二维码生成与轮询，
 // 以及登录状态核验。所有请求走无 cookie jar 的专用客户端，不经风控编排。
 type passportClient struct {
-	httpClient *resty.Client
+	client *resty.Client
 }
 
 func NewPassportClient() biz.PassportClient {
+	// resty.New() 默认装 jar，而 Go 的 http.Client 会把响应的 Set-Cookie 存进
+	// jar，并在后续请求上以追加方式写进 Cookie 头（Request.AddCookie）。那样
+	// 轮询登录拿到的 cookie 会被回放到 AccountInfo 的请求上，与调用方显式传入
+	// 的那份挤在同一个头里，服务端取哪份不确定 —— 可能核验到错误的账号。
+	// 这里不需要共享的 Client：passport 流量刻意不走风控，不碰 WBI 签名与
+	// buvid 指纹。
 	return &passportClient{
-		httpClient: newPassportHTTP(),
+		client: resty.New().SetTimeout(15 * time.Second).SetCookieJar(nil),
 	}
-}
-
-// newPassportHTTP 构造 passport 专用客户端：不装 cookie jar。
-//
-// resty.New() 默认装 jar，而 Go 的 http.Client 会把响应的 Set-Cookie 存进
-// jar，并在后续请求上以追加方式写进 Cookie 头（Request.AddCookie）。那样
-// 轮询登录拿到的 cookie 会被回放到 AccountInfo 的请求上，与调用方显式传入
-// 的那份挤在同一个头里，服务端取哪份不确定 —— 可能核验到错误的账号。
-// 这里不需要共享的 Client：passport 流量刻意不走风控，不碰 WBI 签名与
-// buvid 指纹。
-func newPassportHTTP() *resty.Client {
-	return resty.New().SetTimeout(15 * time.Second).SetCookieJar(nil)
 }
 
 // CreateQRLogin 生成扫码登录二维码。
@@ -70,7 +64,7 @@ func (pc *passportClient) CreateQRLogin(ctx context.Context) (*biz.QRLoginSessio
 		} `json:"data"`
 	}
 	if _, err := getJSON(ctx, &jsonGet{
-		client:   pc.httpClient,
+		client:   pc.client,
 		referer:  biliWWWURL,
 		endpoint: defaultQRGenerateURL,
 		out:      &result,
@@ -105,7 +99,7 @@ func (pc *passportClient) PollQRLogin(ctx context.Context, qrcodeKey string) (*b
 		} `json:"data"`
 	}
 	resp, err := getJSON(ctx, &jsonGet{
-		client:   pc.httpClient,
+		client:   pc.client,
 		referer:  biliWWWURL,
 		endpoint: defaultQRPollURL,
 		query:    url.Values{"qrcode_key": {qrcodeKey}},
@@ -150,7 +144,7 @@ func (pc *passportClient) AccountInfo(ctx context.Context, cookie string) (*biz.
 		} `json:"data"`
 	}
 	if _, err := getJSON(ctx, &jsonGet{
-		client:   pc.httpClient,
+		client:   pc.client,
 		referer:  biliWWWURL,
 		cookie:   cookie,
 		endpoint: defaultAccountNavURL,

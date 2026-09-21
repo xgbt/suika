@@ -45,13 +45,13 @@ func browserRequest(client *resty.Client, referer, origin, cookie string) *resty
 // cookie、端点与查询参数、解码落点。直播侧与 passport 侧都经 getJSON 发送，
 // 差别只在填哪几个字段。
 type jsonGet struct {
-	client   *resty.Client
-	referer  string
-	origin   string // 为空时不发送 Origin 头
-	cookie   string
-	endpoint string
-	query    url.Values
-	out      any
+	client   *resty.Client // HTTP 客户端，用于发送请求
+	referer  string        // 浏览器伪装头的 Referer
+	origin   string        // 为空时不发送 Origin 头
+	cookie   string        // 浏览器伪装头的 Cookie
+	endpoint string        // 请求的 URL 端点
+	query    url.Values    // URL 查询参数
+	out      any           // 解码 JSON 响应的目标对象
 }
 
 // getJSON 按描述执行一次 JSON GET 请求，并将 2xx 响应体解码至 out

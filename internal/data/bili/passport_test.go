@@ -152,7 +152,7 @@ func newTestPassportClient(generateURL, pollURL, navURL string) *passportClient 
 		return http.DefaultTransport.RoundTrip(request)
 	}))
 	return &passportClient{
-		httpClient: client,
+		client: client,
 	}
 }
 
