@@ -168,7 +168,7 @@ suika 的骨架——开播检测（WS 事件驱动 + 兜底轮询 + 下播多�
 
 - **来源**：DDTV `Core/LiveChat/LiveChatListener.cs`（protobuf
   `SendGiftV2Parser.DecodeToLegacyGiftData` 映射回旧版结构）。
-- **问题**：`danmaku_conn.go` 的 `dispatch` 只认 `SEND_GIFT`；B 站部分流量
+- **问题**：`danmaku.go` 的 `dispatch` 只认 `SEND_GIFT`；B 站部分流量
   已是 `SEND_GIFT_V2`（protobuf 载荷），出现后礼物静默丢失。
 - **做法**：短期对未知 cmd 计数打日志（观测迁移进度）；观测到后参照
   DDTV 实现解码，映射进现有 `DanmakuEvent`。`USER_TOAST_MSG` 同理

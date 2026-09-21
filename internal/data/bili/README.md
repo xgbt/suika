@@ -6,58 +6,60 @@
 
 ```mermaid
 flowchart TB
-    subgraph BIZ["biz（调用方）"]
-        UC["RecorderUsecase / Monitor · AccountUsecase"]
-    end
-
-    subgraph SEAM["平台缝（biz 声明，本包实现）"]
-        LCI["LiveClient"]
-        PCI["PassportClient"]
-    end
+    UC["biz（调用方）<br/>RecorderUsecase / Monitor · AccountUsecase"]
 
     subgraph ENDPOINTS["端点实现（薄：声明端点形状 / 解析响应 / 翻译业务码）"]
-        LIVE["liveClient<br/>live.go"]
-        DM["danmakuConn 弹幕子系统<br/>danmaku_conn · _proto · _event · _info"]
+        LIVE["liveClient<br/>live.go（含弹幕鉴权 danmuInfo）"]
+        DM["danmakuConn 弹幕子系统<br/>danmaku.go（连接+协议）· danmaku_event.go"]
         PASS["passportClient<br/>passport.go"]
     end
 
     RISK["riskGuard<br/>risk.go<br/>合规请求与重试/冷却的唯一归属"]
-    CLIENT["Client<br/>client.go<br/>共享状态与接线<br/>riskTransport 的唯一实现"]
+    CLIENT["Client<br/>client.go<br/>共享状态与接线 · riskTransport 的唯一实现"]
+
+    subgraph HELPERS["风控助手（由 Client 持有并驱动）"]
+        WBI["wbiSigner<br/>wbi.go"]
+        BUVID["buvidStore<br/>buvid.go"]
+    end
+
     HTTP["HTTP 原语<br/>http.go<br/>browserRequest / doJSON / getJSON"]
-    WBI["wbiSigner<br/>wbi.go"]
-    BUVID["buvidStore<br/>buvid.go"]
 
-    UC --> LCI
-    UC --> PCI
-    LCI -.->|"实现"| LIVE
-    LCI -.->|"实现"| DM
-    PCI -.->|"实现"| PASS
+    subgraph BILI["B 站"]
+        BILIAPI["直播 API<br/>api.live.bilibili.com"]
+        WWWAPI["主站 API<br/>api.bilibili.com"]
+        CDN["直播 CDN"]
+        WS["弹幕 WebSocket"]
+        PP["passport.bilibili.com"]
+    end
 
+    UC -->|"实现 LiveClient"| LIVE
+    UC -->|"实现 PassportClient"| PASS
     LIVE -->|"DanmakuConn 构造"| DM
-    LIVE -->|"API 调用"| RISK
-    DM -->|"getDanmuInfo"| RISK
-    DM -->|"cookie 快照 · buvid3"| CLIENT
+    DM -->|"经 lc 回调：danmuInfo · GetRoomInfo"| LIVE
+    LIVE --> RISK
+    DM -.->|"cookie 快照 · buvid3"| CLIENT
     RISK -->|"riskTransport<br/>注入指纹 · 签名 · 发请求 · 刷新"| CLIENT
+    CLIENT -.->|"哨兵错误 errHTTPRiskControl"| RISK
 
-    CLIENT -->|"持有并驱动"| WBI
-    CLIENT -->|"持有并驱动"| BUVID
+    CLIENT --> WBI
+    CLIENT --> BUVID
     CLIENT --> HTTP
     WBI --> HTTP
     BUVID --> HTTP
     LIVE -->|"browserRequest"| HTTP
     PASS --> HTTP
 
-    CLIENT -.->|"哨兵错误<br/>errHTTPRiskControl"| RISK
-
-    CLIENT ==>|"直播 API"| BILIAPI["api.live.bilibili.com"]
-    WBI ==>|"nav 取密钥"| WWWAPI["api.bilibili.com"]
+    CLIENT ==> BILIAPI
+    WBI ==>|"nav 取密钥"| WWWAPI
     BUVID ==>|"spi 取指纹"| WWWAPI
-    LIVE ==>|"FLV 长连接"| CDN["直播 CDN"]
-    DM ==>|"弹幕事件流"| WS["弹幕 WebSocket"]
-    PASS ==>|"扫码登录 · nav 核验"| PP["passport.bilibili.com"]
+    LIVE ==>|"FLV 长连接"| CDN
+    DM ==>|"弹幕事件流"| WS
+    PASS ==>|"扫码登录 · nav 核验"| PP
 ```
 
 图里要紧的只有方向：**端点是薄的——只声明端点形状；构造合规请求（注入指纹、WBI 签名）与重试/退避/冷却全部收敛到 `riskGuard` 一个模块**。而 `riskGuard` 本身只依赖 `riskTransport` 这一个缝（生产实现是 `*Client`），既不碰 HTTP 原语、也不直接持有签名器与指纹缓存——所以"合规请求怎么构造"只有一处可改。
+
+`liveClient` 与 `danmakuConn` 是同一颗对象树里的父子关系，不是两个独立组件：`liveClient` 构造 `danmakuConn`（`DanmakuConn` 构造），`danmakuConn` 又经持有的 `lc` 反过来调用 `liveClient` 的 `danmuInfo`（弹幕鉴权）与 `GetRoomInfo`（断线重连后的房态复查）。这是刻意的双向依赖：两者本就同属"直播侧"，没有必要为了单向箭头而拆出额外接口。
 
 两点例外：`passport` 流量（扫码登录 / 账号核验）完全绕开风控，自带一个**不装 cookie jar** 的 resty 客户端（共用 `http.go` 的原语，但不共用 `Client` 的登录态与指纹）；直播 CDN 长连接本身不是 API 调用、不经风控——但它取址的那次 `getRoomPlayInfo` 走 `riskGuard`。
 
@@ -70,11 +72,9 @@ flowchart TB
 | `client.go` | `Client`：共享长生命周期状态——两个用途不同的 resty 客户端（API 调用 / 无超时的拉流）、唯一登录态（`Cookie` / `SetCookie` 热替换）、签名器与指纹缓存的接线 |
 | `http.go` | 所有 B 站请求共用的 HTTP 原语：`browserRequest`（浏览器伪装头）、`doJSON`（状态码判定 + JSON 解码）、`getJSON`（两者的组合，直播侧与 passport 侧共用） |
 | `risk.go` | `riskGuard`：全部直播 API 调用的风控编排，并负责把端点声明的形状（`riskRequest`）变成合规请求（见下）。依赖的传输能力由 `riskTransport` 声明，生产实现是 `*Client` |
-| `live.go` | `liveClient` 实现 `biz.LiveClient` 的直播侧：`GetRoomInfo` / `OpenLiveStream` / `DanmakuConn`；FLV 候选排序 `pickFLVStream`（纯函数） |
-| `danmaku_conn.go` | `danmakuConn` 实现 `biz.DanmakuConn`：拨号认证、30s 心跳、90s 读超时、指数退避重连、cmd 分发 |
-| `danmaku_proto.go` | 弹幕二进制包协议：16 字节包头、zlib/brotli 嵌套解压、认证包构造与握手校验 |
+| `live.go` | `liveClient` 实现 `biz.LiveClient` 的直播侧：`GetRoomInfo` / `OpenLiveStream` / `DanmakuConn`；FLV 候选排序 `pickFLVStream`（纯函数）；弹幕认证三要素（token、接入节点、buvid3）的获取 `danmuInfo`/`danmuBuvid`——主通道 `getDanmuInfo` 经 WBI 签名，旧版 `getConf` 被风控时兜底，两套响应形状由 `buildDanmuInfo` 统一成形 |
+| `danmaku.go` | `danmakuConn` 实现 `biz.DanmakuConn`：拨号认证、30s 心跳、90s 读超时、指数退避重连、cmd 分发；以及弹幕二进制包协议——16 字节包头、zlib/brotli 嵌套解压、认证包构造与握手校验 |
 | `danmaku_event.go` | 消息载荷 → `biz.DanmakuEvent`：弹幕 / 礼物 / 醒目留言 / 上舰 / 进场特效 |
-| `danmaku_info.go` | 弹幕认证三要素（token、接入节点、buvid3）：主通道 `getDanmuInfo`，旧版 `getConf` 兜底；两套响应形状由 `buildDanmuInfo` 统一成形 |
 | `wbi.go` | WBI 签名：nav 取密钥（1h 缓存）、置换表推导 mixin key、附加 `wts` / `w_rid` |
 | `buvid.go` | buvid3 / buvid4 指纹：spi 获取，按 cookie 分桶缓存 24h，注入时替换同名段 |
 | `passport.go` | `passportClient` 实现 `biz.PassportClient`：二维码生成/轮询、登录 Set-Cookie 拼装、nav 核验。自带 HTTP 客户端（不装 cookie jar），不依赖 `Client` |
@@ -107,9 +107,9 @@ flowchart TB
 | 合规请求的构造（拼路径、编码参数、签名、注入指纹） | `risk.go`：`fetch` |
 | 请求头、状态码判定、JSON 解码 | `http.go` |
 | 清晰度档位、FLV 候选排序 | `live.go`：`sourceQualityQN`（刻意不做成配置项，见注释）、`bestFLVStream`（改前先读 ADR-0004） |
-| 心跳间隔、读超时、重连退避 | `danmaku_conn.go` 顶部常量 |
-| 新增一类弹幕事件 | `danmaku_event.go` 写解析函数 + 在 `danmaku_conn.go` 的 `dispatch` 里注册 cmd |
-| 弹幕 token 的获取与兜底 | `danmaku_info.go` |
+| 心跳间隔、读超时、重连退避 | `danmaku.go` 顶部常量 |
+| 新增一类弹幕事件 | `danmaku_event.go` 写解析函数 + 在 `danmaku.go` 的 `dispatch` 里注册 cmd |
+| 弹幕 token 的获取与兜底 | `live.go`：`danmuInfo` |
 | WBI 签名 / buvid 指纹 | `wbi.go` / `buvid.go` |
 | 扫码登录、账号核验 | `passport.go` —— 这一路刻意不走风控，不要往这里加重试 |
 
