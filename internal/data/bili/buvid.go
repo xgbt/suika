@@ -59,8 +59,14 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 			B4 string `json:"b_4"`
 		} `json:"data"`
 	}
-	req := browserRequest(s.httpClient, biliWWWURL, biliWWWURL, cookieHeader).SetContext(ctx)
-	if _, err := doJSON(req, s.spiURL, &result); err != nil {
+	if _, err := getJSON(ctx, &jsonGet{
+		client:   s.httpClient,
+		referer:  biliWWWURL,
+		origin:   biliWWWURL,
+		cookie:   cookieHeader,
+		endpoint: s.spiURL,
+		out:      &result,
+	}); err != nil {
 		return "", "", err
 	}
 	if result.Code != 0 {

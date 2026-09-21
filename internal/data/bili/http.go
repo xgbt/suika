@@ -5,7 +5,6 @@ package bili
 
 import (
 	"context"
-	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"net/url"
@@ -55,36 +54,28 @@ type jsonGet struct {
 	out      any
 }
 
-// getJSON 按描述发一次 GET，把 2xx 响应体解码到 out。返回的响应供调用方
-// 读取 Set-Cookie 等头部：解码成功时 resp 非 nil，出错时 resp 恒为 nil。
-// 非 2xx 状态返回 *httpStatusError。
+// getJSON 按描述执行一次 JSON GET 请求，并将 2xx 响应体解码至 out
+// 仅在成功时返回非 nil 的 *resty.Response 以供读取 Header（如 Set-Cookie）
 func getJSON(ctx context.Context, g *jsonGet) (*resty.Response, error) {
-	// 构造带浏览器伪装头的请求，并附加上下文。
-	req := browserRequest(g.client, g.referer, g.origin, g.cookie).SetContext(ctx)
+	// 构造带浏览器伪装头的请求，并设置上下文与解码落点
+	req := browserRequest(g.client, g.referer, g.origin, g.cookie).
+		SetContext(ctx).
+		SetResult(g.out)
 
-	// 附加查询参数
+	// 设置 Query 参数
 	if len(g.query) > 0 {
 		req.SetQueryParamsFromValues(g.query)
 	}
 
-	// 发送请求并解码 JSON 响应体
-	return doJSON(req, g.endpoint, g.out)
-}
-
-// doJSON 发送 req 并把 2xx 响应体解码到 out。
-// 返回的响应供调用方读取 Set-Cookie 等头部：解码成功时 resp 非 nil，
-// 出错时 resp 恒为 nil。非 2xx 状态返回 *httpStatusError。
-func doJSON(req *resty.Request, endpoint string, out any) (*resty.Response, error) {
-	resp, err := req.Get(endpoint)
+	// 发送 GET 请求并检查响应状态码。
+	resp, err := req.Get(g.endpoint)
 	if err != nil {
 		return nil, err
 	}
 	if !resp.IsSuccess() {
 		return nil, &httpStatusError{code: resp.StatusCode()}
 	}
-	if err := json.Unmarshal(resp.Body(), out); err != nil {
-		return nil, fmt.Errorf("bilibili parse response: %w", err)
-	}
+
 	return resp, nil
 }
 
