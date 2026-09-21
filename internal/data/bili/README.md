@@ -22,7 +22,7 @@ flowchart TB
         BUVID["buvidStore<br/>buvid.go"]
     end
 
-    HTTP["HTTP 原语<br/>http.go<br/>browserRequest / doJSON / getJSON"]
+    HTTP["HTTP 原语<br/>http.go<br/>browserRequest / getJSON"]
 
     subgraph BILI["B 站"]
         BILIAPI["直播 API<br/>api.live.bilibili.com"]
@@ -70,7 +70,7 @@ flowchart TB
 | 文件 | 内容 |
 |---|---|
 | `client.go` | `Client`：共享长生命周期状态——两个用途不同的 resty 客户端（API 调用 / 无超时的拉流）、唯一登录态（`Cookie` / `SetCookie` 热替换）、签名器与指纹缓存的接线 |
-| `http.go` | 所有 B 站请求共用的 HTTP 原语：`browserRequest`（浏览器伪装头）、`doJSON`（状态码判定 + JSON 解码）、`getJSON`（两者的组合，直播侧与 passport 侧共用） |
+| `http.go` | 所有 B 站请求共用的 HTTP 原语：`browserRequest`（浏览器伪装头）、`getJSON`（发送 JSON GET、状态码判定与响应解码，直播侧与 passport 侧共用） |
 | `risk.go` | `riskGuard`：全部直播 API 调用的风控编排，并负责把端点声明的形状（`riskRequest`）变成合规请求（见下）。依赖的传输能力由 `riskTransport` 声明，生产实现是 `*Client` |
 | `live.go` | `liveClient` 实现 `biz.LiveClient` 的直播侧：`GetRoomInfo` / `OpenLiveStream` / `DanmakuConn`；FLV 候选排序 `pickFLVStream`（纯函数）；弹幕认证三要素（token、接入节点、buvid3）的获取 `danmuInfo`/`danmuBuvid`——主通道 `getDanmuInfo` 经 WBI 签名，旧版 `getConf` 被风控时兜底，两套响应形状由 `buildDanmuInfo` 统一成形 |
 | `danmaku.go` | `danmakuConn` 实现 `biz.DanmakuConn`：拨号认证、30s 心跳、90s 读超时、指数退避重连、cmd 分发；以及弹幕二进制包协议——16 字节包头、zlib/brotli 嵌套解压、认证包构造与握手校验 |

@@ -38,18 +38,12 @@ const navCodeNotLogin = -101
 // passportClient 实现 biz.PassportClient：扫码登录的二维码生成与轮询，
 // 以及登录状态核验。所有请求走无 cookie jar 的专用客户端，不经风控编排。
 type passportClient struct {
-	httpClient  *resty.Client
-	generateURL string
-	pollURL     string
-	navURL      string
+	httpClient *resty.Client
 }
 
 func NewPassportClient() biz.PassportClient {
 	return &passportClient{
-		httpClient:  newPassportHTTP(),
-		generateURL: defaultQRGenerateURL,
-		pollURL:     defaultQRPollURL,
-		navURL:      defaultAccountNavURL,
+		httpClient: newPassportHTTP(),
 	}
 }
 
@@ -75,8 +69,13 @@ func (pc *passportClient) CreateQRLogin(ctx context.Context) (*biz.QRLoginSessio
 			QRCodeKey string `json:"qrcode_key"`
 		} `json:"data"`
 	}
-	if _, err := pc.getJSON(ctx, pc.generateURL, nil, "", &result); err != nil {
-		return nil, err
+	if _, err := getJSON(ctx, &jsonGet{
+		client:   pc.httpClient,
+		referer:  biliWWWURL,
+		endpoint: defaultQRGenerateURL,
+		out:      &result,
+	}); err != nil {
+		return nil, fmt.Errorf("%w: %v", biz.ErrPassportUnavailable, err)
 	}
 	if result.Code != 0 {
 		return nil, fmt.Errorf("%w: generate code=%d message=%s", biz.ErrPassportUnavailable, result.Code, result.Message)
@@ -105,9 +104,15 @@ func (pc *passportClient) PollQRLogin(ctx context.Context, qrcodeKey string) (*b
 			Message      string `json:"message"`
 		} `json:"data"`
 	}
-	resp, err := pc.getJSON(ctx, pc.pollURL, url.Values{"qrcode_key": {qrcodeKey}}, "", &result)
+	resp, err := getJSON(ctx, &jsonGet{
+		client:   pc.httpClient,
+		referer:  biliWWWURL,
+		endpoint: defaultQRPollURL,
+		query:    url.Values{"qrcode_key": {qrcodeKey}},
+		out:      &result,
+	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("%w: %v", biz.ErrPassportUnavailable, err)
 	}
 	if result.Code != 0 {
 		return nil, nil, fmt.Errorf("%w: poll code=%d message=%s", biz.ErrPassportUnavailable, result.Code, result.Message)
@@ -144,8 +149,14 @@ func (pc *passportClient) AccountInfo(ctx context.Context, cookie string) (*biz.
 			Mid     int64  `json:"mid"`
 		} `json:"data"`
 	}
-	if _, err := pc.getJSON(ctx, pc.navURL, nil, cookie, &result); err != nil {
-		return nil, err
+	if _, err := getJSON(ctx, &jsonGet{
+		client:   pc.httpClient,
+		referer:  biliWWWURL,
+		cookie:   cookie,
+		endpoint: defaultAccountNavURL,
+		out:      &result,
+	}); err != nil {
+		return nil, fmt.Errorf("%w: %v", biz.ErrPassportUnavailable, err)
 	}
 	switch result.Code {
 	case 0:
@@ -158,23 +169,6 @@ func (pc *passportClient) AccountInfo(ctx context.Context, cookie string) (*biz.
 	default:
 		return nil, fmt.Errorf("%w: nav code=%d message=%s", biz.ErrPassportUnavailable, result.Code, result.Message)
 	}
-}
-
-// getJSON 以主站 Referer（不发 Origin）发 GET 请求并把 JSON 响应体解码到
-// out。网络、HTTP 层与解码错误统一包装为 biz.ErrPassportUnavailable。
-func (pc *passportClient) getJSON(ctx context.Context, endpoint string, query url.Values, cookie string, out any) (*resty.Response, error) {
-	resp, err := getJSON(ctx, &jsonGet{
-		client:   pc.httpClient,
-		referer:  biliWWWURL,
-		cookie:   cookie,
-		endpoint: endpoint,
-		query:    query,
-		out:      out,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", biz.ErrPassportUnavailable, err)
-	}
-	return resp, nil
 }
 
 // qrPollStatus 把 B 站轮询内层业务码映射为领域状态。

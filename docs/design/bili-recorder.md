@@ -130,8 +130,8 @@ internal/data/
                          injectAntiRisk / signURL / fetchJSON / refreshRisk
                          是 riskGuard 依赖的传输能力（riskTransport）
   bili/http.go           所有 B 站请求共用的 HTTP 原语：browserRequest（浏览器
-                         伪装头）/ doJSON（状态码判定 + JSON 解码）/
-                         getJSON（两者的组合，直播侧与 passport 侧共用）
+                         伪装头）/ getJSON（发送 JSON GET、状态码判定与
+                         响应解码，直播侧与 passport 侧共用）
   bili/live.go           liveClient 实现 biz.LiveClient：GetRoomInfo / OpenLiveStream /
                          DanmakuConn 构造；getRoomPlayInfo 候选排序与降档
                          （pickFLVStream 纯函数）；风控编排统一委托 riskGuard；
@@ -626,8 +626,8 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 ## 5. 风控层（data）
 
 所有 B 站请求都经 `browserRequest` 带上伪装头（桌面 Chrome UA + Referer +
-Origin + cookie），由 `doJSON` 判状态码并解码（`bili/http.go` 的 `getJSON`
-是两者的组合，直播侧与 passport 侧共用）；直播 API 再经 `Client.fetchJSON`
+Origin + cookie），由 `getJSON` 发送请求、判定状态码并解码（直播侧与
+passport 侧共用）；直播 API 再经 `Client.fetchJSON`
 发请求，把 HTTP 412/403/429 映射为 `errHTTPRiskControl`。
 
 **WBI 签名**（`bili/wbi.go`，移植 hikami-go）：`/x/web-interface/nav` 取
