@@ -5,21 +5,11 @@
 package bili
 
 import (
-	"context"
-	stderrors "errors"
-	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-kratos/kratos/v3/log"
 	"github.com/go-resty/resty/v2"
-)
-
-var (
-	errRiskControl352  = stderrors.New("bilibili -352 risk control")
-	errHTTPRiskControl = stderrors.New("bilibili http-layer risk control")
 )
 
 // Client 持有所有与 B 站交互共享的长生命周期状态：携带 cookie 的
@@ -77,58 +67,6 @@ func (c *Client) SetCookie(cookie string) {
 	}
 }
 
-// injectAntiRisk 返回注入了新鲜 buvid3/buvid4 指纹的当前生效 cookie；
-// 失败时退化为原 cookie。
-func (c *Client) injectAntiRisk(ctx context.Context) string {
-	cookie := c.Cookie()
-	b3, b4, err := c.buvids.getBuvids(ctx, cookie)
-	if err != nil {
-		log.Warn("get buvids failed, continuing without buvid", "err", err)
-		return cookie
-	}
-
-	if b3 == "" && b4 == "" {
-		return cookie
-	}
-
-	return injectBuvids(cookie, b3, b4)
-}
-
-// refreshRisk 在风控重试前刷新 WBI 密钥并丢弃缓存的 buvid。
-func (c *Client) refreshRisk(ctx context.Context) {
-	if err := c.signer.fetchKeys(ctx); err != nil {
-		log.Warn("wbi key refresh failed, retrying with existing keys", "err", err)
-	}
-	c.buvids.invalidate(c.Cookie())
-}
-
-// fetchJSON 以直播站伪装头发一次 GET 并把 JSON 响应体解码到 out：Referer
-// 取房间页，Origin 取直播站，cookie 由调用方注入。直播 API 的 HTTP 层风控
-// （412/403/429）映射为 errHTTPRiskControl，供 riskGuard 的重试分支识别。
-//
-// 只被 riskGuard.fetch 调用 —— 端点不直接使用它，因此不会漏掉注入指纹与
-// 签名这两步（见 risk.go 的 riskRequest）。
-func (c *Client) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
-	_, err := getJSON(ctx, &jsonGet{
-		client:   c.apiClient,
-		referer:  liveReferer(roomID),
-		origin:   liveOrigin,
-		cookie:   cookie,
-		endpoint: endpoint,
-		out:      out,
-	})
-	if err != nil {
-		if code, ok := httpStatusOf(err); ok {
-			switch code {
-			case http.StatusPreconditionFailed, http.StatusForbidden, http.StatusTooManyRequests:
-				return fmt.Errorf("%w: status=%d", errHTTPRiskControl, code)
-			}
-		}
-		return err
-	}
-	return nil
-}
-
 // cookieValue 从 Cookie 头字符串中提取指定名称的值，不存在时返回空串。
 func cookieValue(cookieHeader, name string) string {
 	for item := range strings.SplitSeq(cookieHeader, ";") {
@@ -138,14 +76,4 @@ func cookieValue(cookieHeader, name string) string {
 		}
 	}
 	return ""
-}
-
-// signURL 对 endpoint 做 WBI 签名；失败时退化为未签名 URL。
-func (c *Client) signURL(ctx context.Context, endpoint string) string {
-	signed, err := c.signer.signURL(ctx, endpoint)
-	if err != nil {
-		log.Warn("wbi sign failed, continuing unsigned", "err", err)
-		return endpoint
-	}
-	return signed
 }

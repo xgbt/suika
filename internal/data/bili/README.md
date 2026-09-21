@@ -63,7 +63,7 @@ flowchart TB
 
 两点例外：`passport` 流量（扫码登录 / 账号核验）完全绕开风控，自带一个**不装 cookie jar** 的 resty 客户端（共用 `http.go` 的原语，但不共用 `Client` 的登录态与指纹）；直播 CDN 长连接本身不是 API 调用、不经风控——但它取址的那次 `getRoomPlayInfo` 走 `riskGuard`。
 
-反向的一条虚线是错误契约：`errHTTPRiskControl` 定义在 `client.go`（`fetchJSON` 把 412/403/429 映射成它）、由 `risk.go` 的 `call` 消费来决定重试分支。同理 `liveAPIBase` 与 `riskCode352` 定义在 `live.go` 却由 `risk.go` 使用。各文件的分工见下表。
+反向的一条虚线是错误契约：`errHTTPRiskControl` 与 `errRiskControl352`、`liveAPIBase`、`riskCode352` 统一定义在 `risk_transport.go`，由 `risk.go` 共同消费，避免跨实现文件反向取常量。各文件的分工见下表。
 
 ## 文件
 
@@ -72,6 +72,7 @@ flowchart TB
 | `client.go` | `Client`：共享长生命周期状态——两个用途不同的 resty 客户端（API 调用 / 无超时的拉流）、唯一登录态（`Cookie` / `SetCookie` 热替换）、签名器与指纹缓存的接线 |
 | `http.go` | 所有 B 站请求共用的 HTTP 原语：`browserRequest`（浏览器伪装头）、`getJSON`（发送 JSON GET、状态码判定与响应解码，直播侧与 passport 侧共用） |
 | `risk.go` | `riskGuard`：全部直播 API 调用的风控编排，并负责把端点声明的形状（`riskRequest`）变成合规请求（见下）。依赖的传输能力由 `riskTransport` 声明，生产实现是 `*Client` |
+| `risk_transport.go` | 风控共享契约 + `*Client` 对 `riskTransport` 的实现：错误哨兵、风控业务码、API 基础地址，以及注入 buvid、WBI 签名、直播 API 请求发送与 HTTP 风控码映射、重试前刷新 |
 | `live.go` | `liveClient` 实现 `biz.LiveClient` 的直播侧：`GetRoomInfo` / `OpenLiveStream` / `DanmakuConn`；FLV 候选排序 `pickFLVStream`（纯函数）；弹幕认证三要素（token、接入节点、buvid3）的获取 `danmuInfo`/`danmuBuvid`——主通道 `getDanmuInfo` 经 WBI 签名，旧版 `getConf` 被风控时兜底，两套响应形状由 `buildDanmuInfo` 统一成形 |
 | `danmaku.go` | `danmakuConn` 实现 `biz.DanmakuConn`：拨号认证、30s 心跳、90s 读超时、指数退避重连、cmd 分发；以及弹幕二进制包协议——16 字节包头、zlib/brotli 嵌套解压、认证包构造与握手校验 |
 | `danmaku_event.go` | 消息载荷 → `biz.DanmakuEvent`：弹幕 / 礼物 / 醒目留言 / 上舰 / 进场特效 |

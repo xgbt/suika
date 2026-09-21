@@ -61,15 +61,6 @@ type riskCall struct {
 	fallback *riskRequest
 }
 
-// riskTransport 是 riskGuard 需要的传输能力：注入指纹、WBI 签名、以直播站
-// 伪装头发请求、刷新签名密钥。*Client 是唯一的生产实现。
-type riskTransport interface {
-	injectAntiRisk(ctx context.Context) string
-	signURL(ctx context.Context, endpoint string) string
-	fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error
-	refreshRisk(ctx context.Context)
-}
-
 // riskGuard 是所有 B 站 API 流量的风控编排模块：合规请求构造、冷却闸门、
 // 412/-352 刷新重试、兜底调用、错误分类与每房间冷却阶梯，全部收在这里。
 // 端点代码只负责声明端点形状与翻译业务码。
@@ -95,19 +86,19 @@ func (g *riskGuard) call(ctx context.Context, roomID int64, rc riskCall) (int, e
 		return 0, err
 	}
 
-	code, err := g.fetch(ctx, roomID, &rc.attempt)
+	code, err := g.callOnce(ctx, roomID, &rc.attempt)
 	if err != nil && stderrors.Is(err, errHTTPRiskControl) {
 		log.Warn("http-layer risk control, refreshing and retrying once", "op", rc.attempt.op, "room", roomID)
-		g.transport.refreshRisk(ctx)
-		code, err = g.fetch(ctx, roomID, &rc.attempt)
+		g.transport.refreshRiskState(ctx)
+		code, err = g.callOnce(ctx, roomID, &rc.attempt)
 	}
 	if err != nil {
 		return 0, g.classifyRisk(roomID, err)
 	}
 	if code == riskCode352 {
 		log.Warn("risk control -352, refreshing and retrying once", "op", rc.attempt.op, "room", roomID)
-		g.transport.refreshRisk(ctx)
-		code, err = g.fetch(ctx, roomID, &rc.attempt)
+		g.transport.refreshRiskState(ctx)
+		code, err = g.callOnce(ctx, roomID, &rc.attempt)
 		if err != nil {
 			return 0, g.classifyRisk(roomID, err)
 		}
@@ -115,7 +106,7 @@ func (g *riskGuard) call(ctx context.Context, roomID int64, rc riskCall) (int, e
 	if code == riskCode352 {
 		if rc.fallback != nil {
 			log.Warn("still -352 after retry, trying fallback", "op", rc.attempt.op, "room", roomID)
-			code, err = g.fetch(ctx, roomID, rc.fallback)
+			code, err = g.callOnce(ctx, roomID, rc.fallback)
 			if err == nil && code == 0 {
 				g.noteSuccess(roomID)
 				return 0, nil
@@ -129,21 +120,21 @@ func (g *riskGuard) call(ctx context.Context, roomID int64, rc riskCall) (int, e
 	return code, nil
 }
 
-// fetch 构造并发送一次请求，不含任何风控重试：拼接路径与查询参数 → 按需
+// callOnce 构造并发送一次请求，不含任何风控重试：拼接路径与查询参数 → 按需
 // 签名 → 注入新鲜指纹 → 发送并解码 → 读业务码 → 执行端点的后处理。
 // HTTP 层风控由 transport 映射为 errHTTPRiskControl，供 call 的重试分支
 // 识别。
-func (g *riskGuard) fetch(ctx context.Context, roomID int64, r *riskRequest) (int, error) {
+func (g *riskGuard) callOnce(ctx context.Context, roomID int64, r *riskRequest) (int, error) {
 	endpoint := liveAPIBase + r.path
 	if len(r.query) > 0 {
 		endpoint += "?" + r.query.Encode()
 	}
 	if r.sign {
-		endpoint = g.transport.signURL(ctx, endpoint)
+		endpoint = g.transport.signEndpoint(ctx, endpoint)
 	}
 
-	cookie := g.transport.injectAntiRisk(ctx)
-	if err := g.transport.fetchJSON(ctx, endpoint, roomID, cookie, r.out); err != nil {
+	cookie := g.transport.antiRiskCookie(ctx)
+	if err := g.transport.fetchEndpointJSON(ctx, endpoint, roomID, cookie, r.out); err != nil {
 		return 0, err
 	}
 
@@ -167,7 +158,8 @@ func (g *riskGuard) checkCooldown(roomID int64) error {
 
 	cd := g.cooldowns[roomID]
 	if cd != nil && time.Now().Before(cd.until) {
-		return fmt.Errorf("%w: room %d cooling down until %s", biz.ErrRiskControl, roomID, cd.until.Format(time.RFC3339))
+		return fmt.Errorf("%w: room %d cooling down until %s",
+			biz.ErrRiskControl, roomID, cd.until.Format(time.RFC3339))
 	}
 
 	return nil

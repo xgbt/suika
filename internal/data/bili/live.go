@@ -18,8 +18,6 @@ import (
 )
 
 const (
-	liveAPIBase          = "https://api.live.bilibili.com" // B 站直播 API 基础 URL
-	riskCode352          = -352                            // B 站直播 API 的 -352 风控错误码
 	liveStatusOn         = 1
 	defaultDanmakuServer = "wss://broadcastlv.chat.bilibili.com:2245/sub" // getDanmuInfo 和旧版 getConf 都被风控时的兜底弹幕端点
 )

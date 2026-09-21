@@ -38,7 +38,7 @@ func testCall(resp *testResponse) riskCall {
 	}}
 }
 
-// scriptedTransport 实现 riskTransport：按脚本逐步回答 fetchJSON，走完脚本
+// scriptedTransport 实现 riskTransport：按脚本逐步回答 fetchEndpointJSON，走完脚本
 // 后重复最后一步。它同时是调用次数与刷新次数的探针，并记录最近一次请求的
 // 形状，供请求构造的断言使用。
 type scriptedTransport struct {
@@ -53,24 +53,24 @@ type scriptedTransport struct {
 	lastCookie   string
 }
 
-func (t *scriptedTransport) injectAntiRisk(context.Context) string {
+func (t *scriptedTransport) antiRiskCookie(context.Context) string {
 	return "SESSDATA=stub"
 }
 
-func (t *scriptedTransport) signURL(_ context.Context, endpoint string) string {
+func (t *scriptedTransport) signEndpoint(_ context.Context, endpoint string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.signCalls++
 	return endpoint + "&w_rid=stub"
 }
 
-func (t *scriptedTransport) refreshRisk(_ context.Context) {
+func (t *scriptedTransport) refreshRiskState(_ context.Context) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.refreshes++
 }
 
-func (t *scriptedTransport) fetchJSON(_ context.Context, endpoint string, roomID int64, cookie string, out any) error {
+func (t *scriptedTransport) fetchEndpointJSON(_ context.Context, endpoint string, roomID int64, cookie string, out any) error {
 	t.mu.Lock()
 	if len(t.steps) == 0 {
 		t.mu.Unlock()
@@ -355,7 +355,7 @@ func TestRiskGuardCooldownLadderEscalates(t *testing.T) {
 	}
 }
 
-// fetch 负责把声明的端点形状变成合规请求：拼上 liveAPIBase 与查询参数、
+// callOnce 负责把声明的端点形状变成合规请求：拼上 liveAPIBase 与查询参数、
 // 按 sign 决定是否签名、注入指纹快照。这些步骤原先散在各端点里手工重复。
 func TestRiskGuardFetchBuildsRequest(t *testing.T) {
 	g, tr := newTestGuard([]scriptStep{{code: 0}})
