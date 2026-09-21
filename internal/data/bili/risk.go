@@ -65,9 +65,9 @@ type riskCall struct {
 // 伪装头发请求、刷新签名密钥。*Client 是唯一的生产实现。
 type riskTransport interface {
 	injectAntiRisk(ctx context.Context) string
-	signURL(endpoint string) string
+	signURL(ctx context.Context, endpoint string) string
 	fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error
-	refreshRisk()
+	refreshRisk(ctx context.Context)
 }
 
 // riskGuard 是所有 B 站 API 流量的风控编排模块：合规请求构造、冷却闸门、
@@ -98,7 +98,7 @@ func (g *riskGuard) call(ctx context.Context, roomID int64, rc riskCall) (int, e
 	code, err := g.fetch(ctx, roomID, &rc.attempt)
 	if err != nil && stderrors.Is(err, errHTTPRiskControl) {
 		log.Warn("http-layer risk control, refreshing and retrying once", "op", rc.attempt.op, "room", roomID)
-		g.transport.refreshRisk()
+		g.transport.refreshRisk(ctx)
 		code, err = g.fetch(ctx, roomID, &rc.attempt)
 	}
 	if err != nil {
@@ -106,7 +106,7 @@ func (g *riskGuard) call(ctx context.Context, roomID int64, rc riskCall) (int, e
 	}
 	if code == riskCode352 {
 		log.Warn("risk control -352, refreshing and retrying once", "op", rc.attempt.op, "room", roomID)
-		g.transport.refreshRisk()
+		g.transport.refreshRisk(ctx)
 		code, err = g.fetch(ctx, roomID, &rc.attempt)
 		if err != nil {
 			return 0, g.classifyRisk(roomID, err)
@@ -139,7 +139,7 @@ func (g *riskGuard) fetch(ctx context.Context, roomID int64, r *riskRequest) (in
 		endpoint += "?" + r.query.Encode()
 	}
 	if r.sign {
-		endpoint = g.transport.signURL(endpoint)
+		endpoint = g.transport.signURL(ctx, endpoint)
 	}
 
 	cookie := g.transport.injectAntiRisk(ctx)

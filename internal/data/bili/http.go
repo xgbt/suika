@@ -9,6 +9,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/go-resty/resty/v2"
 )
@@ -25,19 +26,19 @@ const (
 	liveOrigin = "https://live.bilibili.com"
 )
 
-// browserRequest 构造一个携带浏览器伪装头的请求。B 站接口都要求这三件套
-// 才按网页端对待；origin 为空时不设置（部分端点从不发送 Origin）。
-// context 由调用方按需 SetContext。
+// browserRequest 构造一个携带浏览器伪装头的请求
 func browserRequest(client *resty.Client, referer, origin, cookie string) *resty.Request {
 	req := client.R().
 		SetHeader("User-Agent", biliUserAgent).
 		SetHeader("Referer", referer)
-	if origin != "" {
+
+	if strings.TrimSpace(origin) != "" {
 		req.SetHeader("Origin", origin)
 	}
-	if cookie != "" {
+	if strings.TrimSpace(cookie) != "" {
 		req.SetHeader("Cookie", cookie)
 	}
+
 	return req
 }
 
@@ -47,7 +48,7 @@ func browserRequest(client *resty.Client, referer, origin, cookie string) *resty
 type jsonGet struct {
 	client   *resty.Client
 	referer  string
-	origin   string // 为空时不发送 Origin 头（部分端点从不发送）
+	origin   string // 为空时不发送 Origin 头
 	cookie   string
 	endpoint string
 	query    url.Values
@@ -57,13 +58,16 @@ type jsonGet struct {
 // getJSON 按描述发一次 GET，把 2xx 响应体解码到 out。返回的响应供调用方
 // 读取 Set-Cookie 等头部：解码成功时 resp 非 nil，出错时 resp 恒为 nil。
 // 非 2xx 状态返回 *httpStatusError。
-func getJSON(ctx context.Context, g jsonGet) (*resty.Response, error) {
+func getJSON(ctx context.Context, g *jsonGet) (*resty.Response, error) {
+	// 构造带浏览器伪装头的请求，并附加上下文。
 	req := browserRequest(g.client, g.referer, g.origin, g.cookie).SetContext(ctx)
-	for k, values := range g.query {
-		for _, v := range values {
-			req.SetQueryParam(k, v)
-		}
+
+	// 附加查询参数
+	if len(g.query) > 0 {
+		req.SetQueryParamsFromValues(g.query)
 	}
+
+	// 发送请求并解码 JSON 响应体
 	return doJSON(req, g.endpoint, g.out)
 }
 

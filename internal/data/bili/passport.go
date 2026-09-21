@@ -163,7 +163,7 @@ func (pc *passportClient) AccountInfo(ctx context.Context, cookie string) (*biz.
 // getJSON 以主站 Referer（不发 Origin）发 GET 请求并把 JSON 响应体解码到
 // out。网络、HTTP 层与解码错误统一包装为 biz.ErrPassportUnavailable。
 func (pc *passportClient) getJSON(ctx context.Context, endpoint string, query url.Values, cookie string, out any) (*resty.Response, error) {
-	resp, err := getJSON(ctx, jsonGet{
+	resp, err := getJSON(ctx, &jsonGet{
 		client:   pc.httpClient,
 		referer:  biliWWWURL,
 		cookie:   cookie,

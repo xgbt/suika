@@ -3,6 +3,7 @@
 package bili
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	stderrors "errors"
@@ -44,8 +45,8 @@ func newWBISigner(client *resty.Client, cookie func() string) *wbiSigner {
 }
 
 // signURL 为 rawURL 追加 wts 和 w_rid 查询参数。
-func (s *wbiSigner) signURL(rawURL string) (string, error) {
-	if err := s.ensureKeys(); err != nil {
+func (s *wbiSigner) signURL(ctx context.Context, rawURL string) (string, error) {
+	if err := s.ensureKeys(ctx); err != nil {
 		return "", err
 	}
 
@@ -84,17 +85,17 @@ func (s *wbiSigner) signURL(rawURL string) (string, error) {
 }
 
 // ensureKeys 确保 mixinKey 是最新的,  过期或不存在时触发 fetchKeys
-func (s *wbiSigner) ensureKeys() error {
+func (s *wbiSigner) ensureKeys(ctx context.Context) error {
 	s.mu.Lock()
 	fresh := s.mixinKey != "" && time.Since(s.updatedAt) < time.Hour
 	s.mu.Unlock()
 	if fresh {
 		return nil
 	}
-	return s.fetchKeys()
+	return s.fetchKeys(ctx)
 }
 
-func (s *wbiSigner) fetchKeys() error {
+func (s *wbiSigner) fetchKeys(ctx context.Context) error {
 	// 获取 nav API 以刷新 WBI 签名所需的 mixinKey。
 	navURL := "https://api.bilibili.com/x/web-interface/nav"
 	var navResp struct {
@@ -107,10 +108,14 @@ func (s *wbiSigner) fetchKeys() error {
 		} `json:"data"`
 	}
 
-	// 本请求由不接收 ctx 的 signURL 触发，故不设置 context
-	// 获取加密密钥 mixinKey 所需的 imgKey 和 subKey
-	req := browserRequest(s.httpClient, biliWWWURL, "", s.cookie())
-	if _, err := doJSON(req, navURL, &navResp); err != nil {
+	// 获取加密密钥 mixinKey 所需的 imgKey 和 subKey。
+	if _, err := getJSON(ctx, &jsonGet{
+		client:   s.httpClient,
+		referer:  biliWWWURL,
+		cookie:   s.cookie(),
+		endpoint: navURL,
+		out:      &navResp,
+	}); err != nil {
 		return fmt.Errorf("wbi nav: %w", err)
 	}
 	imgKey := extractKeyFromURL(navResp.Data.WbiImg.ImgURL)

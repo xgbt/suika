@@ -57,14 +57,14 @@ func (t *scriptedTransport) injectAntiRisk(context.Context) string {
 	return "SESSDATA=stub"
 }
 
-func (t *scriptedTransport) signURL(endpoint string) string {
+func (t *scriptedTransport) signURL(_ context.Context, endpoint string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.signCalls++
 	return endpoint + "&w_rid=stub"
 }
 
-func (t *scriptedTransport) refreshRisk() {
+func (t *scriptedTransport) refreshRisk(_ context.Context) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.refreshes++

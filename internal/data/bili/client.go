@@ -95,8 +95,8 @@ func (c *Client) injectAntiRisk(ctx context.Context) string {
 }
 
 // refreshRisk 在风控重试前刷新 WBI 密钥并丢弃缓存的 buvid。
-func (c *Client) refreshRisk() {
-	if err := c.signer.fetchKeys(); err != nil {
+func (c *Client) refreshRisk(ctx context.Context) {
+	if err := c.signer.fetchKeys(ctx); err != nil {
 		log.Warn("wbi key refresh failed, retrying with existing keys", "err", err)
 	}
 	c.buvids.invalidate(c.Cookie())
@@ -109,7 +109,7 @@ func (c *Client) refreshRisk() {
 // 只被 riskGuard.fetch 调用 —— 端点不直接使用它，因此不会漏掉注入指纹与
 // 签名这两步（见 risk.go 的 riskRequest）。
 func (c *Client) fetchJSON(ctx context.Context, endpoint string, roomID int64, cookie string, out any) error {
-	_, err := getJSON(ctx, jsonGet{
+	_, err := getJSON(ctx, &jsonGet{
 		client:   c.apiClient,
 		referer:  liveReferer(roomID),
 		origin:   liveOrigin,
@@ -141,8 +141,8 @@ func cookieValue(cookieHeader, name string) string {
 }
 
 // signURL 对 endpoint 做 WBI 签名；失败时退化为未签名 URL。
-func (c *Client) signURL(endpoint string) string {
-	signed, err := c.signer.signURL(endpoint)
+func (c *Client) signURL(ctx context.Context, endpoint string) string {
+	signed, err := c.signer.signURL(ctx, endpoint)
 	if err != nil {
 		log.Warn("wbi sign failed, continuing unsigned", "err", err)
 		return endpoint
