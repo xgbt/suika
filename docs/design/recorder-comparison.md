@@ -154,7 +154,7 @@ suika 的骨架——开播检测（WS 事件驱动 + 兜底轮询 + 下播多�
 - **来源**：四个参考项目全部只录 AVC——biliup 免登录源只保留
   CODECS 含 avc 的变体，DDTV 硬编码 `codec_name == "avc"`，blrec
   文档明记 HEVC 流解析失败。这不是巧合。
-- **问题**：`pickFLVStream` 现在 AVC 优先但接受 HEVC，而
+- **问题**（ADR-0004 之前）：`pickFLVStream` 当时 AVC 优先但接受 HEVC，而
   `flv.IsVideoKeyframe` / `IsAVCSequenceHeader` 按 AVC 布局判定：
   legacy-FLV HEVC 碰巧兼容；B 站在铺的 enhanced-RTMP（FourCC `hvc1`）
   布局下关键帧判定恒为 false——切段退化为超限强切，头注入失效。

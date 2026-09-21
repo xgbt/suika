@@ -58,7 +58,7 @@ flowchart TB
 要点：
 
 - **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份契约（`api/room/v1/room.proto` + `api/account/v1/account.proto`）。
-- 直播侧 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`、`danmaku_conn.go` 与 `danmaku_proto/event/info.go`、`wbi.go`、`buvid.go`、`http.go`，风控编排集中在 `risk.go` 的 `riskGuard`：构造合规请求（注入 buvid 指纹、WBI 签名）、冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。端点只声明端点形状（`riskRequest`），不自己构造请求。唯一例外是 passport 流量（扫码登录 / 账号核验，`passport.go` 的 `PassportClient`），刻意不走 riskGuard（无 WBI 签名、无重试），自带无 cookie jar 的 HTTP 客户端、不依赖 `Client`；登录凭据经 `CredentialRepo` 持久化在 `credentials` 表单例行，落库后热替换内存 cookie（ADR-0003）。
+- 直播侧 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`、`danmaku_conn.go` 与 `danmaku_proto.go` / `danmaku_event.go` / `danmaku_info.go`、`client.go`、`http.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：构造合规请求（注入 buvid 指纹、WBI 签名）、冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。端点只声明端点形状（`riskRequest`：路径、查询参数、是否签名、响应落点、可选 `done` 钩子），不自己构造请求。唯一例外是 passport 流量（扫码登录 / 账号核验，`passport.go` 的 `PassportClient`），刻意不走 riskGuard（无 WBI 签名、无重试），自带无 cookie jar 的 HTTP 客户端、不依赖 `Client`；登录凭据经 `CredentialRepo` 持久化在 `credentials` 表单例行，落库后热替换内存 cookie（ADR-0003）。
 - 录制产物是**文件系统**而非数据库；`meta.json` 是录制历史的唯一事实源，重启后由 `RecoverPending` 扫描恢复。
 
 ---
@@ -103,7 +103,7 @@ flowchart TB
     subgraph DATA["internal/data —— PO 与全部 IO"]
         RR["roomRepo · roomPO → rooms 表<br/>toRoomPO / toRoomDO"]
         RREPO["recorderRepo<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · 收尾合并"]
-        LC["liveClient<br/>bili/ 子包：live · danmaku_* · wbi · buvid · http · risk"]
+        LC["liveClient<br/>bili/ 子包：live · danmaku_* · client · wbi · buvid · http · risk<br/>（riskGuard 经 riskTransport 缝驱动 *Client）"]
         CR["credentialRepo<br/>credentials 表单例行 + cookie 热替换"]
         PC["passportClient<br/>QR 登录 · nav 核验（不走 riskGuard）"]
     end

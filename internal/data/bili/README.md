@@ -17,13 +17,13 @@ flowchart TB
 
     subgraph ENDPOINTS["端点实现（薄：声明端点形状 / 解析响应 / 翻译业务码）"]
         LIVE["liveClient<br/>live.go"]
-        DM["danmakuConn<br/>danmaku_conn / _proto / _event / _info"]
+        DM["danmakuConn 弹幕子系统<br/>danmaku_conn · _proto · _event · _info"]
         PASS["passportClient<br/>passport.go"]
     end
 
     RISK["riskGuard<br/>risk.go<br/>合规请求与重试/冷却的唯一归属"]
-    HTTP["HTTP 原语<br/>http.go"]
-    CLIENT["Client<br/>client.go<br/>共享状态与接线"]
+    CLIENT["Client<br/>client.go<br/>共享状态与接线<br/>riskTransport 的唯一实现"]
+    HTTP["HTTP 原语<br/>http.go<br/>browserRequest / doJSON / getJSON"]
     WBI["wbiSigner<br/>wbi.go"]
     BUVID["buvidStore<br/>buvid.go"]
 
@@ -33,24 +33,35 @@ flowchart TB
     LCI -.->|"实现"| DM
     PCI -.->|"实现"| PASS
 
+    LIVE -->|"DanmakuConn 构造"| DM
     LIVE -->|"API 调用"| RISK
     DM -->|"getDanmuInfo"| RISK
-    RISK -->|"-352：刷新"| WBI
-    RISK -->|"-352：丢弃"| BUVID
-    RISK --> HTTP
-    PASS -->|"刻意绕过风控"| HTTP
+    DM -->|"cookie 快照 · buvid3"| CLIENT
+    RISK -->|"riskTransport<br/>注入指纹 · 签名 · 发请求 · 刷新"| CLIENT
 
-    HTTP --> CLIENT
-    CLIENT --> WBI
-    CLIENT --> BUVID
+    CLIENT -->|"持有并驱动"| WBI
+    CLIENT -->|"持有并驱动"| BUVID
+    CLIENT --> HTTP
+    WBI --> HTTP
+    BUVID --> HTTP
+    LIVE -->|"browserRequest"| HTTP
+    PASS --> HTTP
 
-    HTTP ==> BILIAPI["api.live.bilibili.com<br/>api.bilibili.com"]
-    LIVE ==> CDN["直播 CDN（FLV 长连接）"]
-    DM ==> WS["弹幕 WebSocket"]
-    PASS ==> PP["passport.bilibili.com"]
+    CLIENT -.->|"哨兵错误<br/>errHTTPRiskControl"| RISK
+
+    CLIENT ==>|"直播 API"| BILIAPI["api.live.bilibili.com"]
+    WBI ==>|"nav 取密钥"| WWWAPI["api.bilibili.com"]
+    BUVID ==>|"spi 取指纹"| WWWAPI
+    LIVE ==>|"FLV 长连接"| CDN["直播 CDN"]
+    DM ==>|"弹幕事件流"| WS["弹幕 WebSocket"]
+    PASS ==>|"扫码登录 · nav 核验"| PP["passport.bilibili.com"]
 ```
 
-图里要紧的只有方向：**端点是薄的——只声明端点形状；构造合规请求（注入指纹、WBI 签名）与重试/退避/冷却全部收敛到 `riskGuard` 一个模块**；`passport` 是唯一绕开它的流量。各文件的分工见下表。
+图里要紧的只有方向：**端点是薄的——只声明端点形状；构造合规请求（注入指纹、WBI 签名）与重试/退避/冷却全部收敛到 `riskGuard` 一个模块**。而 `riskGuard` 本身只依赖 `riskTransport` 这一个缝（生产实现是 `*Client`），既不碰 HTTP 原语、也不直接持有签名器与指纹缓存——所以"合规请求怎么构造"只有一处可改。
+
+两点例外：`passport` 流量（扫码登录 / 账号核验）完全绕开风控，自带一个**不装 cookie jar** 的 resty 客户端（共用 `http.go` 的原语，但不共用 `Client` 的登录态与指纹）；直播 CDN 长连接本身不是 API 调用、不经风控——但它取址的那次 `getRoomPlayInfo` 走 `riskGuard`。
+
+反向的一条虚线是错误契约：`errHTTPRiskControl` 定义在 `client.go`（`fetchJSON` 把 412/403/429 映射成它）、由 `risk.go` 的 `call` 消费来决定重试分支。同理 `liveAPIBase` 与 `riskCode352` 定义在 `live.go` 却由 `risk.go` 使用。各文件的分工见下表。
 
 ## 文件
 
@@ -58,7 +69,7 @@ flowchart TB
 |---|---|
 | `client.go` | `Client`：共享长生命周期状态——两个用途不同的 resty 客户端（API 调用 / 无超时的拉流）、唯一登录态（`Cookie` / `SetCookie` 热替换）、签名器与指纹缓存的接线 |
 | `http.go` | 所有 B 站请求共用的 HTTP 原语：`browserRequest`（浏览器伪装头）、`doJSON`（状态码判定 + JSON 解码）、`getJSON`（两者的组合，直播侧与 passport 侧共用） |
-| `risk.go` | `riskGuard`：全部直播 API 调用的风控编排，并负责把端点声明的形状（`riskRequest`）变成合规请求（见下） |
+| `risk.go` | `riskGuard`：全部直播 API 调用的风控编排，并负责把端点声明的形状（`riskRequest`）变成合规请求（见下）。依赖的传输能力由 `riskTransport` 声明，生产实现是 `*Client` |
 | `live.go` | `liveClient` 实现 `biz.LiveClient` 的直播侧：`GetRoomInfo` / `OpenLiveStream` / `DanmakuConn`；FLV 候选排序 `pickFLVStream`（纯函数） |
 | `danmaku_conn.go` | `danmakuConn` 实现 `biz.DanmakuConn`：拨号认证、30s 心跳、90s 读超时、指数退避重连、cmd 分发 |
 | `danmaku_proto.go` | 弹幕二进制包协议：16 字节包头、zlib/brotli 嵌套解压、认证包构造与握手校验 |
@@ -91,8 +102,8 @@ flowchart TB
 
 | 要改的东西 | 落点 |
 |---|---|
-| 新增一个 B 站 API 端点 | 在对应端点文件里声明 `riskRequest`（path / query / sign / out）交给 `lc.risk.call` —— 不要自己构造请求、写重试 |
-| 风控节奏（冷却时长、重试次数、兜底路径） | `risk.go`：`call` 与 `riskCooldownLadder` |
+| 新增一个 B 站 API 端点 | 在对应端点文件里声明 `riskRequest`（path / query / sign / out / done）交给 `lc.risk.call` —— 不要自己构造请求、写重试 |
+| 风控节奏（冷却时长、重试次数、兜底路径） | `risk.go`：`call` 与 `riskCooldownLadder`；整体调用的兜底端点用 `riskCall.fallback` |
 | 合规请求的构造（拼路径、编码参数、签名、注入指纹） | `risk.go`：`fetch` |
 | 请求头、状态码判定、JSON 解码 | `http.go` |
 | 清晰度档位、FLV 候选排序 | `live.go`：`sourceQualityQN`（刻意不做成配置项，见注释）、`bestFLVStream`（改前先读 ADR-0004） |

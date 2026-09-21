@@ -55,13 +55,15 @@ func NewLiveClient(client *Client) biz.LiveClient {
 // GetRoomInfo 经 getInfoByRoom 返回房间当前的开播状态。
 func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	var resp roomInfoResponse
-	code, err := lc.risk.call(ctx, roomID, riskCall{attempt: riskRequest{
-		op:    "getInfoByRoom",
-		path:  "/xlive/web-room/v1/index/getInfoByRoom",
-		query: url.Values{"room_id": {strconv.FormatInt(roomID, 10)}},
-		sign:  true,
-		out:   &resp,
-	}})
+	code, err := lc.risk.call(ctx, roomID, riskCall{
+		attempt: riskRequest{
+			op:    "getInfoByRoom",
+			path:  "/xlive/web-room/v1/index/getInfoByRoom",
+			query: url.Values{"room_id": {strconv.FormatInt(roomID, 10)}},
+			sign:  true,
+			out:   &resp,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}

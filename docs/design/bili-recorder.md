@@ -95,7 +95,7 @@ internal/biz/
                          （Events / RoomStateUpdates 两个只读通道）
                          ReconnectPolicy；RecorderUsecase：房间监控编排、场次生命周期、
                          断流决策树（纯控制流，不做字节级 IO；无 proto、无存储 tag）
-  session_policy.go      sessionPolicy：会话启停决策矩阵（电平触发，
+  recorder_session_policy.go  sessionPolicy：会话启停决策矩阵（电平触发，
                          ADR-0001/0002）——阶段 idle / running / finishing、
                          record_enabled 门控与收尾后续录规则；watchRoom 只
                          投递输入（房态到达 / 开关翻转 / 场次结束）并执行其
@@ -127,16 +127,18 @@ internal/data/
   bili/client.go         Client：与 B 站交互的共享长生命周期状态——
                          apiClient(15s 超时) / streamClient(无超时)、唯一登录态
                          （Cookie/SetCookie 热替换）、WBI 签名器与 buvid 存储；
-                         injectAntiRisk / signURL 风控基础设施
+                         injectAntiRisk / signURL / fetchJSON / refreshRisk
+                         是 riskGuard 依赖的传输能力（riskTransport）
   bili/http.go           所有 B 站请求共用的 HTTP 原语：browserRequest（浏览器
                          伪装头）/ doJSON（状态码判定 + JSON 解码）/
-                         fetchJSON（412/403/429 → errHTTPRiskControl）
+                         getJSON（两者的组合，直播侧与 passport 侧共用）
   bili/live.go           liveClient 实现 biz.LiveClient：GetRoomInfo / OpenLiveStream /
                          DanmakuConn 构造；getRoomPlayInfo 候选排序与降档
                          （pickFLVStream 纯函数）；风控编排统一委托 riskGuard
   bili/risk.go           riskGuard：全部 B 站 API 流量的风控编排深模块——
                          冷却闸门、412/-352 刷新重试、兜底调用、错误分类与
-                         每房间阶梯冷却；端点只构造请求、解析响应、翻译业务码
+                         每房间阶梯冷却；端点只声明端点形状（riskRequest）、
+                         解析响应、翻译业务码，构造合规请求由 fetch 统一完成
   bili/wbi.go            WBI 签名（nav API 取密钥，1h 缓存，w_rid/wts）
   bili/buvid.go          buvid3/buvid4 指纹（spi，24h 缓存，cookie 注入替换语义）
   bili/danmaku_conn.go   danmakuConn 实现 biz.DanmakuConn 的连接生命周期：
@@ -146,9 +148,10 @@ internal/data/
                          通道投递 *RoomInfo
   bili/danmaku_proto.go  弹幕二进制包协议：16 字节包头打包/解包、protover3
                          brotli / protover2 zlib 嵌套解压、认证包构造与握手校验
-  bili/danmaku_event.go  事件载荷解析与过滤：弹幕 / 礼物 / SC / 上舰 / 进场
+  bili/danmaku_event.go  事件载荷解析：弹幕 / 礼物 / SC / 上舰 / 进场
   bili/danmaku_info.go   getDanmuInfo（WBI 签名，取 token 与接入节点）与旧版
-                         getConf 兜底（无 WBI），以及认证用的 buvid3
+                         getConf 兜底（无 WBI），两套响应由 buildDanmuInfo
+                         统一成形，以及认证用的 buvid3
   bili/passport.go       passportClient 实现 biz.PassportClient：QR 登录
                          二维码生成/轮询（确认时从 Set-Cookie 捕获登录
                          cookie）、nav 账号核验；刻意不走 riskGuard
@@ -247,7 +250,7 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 | 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤；UpdateRoom 仅供平台信息回写 |
 | 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站直播 HTTP API 与弹幕 WS 流量、风控 |
 | 凭据存储缝 | `CredentialRepo`（GetCredential / SaveCredential / DeleteCredential） | `credentialRepo`（`NewCredentialRepo(d *Data)` 返回接口；credentials 表单例行） | 登录凭据持久化；Save/Delete 落库后热替换内存 cookie |
-| 账号平台缝 | `PassportClient`（CreateQRLogin / PollQRLogin / AccountInfo） | `passportClient`（`NewPassportClient(d *Data)` 返回接口；实现在 bili/passport.go） | passport QR 登录与 nav 核验；刻意不走 riskGuard（无 WBI 签名、无重试） |
+| 账号平台缝 | `PassportClient`（CreateQRLogin / PollQRLogin / AccountInfo） | `passportClient`（`NewPassportClient()` 返回接口，不依赖 `*Data`；实现在 bili/passport.go） | passport QR 登录与 nav 核验；刻意不走 riskGuard（无 WBI 签名、无重试） |
 
 控制流/IO 分工：**biz 只做决定**（何时开录、是否重连、何时收尾），
 **data 做全部 IO**（HTTP、WS、FLV 解析、文件）。
@@ -623,8 +626,9 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 ## 5. 风控层（data）
 
 所有 B 站请求都经 `browserRequest` 带上伪装头（桌面 Chrome UA + Referer +
-Origin + cookie），由 `doJSON` 判状态码并解码；直播 API 再走 `fetchJSON`，
-把 HTTP 412/403/429 映射为 `errHTTPRiskControl`（`bili/http.go`）。
+Origin + cookie），由 `doJSON` 判状态码并解码（`bili/http.go` 的 `getJSON`
+是两者的组合，直播侧与 passport 侧共用）；直播 API 再经 `Client.fetchJSON`
+发请求，把 HTTP 412/403/429 映射为 `errHTTPRiskControl`。
 
 **WBI 签名**（`bili/wbi.go`，移植 hikami-go）：`/x/web-interface/nav` 取
 img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；签名即
@@ -639,17 +643,19 @@ img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；�
 
 **-352 / HTTP 风控处理**（统一由 `riskGuard` 编排，`bili/risk.go`）。端点在
 这里只声明端点形状（`riskRequest`：路径、查询参数、是否需要 WBI 签名、
-响应落点），拼路径、编码参数、注入 buvid 指纹与签名都由 guard 的 `fetch`
-完成 —— 端点没有机会漏掉其中任何一步：
+响应落点，以及业务码为 0 后执行的 `done` 钩子），拼路径、编码参数、
+注入 buvid 指纹与签名都由 guard 的 `fetch` 完成 —— 端点没有机会漏掉
+其中任何一步：
 
 1. 风控命中（-352 或 HTTP 412/403/429）→ `refreshRisk()`（强刷 WBI 密钥 +
    作废 buvid 缓存）→ 原请求重试一次。
-2. `getDanmuInfo` 二次仍 -352 → 降级旧接口 `getConf`（无 WBI，guard 的
-   可选 fallback 钩子）。
+2. `getDanmuInfo` 二次仍 -352 → 降级旧接口 `getConf`（`riskCall` 的可选
+   `fallback`，无 WBI）。
 3. 仍失败 → 该房间进**阶梯冷却** 5min → 10min → 20min（按连续失败次数
    进阶，封顶 20min）；冷却期内 guard 直接拒绝该房间的
   GetRoomInfo/OpenLiveStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
-4. 任一 API 成功 → `noteSuccess` 清零该房间冷却。
+4. 任一 API 成功（业务码为 0）→ `noteSuccess` 清零该房间冷却；业务码非零
+   且非风控的原样返回，由端点翻译。
 
 cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并记录 meta
 （运维动作：Web 页重新扫码登录，凭据热替换即时生效，§7.3）。
@@ -1014,7 +1020,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 186 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
+共 190 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
 
 | 层 | 文件 | fake 什么 / 测什么 |
 |---|---|---|
@@ -1103,7 +1109,7 @@ curl -X POST localhost:8000/v1/rooms/create \
 | 开播检查/拉流/URL 拼装/候选排序 | hikami-go | `internal/live_record/bilibili.go` | Go 移植（data/bili/live.go） |
 | 弹幕 WS 协议（包头/认证/心跳/brotli） | hikami-go | `internal/live_record/danmaku.go` | 移植 + 扩展事件类型（data/bili/danmaku_proto.go、danmaku_event.go） |
 | 断流决策树/预算/巡检 | hikami-go | `internal/live_record/manager.go` | 参考重写，决策移入 biz（biz/recorder.go） |
-| 风控阶梯冷却 | hikami-go | `internal/live_record/manager.go` | Go 直接移植（data/bili/live.go） |
+| 风控阶梯冷却 | hikami-go | `internal/live_record/manager.go` | 参考重写：冷却与刷新重试收进 riskGuard（data/bili/risk.go） |
 | FLV tag 切段/头注入 | blrec | `blrec/flv/*`、`blrec/core/operators/*` | Go 重写（data/flv、data/recorder*.go） |
 | LIVE/PREPARING 事件驱动检测 | blrec | `blrec/bili/live_monitor.py` | Go 重写（biz + data/bili/danmaku_conn.go） |
 
@@ -1115,12 +1121,13 @@ hikami-go：Go 单机服务，录直播音频+弹幕 → ASR → AI 总结（刻
 
 | 接口 | 用途 | 代码位置 |
 |---|---|---|
-| `GET api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=` | 房间/开播状态、标题、live_start_time、主播名 | bili/live.go roomStatus |
+| `GET api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=` | 房间/开播状态、标题、live_start_time、主播名 | bili/live.go GetRoomInfo |
 | `GET api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=&protocol=0,1&format=0,1,2&codec=0&qn=&platform=web` | 流地址（仅收 FLV + avc，ADR-0004） | bili/live.go selectStreamURL |
 | `GET api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=&type=0` | 弹幕 token + 接入节点（WBI 签名） | bili/danmaku_info.go danmuInfo |
-| `GET api.live.bilibili.com/room/v1/Danmu/getConf?room_id=&platform=pc&player=web` | 弹幕 token 降级通道（无 WBI） | bili/danmaku_info.go danmuConf |
+| `GET api.live.bilibili.com/room/v1/Danmu/getConf?room_id=&platform=pc&player=web` | 弹幕 token 降级通道（无 WBI） | bili/danmaku_info.go（danmuInfo 的 fallback） |
 | `GET api.bilibili.com/x/web-interface/nav` | WBI 密钥（兼判断登录态） | bili/wbi.go fetchKeys |
 | `GET api.bilibili.com/x/frontend/finger/spi` | buvid3/buvid4 | bili/buvid.go getBuvids |
+| `GET passport.bilibili.com/x/passport-login/web/qrcode/{generate,poll}` | 扫码登录二维码生成与轮询（刻意不走风控） | bili/passport.go |
 | `wss://<host>:<wss_port>/sub`（保底 `broadcastlv.chat.bilibili.com:2245`） | 弹幕事件流：16 字节头二进制包，op2 心跳 / op5 消息 / op7 认证 / op8 认证回复；protover 3=brotli、2=zlib | bili/danmaku_conn.go、danmaku_proto.go |
 
 清晰度档位：20000=4K、10000=原画、400=蓝光、250=超清、150=高清、80=流畅。

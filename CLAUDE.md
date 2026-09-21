@@ -152,18 +152,25 @@ declared in `biz` and implemented in `data`:
 
 - `LiveClient` — the platform seam; ALL live-room Bilibili traffic goes
   through it (room info, stream URLs, danmaku websocket). Implemented in
-  the `data/bili/` subpackage by `live.go`, `danmaku_conn.go` (with
-  `danmaku_proto/event/info.go`), and the shared HTTP primitives in
-  `http.go`, plus the risk-control helpers `wbi.go` (WBI signing) and
-  `buvid.go`. All risk
+  the `data/bili/` subpackage by `live.go` (room info, stream selection,
+  the `DanmakuConn` constructor), `danmaku_conn.go` (connection
+  lifecycle: dial/auth, heartbeat, read timeout, backoff reconnect, cmd
+  dispatch) with `danmaku_proto.go` (binary packet framing),
+  `danmaku_event.go` (payload → `biz.DanmakuEvent`), and
+  `danmaku_info.go` (auth triple: token, hosts, buvid3), plus the shared
+  HTTP primitives in `http.go` and the risk-control helpers `wbi.go`
+  (WBI signing) and `buvid.go`. All risk
   orchestration lives in the single `riskGuard` module (`risk.go`):
   building the compliant request (fingerprint injection, WBI signing),
   cooldown gates, 412/403/429 and
   -352 refresh-and-retry, legacy-API fallback, error classification, and
   the per-room cooldown ladder. Endpoint code declares the request shape
-  (`riskRequest`: path, query, whether to sign, decode target) and
-  translates business codes — it never builds the request itself, never
-  retries, and never sleeps on risk.
+  (`riskRequest`: path, query, whether to sign, decode target, optional
+  `done` hook) and translates business codes — it never builds the
+  request itself, never retries, and never sleeps on risk.
+  `Client` (`client.go`) is the shared state behind the seam: the two
+  resty clients (API / timeout-free streaming), the single login cookie
+  with hot-swap, and the signer/buvid wiring.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
   the session-end merge (`recorder_merge.go`). It embeds
@@ -179,8 +186,9 @@ declared in `biz` and implemented in `data`:
 - `PassportClient` — the account platform seam; QR-login and nav traffic
   (passport.bilibili.com / api.bilibili.com) goes through it, explicitly
   outside `riskGuard` (no WBI signing, no retry). Implemented in
-  `data/bili/passport.go`. Login cookies are captured from the poll response's
-  Set-Cookie headers.
+  `data/bili/passport.go`, which owns its own cookie-jar-free HTTP
+  client and does not depend on `Client`. Login cookies are captured from
+  the poll response's Set-Cookie headers.
 - `CredentialRepo` — the credential storage seam; persists the single
   Bilibili login cookie in the `credentials` table and, on
   save/delete, hot-swaps the in-memory cookie held by the `bili.Client`
@@ -195,7 +203,7 @@ session lifecycles, and the stream-drop/reconnect decision tree. Byte-level
 IO belongs to the seams.
 
 Session start/stop/resume decisions are NOT inline in the monitor: they
-live in one stateful module, `sessionPolicy` (biz/session_policy.go,
+live in one stateful module, `sessionPolicy` (biz/recorder_session_policy.go,
 ADR-0001). The monitor's (`watchRoom`) select arms only deliver inputs —
 room info arrived, `record_enabled` flipped, session finished — and execute the
 returned decision (Start/Stop/None); phases (idle/running/finishing) and
