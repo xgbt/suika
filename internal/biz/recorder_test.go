@@ -16,7 +16,7 @@ import (
 // 替身都不关心写入进度，共用这一个空实现，避免每个替身各写一遍。
 type sessionStatsStub struct{}
 
-func (sessionStatsStub) SessionStats(context.Context, int64) (*SessionStats, error) { return nil, nil }
+func (sessionStatsStub) Stats(context.Context, int64) (*SessionStats, error) { return nil, nil }
 
 // fakeRepo 为决策树测试模拟 RecorderRepo 行为。
 type fakeRepo struct {

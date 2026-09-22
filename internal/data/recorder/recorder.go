@@ -74,7 +74,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 	if err := os.MkdirAll(lay.dir, 0o755); err != nil {
 		return err
 	}
-	r.statsFor(session.RoomID).reset() // 一次录制会话启动时，把写入进度清零
+	r.getOrCreateStats(session.RoomID).reset() // 一次录制会话启动时，把写入进度清零
 
 	metaPath := lay.metaPath()
 	r.mu.Lock()

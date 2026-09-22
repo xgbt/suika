@@ -37,7 +37,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	}
 
 	// 记录当前会话的写入进度
-	stats := r.statsFor(session.RoomID)
+	stats := r.getOrCreateStats(session.RoomID)
 	// 记录本次录制之前的写入进度
 	baseBytes := stats.bytesWritten()
 	stats.setCurrentFile("")

@@ -48,8 +48,8 @@ func (ps *pumpStats) snapshot() *biz.SessionStats {
 	}
 }
 
-// SessionStats 读取 pumpStats 的原子字段，返回 SessionStats
-func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.SessionStats, error) {
+// Stats 读取 pumpStats 的原子字段，返回 SessionStats。
+func (r *recorderRepo) Stats(_ context.Context, roomID int64) (*biz.SessionStats, error) {
 	r.mu.Lock()
 	ps, ok := r.stats[roomID]
 	r.mu.Unlock()
@@ -60,8 +60,8 @@ func (r *recorderRepo) SessionStats(_ context.Context, roomID int64) (*biz.Sessi
 	return ps.snapshot(), nil
 }
 
-// statsFor 返回指定房间的 pumpStats，不存在时创建。
-func (r *recorderRepo) statsFor(roomID int64) *pumpStats {
+// getOrCreateStats 返回指定房间的 pumpStats，不存在时创建。
+func (r *recorderRepo) getOrCreateStats(roomID int64) *pumpStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

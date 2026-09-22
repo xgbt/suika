@@ -515,7 +515,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	pump(first)
-	stats, err := repo.SessionStats(ctx, first.RoomID)
+	stats, err := repo.Stats(ctx, first.RoomID)
 	if err != nil || stats == nil || stats.BytesWritten != wantBytes {
 		t.Fatalf("stats after first session = %+v, %v; want %d bytes", stats, err, wantBytes)
 	}
@@ -527,7 +527,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 	if err := repo.PrepareSession(ctx, second); err != nil {
 		t.Fatal(err)
 	}
-	stats, err = repo.SessionStats(ctx, second.RoomID)
+	stats, err = repo.Stats(ctx, second.RoomID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +535,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 		t.Fatalf("stats at second session start = %+v, want zeroed", stats)
 	}
 	pump(second)
-	stats, err = repo.SessionStats(ctx, second.RoomID)
+	stats, err = repo.Stats(ctx, second.RoomID)
 	if err != nil || stats == nil || stats.BytesWritten != wantBytes {
 		t.Fatalf("stats after second session = %+v, %v; want %d bytes (no cross-session accumulation)", stats, err, wantBytes)
 	}
@@ -709,9 +709,9 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 		t.Fatalf("segment bytes = %d, file size/+err = %d/%v", seg.Bytes, fi.Size(), err)
 	}
 
-	stats, err := repo.SessionStats(ctx, session.RoomID)
+	stats, err := repo.Stats(ctx, session.RoomID)
 	if err != nil || stats == nil {
-		t.Fatalf("SessionStats = %+v, %v", stats, err)
+		t.Fatalf("Stats = %+v, %v", stats, err)
 	}
 	if stats.BytesWritten != wantBytes || stats.CurrentFile != videoPath {
 		t.Fatalf("stats = %+v, want %d bytes at %s", stats, wantBytes, videoPath)
