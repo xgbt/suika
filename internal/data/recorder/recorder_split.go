@@ -19,6 +19,14 @@ type segmentSplitPolicy struct {
 	segmentDuration time.Duration // 分段时长上限，<= 0 时不按时长切分
 }
 
+func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
+	policy := segmentSplitPolicy{
+		maxSegmentBytes: r.maxSegmentBytes,
+		segmentDuration: r.segmentDuration,
+	}
+	return policy.shouldSplit(seg, tag)
+}
+
 // shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
 // 等待视频关键帧以保证分段可独立播放：
 //  1. 大小：已写字节达到上限，且该 tag 是关键帧；或超出上限的
@@ -31,31 +39,66 @@ func (p segmentSplitPolicy) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
 	if p.shouldSplitBySize(seg, tag) {
 		return true
 	}
-	return p.shouldSplitByDuration(seg, tag)
+	if p.shouldSplitByDuration(seg, tag) {
+		return true
+	}
+	return false
 }
 
+// shouldSplitBySize 判断当前分段是否应当因体积超限而切分。
+//
+// 切分策略：
+//  1. 若未配置 maxSegmentBytes（<=0），表示不启用按大小切分，直接返回 false。
+//  2. 若当前分段体积尚未达到 maxSegmentBytes，无需切分。
+//  3. 一旦达到阈值，优先在关键帧处切分，以保证新分段能独立解码播放。
+//  4. 若达到阈值后迟迟等不到关键帧，为避免单个分段无限膨胀，
+//     允许体积在阈值基础上再超出 overrun（maxSegmentBytes/sizeSplitOverrunDivisor）后强制切分，
+//     即便当前 tag 不是关键帧。
 func (p segmentSplitPolicy) shouldSplitBySize(seg *segmentFile, tag *flv.Tag) bool {
-	if p.maxSegmentBytes <= 0 || seg.bytes < p.maxSegmentBytes {
+	// 未设置最大分段字节数，不按大小切分
+	if p.maxSegmentBytes <= 0 {
 		return false
 	}
-	overrun := p.maxSegmentBytes / sizeSplitOverrunDivisor
-	return tag.IsVideoKeyframe() || seg.bytes >= p.maxSegmentBytes+overrun
+
+	// 尚未达到阈值，无需切分
+	if seg.bytes < p.maxSegmentBytes {
+		return false
+	}
+
+	// 已达到阈值：关键帧处可直接切分，保证分段独立可解码
+	if tag.IsVideoKeyframe() {
+		return true
+	}
+
+	// 非关键帧：仅当体积超出阈值 + 容忍裕度后，才强制切分
+	overrunThreshold := p.maxSegmentBytes + p.maxSegmentBytes/sizeSplitOverrunDivisor
+	return seg.bytes >= overrunThreshold
 }
 
+// shouldSplitByDuration 判断当前分段是否应当因时长超限而切分。
+//
+// 切分策略：
+//  1. 若未配置 segmentDuration（<=0），表示不启用按时长切分，直接返回 false。
+//  2. 根据当前 tag 时间戳与分段起始时间戳的差值计算已录制时长 elapsed，
+//     若尚未达到 segmentDuration，无需切分。
+//  3. 一旦达到阈值，优先在关键帧处切分，以保证新分段能独立解码播放。
+//  4. 若达到阈值后迟迟等不到关键帧，允许时长在阈值基础上再超出 splitOverrun 后强制切分，
+//     即便当前 tag 不是关键帧，避免单个分段无限拉长。
 func (p segmentSplitPolicy) shouldSplitByDuration(seg *segmentFile, tag *flv.Tag) bool {
+	// 未设置分段时长，不按时长切分
 	if p.segmentDuration <= 0 {
 		return false
 	}
+
+	// 已录制时长 = 当前 tag 时间戳 - 分段起始时间戳
 	elapsed := time.Duration(tag.Timestamp-seg.startTs) * time.Millisecond
+
+	// 尚未达到阈值，无需切分
 	if elapsed < p.segmentDuration {
 		return false
 	}
-	return tag.IsVideoKeyframe() || elapsed >= p.segmentDuration+splitOverrun
-}
 
-func (r *recorderRepo) shouldSplit(seg *segmentFile, tag *flv.Tag) bool {
-	return segmentSplitPolicy{
-		maxSegmentBytes: r.maxSegmentBytes,
-		segmentDuration: r.segmentDuration,
-	}.shouldSplit(seg, tag)
+	// 已达到阈值：关键帧处可直接切分；否则仅当超出容忍裕度后强制切分
+	overrunThreshold := p.segmentDuration + splitOverrun
+	return tag.IsVideoKeyframe() || elapsed >= overrunThreshold
 }

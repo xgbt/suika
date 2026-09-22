@@ -67,6 +67,7 @@ func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 
 // PrepareSession 创建（或在重启后重新定位）会话目录和 meta.json。
 func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.RecordingSession) error {
+	// 创建会话目录及 meta.json 文件
 	lay, err := sessionPaths(r.recordRoot, session)
 	if err != nil {
 		return err
@@ -79,7 +80,7 @@ func (r *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recordin
 	metaPath := lay.metaPath()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
+	// 尝试加载已有的 meta.json，如果存在则更新其状态为录制中，否则创建新的 meta.json
 	if meta, err := loadMeta(metaPath); err == nil {
 		// 同一场直播此前已录过：把上次的合并产物归档为历史分段，然后续录。
 		if meta.Status == metaStatusDone && meta.MergedVideo != "" {
