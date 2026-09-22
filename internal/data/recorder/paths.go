@@ -22,7 +22,7 @@ var (
 	// unsafeChars 匹配文件名不安全字符：控制字符、路径分隔符及 Unicode 空白，
 	// + 折叠连续匹配为单个下划线。
 	unsafeChars       = regexp.MustCompile(`[\x00-\x1f\x7f\\/:*?"<>|\s\p{Z}]+`)
-	partSuffixPattern = regexp.MustCompile(`_part(\d+)\.(flv|mp4)$`)
+	partSuffixPattern = regexp.MustCompile(`_part(\d+)\.flv$`)
 )
 
 // sessionLayout 是一个录制会话在磁盘上的位置：会话目录 + 文件名前缀。
