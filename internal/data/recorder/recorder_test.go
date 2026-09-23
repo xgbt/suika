@@ -319,7 +319,7 @@ func TestShouldSplit(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := splitter{segmentDuration: tc.dur}
-			seg := &segmentFile{hasStart: tc.hasStart, startTs: tc.startTs}
+			seg := &recordingSegment{hasStart: tc.hasStart, startTs: tc.startTs}
 			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
 				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
 			}
@@ -357,7 +357,7 @@ func TestShouldSplitBySize(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
 			policy := splitter{maxSegmentBytes: tc.maxBytes}
-			seg := &segmentFile{hasStart: tc.hasStart, bytes: tc.bytes}
+			seg := &recordingSegment{hasStart: tc.hasStart, bytes: tc.bytes}
 			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
 				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
 			}
@@ -425,11 +425,11 @@ func TestPrepareSessionResumeKeepsSegments(t *testing.T) {
 	metaPath := lay.metaPath()
 
 	// 模拟崩溃/重启前已录好的一个分段
-	repo.appendSegmentMeta(metaPath, &segmentFile{
-		part:      1,
-		videoPath: lay.segmentVideoPath(1),
-		danmuPath: lay.segmentDanmakuPath(1),
-		wallStart: session.LiveStartTime,
+	repo.appendSegmentMeta(metaPath, &recordingSegment{
+		part:        1,
+		videoPath:   lay.segmentVideoPath(1),
+		danmakuPath: lay.segmentDanmakuPath(1),
+		wallStart:   session.LiveStartTime,
 	})
 
 	restart := *session
@@ -571,7 +571,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	if seg.bytes != fi.Size() {
 		t.Fatalf("seg.bytes = %d, file size = %d", seg.bytes, fi.Size())
 	}
-	if fi2, err := os.Stat(seg.danmuPath); err != nil || fi2.Size() != 0 {
+	if fi2, err := os.Stat(seg.danmakuPath); err != nil || fi2.Size() != 0 {
 		t.Fatalf("danmu file = %+v, %v; want empty existing file", fi2, err)
 	}
 }
@@ -601,7 +601,7 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(seg.danmuPath)
+	data, err := os.ReadFile(seg.danmakuPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,7 +609,7 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("lines = %d, want 2: %q", len(lines), data)
 	}
-	var first, second danmuLine
+	var first, second danmakuLine
 	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
 		t.Fatal(err)
 	}
@@ -1368,11 +1368,11 @@ func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (sessio
 		if err := os.WriteFile(danmuPath, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		repo.appendSegmentMeta(metaPath, &segmentFile{
-			part:      part,
-			videoPath: videoPath,
-			danmuPath: danmuPath,
-			wallStart: session.LiveStartTime,
+		repo.appendSegmentMeta(metaPath, &recordingSegment{
+			part:        part,
+			videoPath:   videoPath,
+			danmakuPath: danmuPath,
+			wallStart:   session.LiveStartTime,
 		})
 	}
 	return lay, metaPath

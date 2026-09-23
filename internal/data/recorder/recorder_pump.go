@@ -120,9 +120,9 @@ type recordSessionLoop struct {
 	stats     *pumpStats // 房间级写入进度，跨多次 RecordSession 调用（重连）共享
 	baseBytes int64      // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
 
-	headers segmentHeaders // 头标签缓存，供新分段/强制切分段重注入
-	guard   dupGuard       // CDN 循环吐流去重状态
-	seg     *segmentFile   // 当前打开的分段文件，nil 表示尚未开段
+	headers segmentHeaders    // 头标签缓存，供新分段/强制切分段重注入
+	guard   dupGuard          // CDN 循环吐流去重状态
+	seg     *recordingSegment // 当前打开的分段文件，nil 表示尚未开段
 
 	result       biz.RecordingResult // 待返回给调用方的最终结果
 	receiveBytes int64               // 本次会话累计接收字节（网络接收口径，用于下载速度采样）
@@ -166,7 +166,7 @@ func (l *recordSessionLoop) handleTag(tag *flv.Tag) error {
 		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
 		// 纯音频流没有视频关键帧，豁免等待。
 		if l.header.HasVideo && !tag.IsVideoKeyframe() {
-			l.headers.absorb(tag)
+			l.headers.observe(tag)
 			return nil
 		}
 		if err := l.openNewSegment(); err != nil {
@@ -188,7 +188,7 @@ func (l *recordSessionLoop) handleTag(tag *flv.Tag) error {
 		if err := l.rotateSegment(); err != nil {
 			return err
 		}
-	case l.headers.changed(tag):
+	case l.headers.sequenceHeaderChanged(tag):
 		// 流中途序列头变化（CDN 换源、主播改码率）：继续写入旧分段会把
 		// 两种解码配置拼进同一个文件，强制切段。新段按既有规则从缓存
 		// 注入旧头标签，新序列头作为首个正文标签紧随其后写入，播放器
@@ -202,7 +202,7 @@ func (l *recordSessionLoop) handleTag(tag *flv.Tag) error {
 	// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个标签不能从
 	// 缓存重注入，否则会被写两次（openSegment 写一次、上面的拉流写入
 	// 又一次）。切分前已见过的头标签仍会完整重注入。
-	l.headers.absorb(tag)
+	l.headers.observe(tag)
 	l.guard.add(tag)
 	return nil
 }

@@ -114,19 +114,19 @@ func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
 }
 
 // appendSegmentMeta 追加一条分段记录到 meta.json。
-func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *segmentFile) {
+func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *recordingSegment) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Segments = append(meta.Segments, segmentMeta{
 			Part:      seg.part,
 			Video:     filepath.Base(seg.videoPath),
-			Danmaku:   filepath.Base(seg.danmuPath),
+			Danmaku:   filepath.Base(seg.danmakuPath),
 			WallStart: seg.wallStart.Unix(),
 		})
 	})
 }
 
 // finishSegmentMeta 回填指定分段的收尾字段（结束时间、时间戳、字节数）。
-func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *segmentFile) {
+func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *recordingSegment) {
 	r.updateMeta(metaPath, func(meta *sessionMeta) {
 		for i := range meta.Segments {
 			s := &meta.Segments[i]
