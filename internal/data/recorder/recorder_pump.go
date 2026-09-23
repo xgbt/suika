@@ -207,6 +207,9 @@ func (l *recordSessionLoop) handleTag(tag *flv.Tag) error {
 	// 又一次）。切分前已见过的头标签仍会完整重注入。
 	l.headers.observe(tag)
 	l.guard.add(tag)
+	// 当前块仍在去重缓冲中，但这些字节已经属于本次录制；先反映到
+	// 运行时统计，块关闭时 addWrittenBytes 会把最终落盘值校正回来。
+	l.updateProgress()
 	return nil
 }
 
@@ -344,5 +347,9 @@ func (l *recordSessionLoop) writeTag(tag *flv.Tag, persistError bool) error {
 
 func (l *recordSessionLoop) addWrittenBytes(n int64) {
 	l.result.BytesWritten += n
-	l.stats.setBytesWritten(l.baseBytes + l.result.BytesWritten)
+	l.updateProgress()
+}
+
+func (l *recordSessionLoop) updateProgress() {
+	l.stats.setBytesWritten(l.baseBytes + l.result.BytesWritten + l.guard.bufBytes)
 }

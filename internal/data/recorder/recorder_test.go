@@ -541,6 +541,24 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 	}
 }
 
+func TestRecordSessionProgressIncludesBufferedBlock(t *testing.T) {
+	stats := &pumpStats{}
+	loop := &recordSessionLoop{
+		stats:     stats,
+		baseBytes: 100,
+		result:    biz.RecordingResult{BytesWritten: 200},
+	}
+	tag := &flv.Tag{Type: flv.TagVideo, Timestamp: 1000, Data: []byte{0x27, 0x01, 0xAA}}
+	loop.guard.add(tag)
+	loop.updateProgress()
+
+	want := int64(100 + 200 + len(tag.Data) + flv.TagEnvelopeSize)
+	got := stats.bytesWritten()
+	if got != want {
+		t.Fatalf("progress = %d, want %d", got, want)
+	}
+}
+
 // --- 分段文件 ---
 
 func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
