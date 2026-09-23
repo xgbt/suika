@@ -49,7 +49,7 @@ func (r *recorderRepo) RecordSession(ctx context.Context, session *biz.Recording
 	})
 
 	loop := newRecordSessionLoop(r, session, lay, header, stats, baseBytes)
-	tagCh := startTagReader(stream.Body)
+	tagCh := startTagReader(ctx, stream.Body)
 
 	health := time.NewTicker(r.healthInterval)
 	defer health.Stop()
@@ -93,13 +93,17 @@ type tagRead struct {
 
 // startTagReader 启动一个后台协程持续从 body 读取 FLV 标签并投递到返回的
 // channel，直到出错（含 EOF）后退出；使阻塞的标签读取与主循环的 tick、
-// 事件通道解耦。
-func startTagReader(body io.Reader) <-chan tagRead {
+// 事件通道解耦。ctx 取消时即使主循环已停止消费也能退出，避免协程泄漏。
+func startTagReader(ctx context.Context, body io.Reader) <-chan tagRead {
 	tagCh := make(chan tagRead, 512)
 	go func() {
 		for {
 			tag, err := flv.ReadTag(body)
-			tagCh <- tagRead{tag: tag, err: err}
+			select {
+			case tagCh <- tagRead{tag: tag, err: err}:
+			case <-ctx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -124,10 +128,9 @@ type recordSessionLoop struct {
 	guard   dupGuard          // CDN 循环吐流去重状态
 	seg     *recordingSegment // 当前打开的分段文件，nil 表示尚未开段
 
-	result       biz.RecordingResult // 待返回给调用方的最终结果
+	result       biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
 	receiveBytes int64               // 本次会话累计接收字节（网络接收口径，用于下载速度采样）
-	writtenBytes int64               // 本次会话累计写盘字节（落盘口径，用于 bytes_written 与健康检查）
-	lastGrowth   int64               // 上次健康检查时的 writtenBytes，用于判断本轮是否有新数据落盘
+	lastGrowth   int64               // 上次健康检查时的 result.BytesWritten，用于判断本轮是否有新数据落盘
 	failRounds   int                 // 连续健康检查失败轮数
 
 	lastSampleAt time.Time // 下载速度采样：上次采样时刻
@@ -233,8 +236,8 @@ func (l *recordSessionLoop) sampleSpeed() {
 // checkHealth 在 healthInterval 内未见新数据则计为一次失败，连续达到
 // healthFailRounds 次后关段并返回错误，判定本次录制异常。
 func (l *recordSessionLoop) checkHealth() error {
-	if l.writtenBytes > l.lastGrowth {
-		l.lastGrowth = l.writtenBytes
+	if l.result.BytesWritten > l.lastGrowth {
+		l.lastGrowth = l.result.BytesWritten
 		l.failRounds = 0
 		return nil
 	}
@@ -253,7 +256,7 @@ func (l *recordSessionLoop) openNewSegment() error {
 	defer l.repo.segmentMu.Unlock()
 
 	part := nextPartNumber(l.lay)
-	seg, err := openSegment(l.lay, part, l.header, &l.headers)
+	seg, headerTagBytes, err := openSegment(l.lay, part, l.header, &l.headers)
 	if err != nil {
 		return err
 	}
@@ -265,9 +268,7 @@ func (l *recordSessionLoop) openNewSegment() error {
 	// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
 	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
 	// FLV 文件头本身不计，与既有口径一致。
-	l.headers.forEachReinject(func(ht *flv.Tag) {
-		l.addWrittenBytes(int64(len(ht.Data)) + flv.TagEnvelopeSize)
-	})
+	l.addWrittenBytes(headerTagBytes)
 
 	l.repo.appendSegmentMeta(l.lay.metaPath(), seg)
 	log.Info("segment opened", "room", l.session.RoomID, "part", part, "file", seg.videoPath)
@@ -287,7 +288,15 @@ func (l *recordSessionLoop) closeSegment() {
 
 // stop 在流干净结束或调用方取消时收尾：尽力落盘在途缓冲块，然后关段。
 func (l *recordSessionLoop) stop() {
-	l.drainPending()
+	// 尝试落盘在途缓冲块，避免丢失数据。
+	for _, bt := range l.guard.takeAll() {
+		if err := l.writeTag(bt, false); err != nil {
+			log.Warn("drain pending block failed", "room", l.session.RoomID, "err", err)
+			return
+		}
+	}
+
+	// 关闭当前分段，确保所有在途数据已落盘。
 	l.closeSegment()
 }
 
@@ -324,15 +333,6 @@ func (l *recordSessionLoop) flushBlock() error {
 	return nil
 }
 
-func (l *recordSessionLoop) drainPending() {
-	for _, bt := range l.guard.takeAll() {
-		if err := l.writeTag(bt, false); err != nil {
-			log.Warn("drain pending block failed", "room", l.session.RoomID, "err", err)
-			return
-		}
-	}
-}
-
 func (l *recordSessionLoop) writeTag(tag *flv.Tag, persistError bool) error {
 	n, err := l.seg.writeTag(tag)
 	l.addWrittenBytes(n)
@@ -343,7 +343,6 @@ func (l *recordSessionLoop) writeTag(tag *flv.Tag, persistError bool) error {
 }
 
 func (l *recordSessionLoop) addWrittenBytes(n int64) {
-	l.writtenBytes += n
-	l.result.BytesWritten = l.writtenBytes
-	l.stats.setBytesWritten(l.baseBytes + l.writtenBytes)
+	l.result.BytesWritten += n
+	l.stats.setBytesWritten(l.baseBytes + l.result.BytesWritten)
 }

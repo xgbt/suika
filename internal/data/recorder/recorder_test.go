@@ -550,7 +550,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
 	cache := &segmentHeaders{metadata: metaTag, videoSeq: videoSeq, audioSeq: audioSeq}
 
-	seg, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, cache)
+	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +578,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 
 func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	seg, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, &segmentHeaders{})
+	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, &segmentHeaders{})
 	if err != nil {
 		t.Fatal(err)
 	}

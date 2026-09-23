@@ -62,9 +62,10 @@ type recordingSegment struct {
 	wallStart   time.Time     // 分段打开的墙钟时间
 }
 
-// openSegment 创建并打开一个新的录制分段，写入 FLV 文件头及缓存的头标签后返回。
+// openSegment 创建并打开一个新的录制分段，写入 FLV 文件头及缓存的头标签后返回；
+// headerTagBytes 是头标签本身占用的字节数（不含 FLV 文件头），供调用方计入写入进度。
 // 任一步骤失败时，已创建的文件句柄和磁盘文件会被自动清理。
-func openSegment(lay sessionLayout, part int, header *flv.FileHeader, headers *segmentHeaders) (seg *recordingSegment, err error) {
+func openSegment(lay sessionLayout, part int, header *flv.FileHeader, headers *segmentHeaders) (seg *recordingSegment, headerTagBytes int64, err error) {
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
 
@@ -87,12 +88,12 @@ func openSegment(lay sessionLayout, part int, header *flv.FileHeader, headers *s
 	}()
 
 	if videoFile, err = os.OpenFile(videoPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// danmaku 与 video 保持一致的 O_TRUNC：part 编号被复用时两个文件都重写，
 	// 避免旧弹幕内容残留导致与新分段的时间轴错位、内容重复。
 	if danmakuFile, err = os.OpenFile(danmakuPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	seg = &recordingSegment{
@@ -105,36 +106,39 @@ func openSegment(lay sessionLayout, part int, header *flv.FileHeader, headers *s
 		wallStart:   time.Now(),
 	}
 	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
-	if err = seg.writeHeaderTags(header, headers); err != nil {
-		return nil, err
+	if headerTagBytes, err = seg.writeHeaderTags(header, headers); err != nil {
+		return nil, 0, err
 	}
-	return seg, nil
+	return seg, headerTagBytes, nil
 }
 
 // writeHeaderTags 写入 FLV 文件头与缓存的头标签（metadata、video/audio
-// 序列头），使分段文件从第一帧起即可独立解码播放。
-func (s *recordingSegment) writeHeaderTags(header *flv.FileHeader, headers *segmentHeaders) error {
+// 序列头），使分段文件从第一帧起即可独立解码播放；返回头标签本身占用的
+// 字节数（不含 FLV 文件头），供调用方计入写入进度。
+func (s *recordingSegment) writeHeaderTags(header *flv.FileHeader, headers *segmentHeaders) (int64, error) {
 	// 写入 FLV 文件头
 	headerBytes := header.Bytes()
 	if _, err := s.videoWriter.Write(headerBytes); err != nil {
-		return err
+		return 0, err
 	}
 	s.bytes += int64(len(headerBytes))
 
 	// 写入缓存的头标签（metadata、video/audio 序列头）
+	var tagBytes int64
 	var writeErr error
 	headers.forEachReinject(func(tag *flv.Tag) {
 		if writeErr != nil {
 			return
 		}
-		tagBytes := tag.AppendTo(nil)
-		if _, err := s.videoWriter.Write(tagBytes); err != nil {
+		buf := tag.AppendTo(nil)
+		if _, err := s.videoWriter.Write(buf); err != nil {
 			writeErr = err
 			return
 		}
-		s.bytes += int64(len(tagBytes))
+		s.bytes += int64(len(buf))
+		tagBytes += int64(len(buf))
 	})
-	return writeErr
+	return tagBytes, writeErr
 }
 
 // forEachReinject 按固定顺序（metadata -> video seq -> audio seq）重放缓存的头标签。
@@ -169,11 +173,11 @@ func (s *recordingSegment) writeTag(tag *flv.Tag) (int64, error) {
 // danmakuLine 是 biz.DanmakuEvent 落盘到弹幕 JSONL 的行结构，字段含义与
 // DanmakuEvent 一致。
 type danmakuLine struct {
-	Ts       int64           `json:"ts"`                // 接收时刻（unix 毫秒）
-	SendTs   int64           `json:"send_ts,omitempty"` // 平台载荷中的发送时刻（unix 毫秒），未知省略
-	Type     string          `json:"type"`
-	UID      int64           `json:"uid,omitempty"`
-	Uname    string          `json:"uname,omitempty"`
+	Ts       int64           `json:"ts"`                  // 接收时刻（unix 毫秒）
+	SendTs   int64           `json:"send_ts,omitempty"`   // 平台载荷中的发送时刻（unix 毫秒），未知省略
+	Type     string          `json:"type"`                // 事件类型，如弹幕、礼物、进场特效等
+	UID      int64           `json:"uid,omitempty"`       // 用户 ID
+	Uname    string          `json:"uname,omitempty"`     // 用户昵称
 	Text     string          `json:"text,omitempty"`      // 弹幕文本 / SC 文本 / 进场特效文本
 	Color    int32           `json:"color,omitempty"`     // 弹幕颜色 / SC 颜色
 	Mode     int32           `json:"mode,omitempty"`      // 弹幕模式 / SC 模式
