@@ -318,7 +318,7 @@ func TestShouldSplit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy := segmentSplitPolicy{segmentDuration: tc.dur}
+			policy := splitter{segmentDuration: tc.dur}
 			seg := &segmentFile{hasStart: tc.hasStart, startTs: tc.startTs}
 			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
 				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
@@ -356,7 +356,7 @@ func TestShouldSplitBySize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
-			policy := segmentSplitPolicy{maxSegmentBytes: tc.maxBytes}
+			policy := splitter{maxSegmentBytes: tc.maxBytes}
 			seg := &segmentFile{hasStart: tc.hasStart, bytes: tc.bytes}
 			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
 				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)

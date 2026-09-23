@@ -34,12 +34,10 @@ const (
 // stats.go 写入进度统计、recorder_merge.go 收尾合并。meta.json 与合并产物
 // 共用的原子替换不在本包，由 internal/utils.WriteFileAtomic 提供。
 type recorderRepo struct {
+	splitter
+
 	// recordRoot 录制根目录
 	recordRoot string
-	// segmentDuration 分段时长，为 0 时不按时间切分
-	segmentDuration time.Duration
-	// maxSegmentBytes 分段大小上限，为 0 时不按大小切分
-	maxSegmentBytes int64
 	// healthInterval 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败。
 	healthInterval time.Duration
 	// healthFailRounds 连续健康检查失败轮数，达到该轮数则判定录制异常。
@@ -52,9 +50,11 @@ type recorderRepo struct {
 
 func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 	r := &recorderRepo{
+		splitter: splitter{
+			maxSegmentBytes: defaultMaxSegmentBytes,
+			segmentDuration: defaultSegmentMinutes * time.Minute,
+		},
 		recordRoot:       defaultRecordRoot,
-		segmentDuration:  defaultSegmentMinutes * time.Minute,
-		maxSegmentBytes:  defaultMaxSegmentBytes,
 		healthInterval:   defaultHealthInterval,
 		healthFailRounds: defaultHealthRounds,
 		stats:            make(map[int64]*pumpStats),
