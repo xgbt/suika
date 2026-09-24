@@ -20,9 +20,11 @@ type segmentHeaders struct {
 	audioSeq *flv.Tag // 最近一次 AAC 序列头
 }
 
-// sequenceHeaderChanged 判断 tag 是否携带与缓存不同的序列头：流中途的序列头变化
-// 意味着后续帧的解码配置与此前不同，应触发切段。首次见到某类序列头
-// （缓存为 nil）不算变化。
+// sequenceHeaderChanged 报告 tag 是否是一个与缓存内容不同的序列头。
+//
+// 序列头（AVC 的 SPS/PPS、AAC 的 AudioSpecificConfig）决定解码器配置，
+// 流中途发生变化，说明后续帧需按新配置解码，调用方应据此切段。
+// 首次出现某类序列头（缓存为 nil）不算变化。
 func (h *segmentHeaders) sequenceHeaderChanged(tag *flv.Tag) bool {
 	switch {
 	case tag.IsAVCSequenceHeader():
@@ -30,7 +32,7 @@ func (h *segmentHeaders) sequenceHeaderChanged(tag *flv.Tag) bool {
 	case tag.IsAACSequenceHeader():
 		return h.audioSeq != nil && !bytes.Equal(h.audioSeq.Data, tag.Data)
 	}
-	// metadata 变化不触发切段：它只影响播放器展示的元信息（分辨率/帧率等提示值），不影响解码器配置。
+	// metadata 不参与判断：它只是分辨率/帧率等展示用提示值，不影响解码器配置。
 	return false
 }
 
