@@ -144,7 +144,6 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 			return nil
 		}
 		if err := s.openNewSegment(); err != nil {
-			s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 			return err
 		}
 	} else if s.guard.boundary(tag) {
@@ -228,6 +227,7 @@ func (s *pumpState) openNewSegment() error {
 	part := nextPartNumber(s.lay)
 	writer, headerTagBytes, err := openSegment(s.lay, part, s.header, &s.headers)
 	if err != nil {
+		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 		return err
 	}
 
@@ -279,7 +279,6 @@ func (s *pumpState) rotateSegment() error {
 	}
 	s.closeSegment()
 	if err := s.openNewSegment(); err != nil {
-		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 		return err
 	}
 	return nil
