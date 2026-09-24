@@ -14,6 +14,6 @@ recorder:
   # 此字段不再被读取，保留仅为向后兼容。
   cookie: ""
   record_root: ./recordings
-  # 收尾时把一场会话的 FLV 分段合并为单个文件（纯 Go 实现，无需任何
-  # 外部工具）；设为 false 则保留散装分段。
-  merge_enabled: true
+  # merge_enabled 已废弃：收尾总是把分段合并为单个文件，该字段不再被读取；
+  # 且只要键存在，启动时就会打一条 deprecation warn，故默认配置不列出。
+  # 详见 docs/design/bili-recorder.md 第 7 节。

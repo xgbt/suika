@@ -124,12 +124,23 @@ type LiveClient interface {
 	DanmakuConn(ctx context.Context, roomID int64) (DanmakuConn, error)
 }
 
-// RecorderRepo 是录制器的存储接口。负责磁盘 IO
+// RecorderRepo 是录制器的存储接口：磁盘 IO 加运行期的写入进度。
+//
+// 内嵌 SessionStatsRepo 而不是另立一个平行的缝：写入进度（当前分段文件、
+// 已写字节、下载速度）由同一个实现的同一份内存状态提供，内嵌让"一个对象
+// 同时满足两者"成为编译期事实，接线处不必再做运行时类型断言。房间管理
+// 只消费收窄后的 SessionStatsRepo。
 type RecorderRepo interface {
+	SessionStatsRepo
+
 	// PrepareSession 按"房间 + 开播时间" 创建/定位 目录和 meta.json。
 	PrepareSession(ctx context.Context, session *RecordingSession) error
-	// RecordSession 将直播流写入磁盘（按配置切分分段），并把事件写入对应的 JSONL 文件，直到流结束或 ctx 被取消。
-	RecordSession(ctx context.Context, session *RecordingSession, stream *LiveStream, events <-chan *DanmakuEvent) (*RecordingResult, error)
+	// PumpSession 为 session 泵送一次直播流连接（写入磁盘、按配置切分
+	// 分段、写入事件对应的 JSONL 文件），直到这次连接的流结束或 ctx 被取
+	// 消。一个 Session（从开播到下播）在断流重连时会多次调用 PumpSession；
+	// 调用方负责在瞬时错误（ErrStreamTransient）后重新打开流并再次调用，
+	// 直到 Session 结束。
+	PumpSession(ctx context.Context, session *RecordingSession, stream *LiveStream, events <-chan *DanmakuEvent) (*RecordingResult, error)
 	// FinishSession 收尾 meta.json 并合并已录分段。
 	FinishSession(ctx context.Context, session *RecordingSession) error
 	// RecoverPending 完成上次运行遗留的合并工作。

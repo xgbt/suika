@@ -107,7 +107,7 @@ export default function RoomList() {
 
   const [form] = Form.useForm();
   const PAGE_SIZE = 20;
-  const REFRESH_INTERVAL_MS = 2000;
+  const REFRESH_INTERVAL_MS = 1000;
 
   const loadPage = useCallback(async (token: string, showError = true) => {
     try {
@@ -134,7 +134,7 @@ export default function RoomList() {
     }
   }, [message]);
 
-  // Auto-refresh every 2 seconds
+  // Auto-refresh every 1 second
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tokenRef = useRef<string>('');
 

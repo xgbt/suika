@@ -1,8 +1,13 @@
+// live.go 实现 biz.LiveClient 的直播侧：查询房间开播状态与元数据、从播放
+// 信息中挑选并打开 FLV 流、弹幕连接的创建入口，以及弹幕连接所需认证信息
+// （token、接入节点、buvid3）的获取。
 package bili
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -13,8 +18,6 @@ import (
 )
 
 const (
-	liveAPIBase          = "https://api.live.bilibili.com" // B 站直播 API 基础 URL
-	riskCode352          = -352                            // B 站直播 API 的 -352 风控错误码
 	liveStatusOn         = 1
 	defaultDanmakuServer = "wss://broadcastlv.chat.bilibili.com:2245/sub" // getDanmuInfo 和旧版 getConf 都被风控时的兜底弹幕端点
 )
@@ -45,19 +48,22 @@ type liveClient struct {
 func NewLiveClient(client *Client) biz.LiveClient {
 	return &liveClient{
 		client: client,
-		risk:   newRiskGuard(client.refreshRisk),
+		risk:   newRiskGuard(client),
 	}
 }
 
 // GetRoomInfo 经 getInfoByRoom 返回房间当前的开播状态。
 func (lc *liveClient) GetRoomInfo(ctx context.Context, roomID int64) (*biz.RoomInfo, error) {
 	var resp roomInfoResponse
-	attempt := func(ctx context.Context) (int, error) {
-		cookie := lc.client.injectAntiRisk(ctx)
-		endpoint := liveAPIBase + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + strconv.FormatInt(roomID, 10)
-		return resp.Code, lc.client.fetchJSON(ctx, lc.client.signURL(endpoint), roomID, cookie, &resp)
-	}
-	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getInfoByRoom", attempt: attempt})
+	code, err := lc.risk.call(ctx, roomID, riskCall{
+		attempt: riskRequest{
+			op:    "getInfoByRoom",
+			path:  "/xlive/web-room/v1/index/getInfoByRoom",
+			query: url.Values{"room_id": {strconv.FormatInt(roomID, 10)}},
+			sign:  true,
+			out:   &resp,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -92,19 +98,14 @@ func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.Li
 		return nil, err
 	}
 
-	req := lc.client.streamClient.R().
+	req := browserRequest(lc.client.streamClient, liveReferer(roomID), "", lc.client.Cookie()).
 		SetContext(ctx).
-		SetHeader("User-Agent", biliUserAgent).
-		SetHeader("Referer", liveReferer(roomID)).
 		SetDoNotParseResponse(true)
-	if cookie := lc.client.Cookie(); cookie != "" {
-		req.SetHeader("Cookie", cookie)
-	}
 	resp, err := req.Get(streamURL)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
+	if !resp.IsSuccess() {
 		if resp.RawBody() != nil {
 			_ = resp.RawBody().Close()
 		}
@@ -120,16 +121,21 @@ func (lc *liveClient) OpenLiveStream(ctx context.Context, roomID int64) (*biz.Li
 
 // selectStreamURL 调用 B 站接口获取房间的播放信息，并选择最优 FLV 流地址。
 func (lc *liveClient) selectStreamURL(ctx context.Context, roomID int64) (string, biz.StreamQuality, error) {
-	endpoint := liveAPIBase + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
-		strconv.FormatInt(roomID, 10) +
-		"&protocol=0,1&format=0,1,2&codec=0&qn=" + strconv.Itoa(sourceQualityQN) + "&platform=web"
-
 	var resp playInfoResponse
-	attempt := func(ctx context.Context) (int, error) {
-		cookie := lc.client.injectAntiRisk(ctx)
-		return resp.Code, lc.client.fetchJSON(ctx, lc.client.signURL(endpoint), roomID, cookie, &resp)
-	}
-	code, err := lc.risk.call(ctx, roomID, riskCall{op: "getRoomPlayInfo", attempt: attempt})
+	code, err := lc.risk.call(ctx, roomID, riskCall{attempt: riskRequest{
+		op:   "getRoomPlayInfo",
+		path: "/xlive/web-room/v2/index/getRoomPlayInfo",
+		query: url.Values{
+			"room_id":  {strconv.FormatInt(roomID, 10)},
+			"protocol": {"0,1"},
+			"format":   {"0,1,2"},
+			"codec":    {"0"}, // codec 只请求 0（avc），见 ADR-0004
+			"qn":       {strconv.Itoa(sourceQualityQN)},
+			"platform": {"web"},
+		},
+		sign: true,
+		out:  &resp,
+	}})
 	if err != nil {
 		return "", biz.StreamQuality{}, err
 	}
@@ -223,6 +229,7 @@ func isFLVStream(baseURL string) bool {
 	return strings.Contains(strings.ToLower(baseURL), ".flv")
 }
 
+// liveReferer 返回房间页的 Referer URL，用于构造浏览器伪装请求头。
 func liveReferer(roomID int64) string {
 	return "https://live.bilibili.com/" + strconv.FormatInt(roomID, 10)
 }
@@ -245,6 +252,9 @@ type roomInfoResponse struct {
 	} `json:"data"`
 }
 
+// bizCode 让响应体满足 codedResponse，供 riskGuard 读业务码。
+func (r *roomInfoResponse) bizCode() int { return r.Code }
+
 type playInfoResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -254,6 +264,9 @@ type playInfoResponse struct {
 		} `json:"playurl_info"`
 	} `json:"data"`
 }
+
+// bizCode 让响应体满足 codedResponse，供 riskGuard 读业务码。
+func (r *playInfoResponse) bizCode() int { return r.Code }
 
 // playURL 是 getRoomPlayInfo 返回的流地址清单。
 type playURL struct {
@@ -286,4 +299,128 @@ type codecLine struct {
 type hostURL struct {
 	Host  string `json:"host"`
 	Extra string `json:"extra"`
+}
+
+// danmuInfo 是弹幕连接所需的认证三要素：
+// token（进房鉴权）、addresses（wss 主机列表）、buvid（设备指纹 buvid3）。
+type danmuInfo struct {
+	token     string
+	addresses []string
+	buvid     string
+}
+
+// danmuHost 是一个弹幕接入节点。主通道的 host_list 与旧版 getConf 的
+// host_server_list 元素形状相同，共用这一个类型。
+type danmuHost struct {
+	Host    string `json:"host"`
+	WssPort int    `json:"wss_port"`
+}
+
+// danmuInfoResponse 是主通道 getDanmuInfo 的响应体。
+type danmuInfoResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		Token    string      `json:"token"`
+		HostList []danmuHost `json:"host_list"`
+	} `json:"data"`
+}
+
+// bizCode 让响应体满足 codedResponse，供 riskGuard 读业务码。
+func (r *danmuInfoResponse) bizCode() int { return r.Code }
+
+// danmuConfResponse 是旧版兜底接口 getConf 的响应体：业务码在 msg 而非
+// message，节点列表叫 host_server_list。
+type danmuConfResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		Token          string      `json:"token"`
+		HostServerList []danmuHost `json:"host_server_list"`
+	} `json:"data"`
+}
+
+// bizCode 让响应体满足 codedResponse，供 riskGuard 读业务码。
+func (r *danmuConfResponse) bizCode() int { return r.Code }
+
+// buildDanmuInfo 由 token 与接入节点列表构造认证信息：把节点拼成 wss 地址，
+// 没有可用节点时退回默认端点。主通道与兜底通道共用。
+func buildDanmuInfo(token string, hosts []danmuHost) *danmuInfo {
+	info := &danmuInfo{token: token}
+	for _, h := range hosts {
+		if h.Host != "" && h.WssPort > 0 {
+			info.addresses = append(info.addresses, fmt.Sprintf("wss://%s:%d/sub", h.Host, h.WssPort))
+		}
+	}
+	if len(info.addresses) == 0 {
+		info.addresses = []string{defaultDanmakuServer}
+	}
+	return info
+}
+
+// danmuInfo 返回房间的弹幕认证信息：token、主机列表与 buvid3。
+// 主通道 getDanmuInfo 经 WBI 签名；被 -352 双重拒绝时由 riskGuard 转调
+// 旧版 getConf 兜底，两条通道的结果由 buildDanmuInfo 统一成形。
+func (lc *liveClient) danmuInfo(ctx context.Context, roomID int64) (*danmuInfo, error) {
+	var resp danmuInfoResponse
+	var confResp danmuConfResponse
+	var info, confInfo *danmuInfo // 主通道 / 兜底通道成功时各自填充
+
+	code, err := lc.risk.call(ctx, roomID, riskCall{
+		attempt: riskRequest{
+			op:    "getDanmuInfo",
+			path:  "/xlive/web-room/v1/index/getDanmuInfo",
+			query: url.Values{"id": {strconv.FormatInt(roomID, 10)}, "type": {"0"}},
+			sign:  true,
+			out:   &resp,
+			done: func() error {
+				info = buildDanmuInfo(resp.Data.Token, resp.Data.HostList)
+				return nil
+			},
+		},
+		fallback: &riskRequest{
+			op:    "getConf",
+			path:  "/room/v1/Danmu/getConf",
+			query: url.Values{"room_id": {strconv.FormatInt(roomID, 10)}, "platform": {"pc"}, "player": {"web"}},
+			sign:  false, // 旧版接口不需要 WBI 签名
+			out:   &confResp,
+			done: func() error {
+				if confResp.Data.Token == "" {
+					return stderrors.New("legacy getConf returned empty token")
+				}
+				confInfo = buildDanmuInfo(confResp.Data.Token, confResp.Data.HostServerList)
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// 兜底通道成功时用它的结果，否则用主通道的结果；两者都没成功则按
+	// 业务码报错（风控类失败已在 riskGuard 里包装返回）。
+	chosen := confInfo
+	if chosen == nil {
+		if code != 0 {
+			return nil, fmt.Errorf("getDanmuInfo code=%d message=%s", code, resp.Message)
+		}
+		chosen = info
+	}
+	chosen.buvid = lc.danmuBuvid(ctx)
+	return chosen, nil
+}
+
+// danmuBuvid 返回弹幕认证载荷使用的 buvid3：优先取当前生效 cookie 中的，
+// 其次回退到指纹存储。
+func (lc *liveClient) danmuBuvid(ctx context.Context) string {
+	cookie := lc.client.Cookie()
+	if buvid := cookieValue(cookie, "buvid3"); buvid != "" {
+		return buvid
+	}
+	b3, _, err := lc.client.buvids.getBuvids(ctx, cookie)
+	if err != nil {
+		log.Warn("get buvid3 for danmaku failed, continuing without", "err", err)
+		return ""
+	}
+	return b3
 }

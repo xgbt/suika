@@ -38,7 +38,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, recorder *conf.Record
 	sessionStatsRepo := data.NewSessionStatsRepo(recorderRepo)
 	roomUsecase := biz.NewRoomUsecase(roomRepo, roomRegistry, sessionStatsRepo)
 	roomService := service.NewRoomService(roomUsecase)
-	passportClient := data.NewPassportClient(dataData)
+	passportClient := data.NewPassportClient()
 	credentialRepo := data.NewCredentialRepo(dataData)
 	accountUsecase := biz.NewAccountUsecase(passportClient, credentialRepo)
 	accountService := service.NewAccountService(accountUsecase)

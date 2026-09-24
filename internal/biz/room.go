@@ -63,7 +63,8 @@ type RoomRepo interface {
 	DeleteRoom(context.Context, int64) error
 }
 
-// SessionStats 是当前录制会话的写入进度快照。
+// SessionStats 是当前 Session（录制会话：一次连续直播，定义见 CONTEXT.md）的
+// 累计写入进度快照：该 Session 内因断流重连而产生的多次拉流不会使进度清零。
 type SessionStats struct {
 	CurrentFile   string // 当前正在写入的分段文件名，可能为空
 	BytesWritten  int64  // 当前分段已写入的字节数
@@ -72,8 +73,8 @@ type SessionStats struct {
 
 // SessionStatsRepo 提供房间当前录制会话的写入进度，实际由 RecorderRepo 实现。
 type SessionStatsRepo interface {
-	// SessionStats 返回房间当前录制会话的写入进度。房间未录制或会话已结束时返回 nil。
-	SessionStats(ctx context.Context, roomID int64) (*SessionStats, error)
+	// Stats 返回房间当前录制会话的写入进度。房间未录制或会话已结束时返回 nil。
+	Stats(ctx context.Context, roomID int64) (*SessionStats, error)
 }
 
 // ListQuery 房间列表查询条件, 用于 RoomRepo.ListRooms 查询
@@ -162,7 +163,7 @@ func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime
 
 	// 如果房间正在录制中，尝试获取当前录制 session 的写入进度
 	if runtime.RecordStatus == RecordStatusRecording {
-		stats, err := uc.sessionStatsRepo.SessionStats(ctx, room.RoomID)
+		stats, err := uc.sessionStatsRepo.Stats(ctx, room.RoomID)
 		if err == nil && stats != nil {
 			runtime.CurrentFile = stats.CurrentFile
 			runtime.BytesWritten = stats.BytesWritten

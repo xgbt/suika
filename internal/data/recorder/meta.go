@@ -2,12 +2,15 @@
 package recorder
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/go-kratos/kratos/v3/log"
+
+	"suika/internal/utils"
 )
 
 const (
@@ -39,11 +42,11 @@ type qualityMeta struct {
 	Desc string `json:"desc"`
 }
 
-// segmentMeta 记录每个分段的元数据，存储在 meta.json 中
+// segmentMeta 记录每个分段的元数据，存储在 meta.json 中。源文件是否还在
+// 磁盘上一律以文件系统为准（allSegmentSourcesExist），不在此另记一份。
 type segmentMeta struct {
 	Part      int    `json:"part"`       // 分段编号
 	Video     string `json:"video"`      // 视频文件名
-	FLVKept   bool   `json:"flv_kept"`   // 标记 FLV 文件是否保留
 	Danmaku   string `json:"danmaku"`    // 弹幕 JSONL 文件名，可能为空
 	WallStart int64  `json:"wall_start"` // 分段打开的墙钟时间（unix 秒）
 	WallEnd   int64  `json:"wall_end"`   // 分段关闭的墙钟时间（unix 秒）
@@ -79,27 +82,16 @@ func saveMeta(path string, meta *sessionMeta) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	// rename 之前先把数据落盘：否则掉电后可能 rename 已生效而数据未写入，
-	// meta.json 变成空文件，该场次的分段列表会被 RecoverPending 跳过。
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return utils.WriteFileAtomic(path, func(bw *bufio.Writer) (int64, error) {
+		n, err := bw.Write(data)
+		return int64(n), err
+	})
 }
 
 // updateMeta 持锁读改写 meta.json，失败只记日志。
-func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
 
 	meta, err := loadMeta(metaPath)
 	if err != nil {
@@ -114,44 +106,44 @@ func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 }
 
 // persistMeta 持锁用整份 meta 覆盖 meta.json，会盖掉 updateMeta 的写入；错误向上返回。
-func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (repo *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
 
 	return saveMeta(metaPath, meta)
 }
 
 // appendSegmentMeta 追加一条分段记录到 meta.json。
-func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *segmentFile) {
-	r.updateMeta(metaPath, func(meta *sessionMeta) {
+func (repo *recorderRepo) appendSegmentMeta(metaPath string, writer *segmentWriter) {
+	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Segments = append(meta.Segments, segmentMeta{
-			Part:      seg.part,
-			Video:     filepath.Base(seg.videoPath),
-			Danmaku:   filepath.Base(seg.danmuPath),
-			WallStart: seg.wallStart.Unix(),
+			Part:      writer.part,
+			Video:     filepath.Base(writer.videoPath),
+			Danmaku:   filepath.Base(writer.danmakuPath),
+			WallStart: writer.wallStart.Unix(),
 		})
 	})
 }
 
 // finishSegmentMeta 回填指定分段的收尾字段（结束时间、时间戳、字节数）。
-func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *segmentFile) {
-	r.updateMeta(metaPath, func(meta *sessionMeta) {
+func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWriter) {
+	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		for i := range meta.Segments {
 			s := &meta.Segments[i]
-			if s.Part != seg.part {
+			if s.Part != writer.part {
 				continue
 			}
 			s.WallEnd = time.Now().Unix()
-			s.TsStart = seg.startTs
-			s.TsEnd = seg.lastTs
-			s.Bytes = seg.bytes
+			s.TsStart = writer.startTs
+			s.TsEnd = writer.lastTs
+			s.Bytes = writer.bytes
 		}
 	})
 }
 
 // appendMetaError 追加一条错误记录到 meta.json。
-func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
-	r.updateMeta(metaPath, func(meta *sessionMeta) {
+func (repo *recorderRepo) appendMetaError(metaPath, stage string, err error) {
+	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
 	})
 }

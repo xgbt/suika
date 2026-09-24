@@ -31,21 +31,21 @@ type Data struct {
 	bili *bili.Client
 }
 
-// NewLiveClient 提供 biz.LiveClient；B 站直播流量全部实现在 bili 子包。
-func NewLiveClient(d *Data) biz.LiveClient { return bili.NewLiveClient(d.bili) }
+func NewLiveClient(d *Data) biz.LiveClient {
+	return bili.NewLiveClient(d.bili)
+}
 
-// NewPassportClient 提供 biz.PassportClient；实现位于 bili 子包。
-func NewPassportClient(d *Data) biz.PassportClient { return bili.NewPassportClient(d.bili) }
+func NewPassportClient() biz.PassportClient {
+	return bili.NewPassportClient()
+}
 
-// NewRecorderRepo 将共享数据配置适配为录制子包的仓库实现。
 func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 	_ = d
 	return recorder.NewRecorderRepo(c)
 }
 
-// NewSessionStatsRepo 暴露录制仓库提供的实时写入统计。
 func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
-	return recorder.NewSessionStatsRepo(repo)
+	return repo
 }
 
 // Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。
@@ -73,6 +73,8 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 		bili: bili.NewClient(cookie),
 	}
 
+	// 只在该字段确实被设置时才告警：recorder 块里的 record_root 人人都会填，
+	// 按块判断会让每次启动都打两条与操作者无关的废弃告警。
 	if rc != nil && rc.MergeEnabled != nil {
 		log.Warn("recorder: config field recorder.merge_enabled is deprecated and ignored; recorder sessions are always merged at finish")
 	}

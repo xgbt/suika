@@ -26,7 +26,7 @@ type fakeSessionStatsRepo struct {
 	calls []int64
 }
 
-func (f *fakeSessionStatsRepo) SessionStats(_ context.Context, roomID int64) (*biz.SessionStats, error) {
+func (f *fakeSessionStatsRepo) Stats(_ context.Context, roomID int64) (*biz.SessionStats, error) {
 	f.calls = append(f.calls, roomID)
 	if err, ok := f.errs[roomID]; ok {
 		return nil, err
@@ -342,7 +342,7 @@ func TestRoomServiceListRoomsMergesRuntime(t *testing.T) {
 	}
 	// 会话统计只查询录制中的房间。
 	if len(env.stats.calls) != 2 || env.stats.calls[0] != 3003 || env.stats.calls[1] != 4004 {
-		t.Fatalf("SessionStats() calls = %v, want exactly [3003 4004]", env.stats.calls)
+		t.Fatalf("Stats() calls = %v, want exactly [3003 4004]", env.stats.calls)
 	}
 
 	// 启动后创建的房间直接从数据库返回，运行时字段取默认值：

@@ -16,7 +16,7 @@ type fakeStatsRepo struct {
 	calls    []int64
 }
 
-func (r *fakeStatsRepo) SessionStats(_ context.Context, roomID int64) (*SessionStats, error) {
+func (r *fakeStatsRepo) Stats(_ context.Context, roomID int64) (*SessionStats, error) {
 	r.calls = append(r.calls, roomID)
 	if err, ok := r.failures[roomID]; ok {
 		return nil, err

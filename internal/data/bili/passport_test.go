@@ -5,6 +5,7 @@ import (
 	stderrors "errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -120,12 +121,45 @@ func TestQRPollStatus(t *testing.T) {
 
 // newTestPassportClient 返回指向给定测试服务器的客户端。
 func newTestPassportClient(generateURL, pollURL, navURL string) *passportClient {
-	return &passportClient{
-		httpClient:  resty.New().SetTimeout(5 * time.Second).SetCookieJar(nil),
-		generateURL: generateURL,
-		pollURL:     pollURL,
-		navURL:      navURL,
+	targets := make(map[string]*url.URL)
+	var defaultTarget *url.URL
+	for _, endpoint := range []string{generateURL, pollURL, navURL} {
+		if endpoint == "" {
+			continue
+		}
+		target, err := url.Parse(endpoint)
+		if err != nil {
+			panic(err)
+		}
+		if target.Path == "" {
+			defaultTarget = target
+		}
+		targets[target.Path] = target
 	}
+	client := resty.New().SetTimeout(5 * time.Second).SetCookieJar(nil)
+	client.SetTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		target := targets[req.URL.Path]
+		if target == nil {
+			target = defaultTarget
+		}
+		if target == nil {
+			return http.DefaultTransport.RoundTrip(req)
+		}
+		requestURL := *target
+		requestURL.RawQuery = req.URL.RawQuery
+		request := req.Clone(req.Context())
+		request.URL = &requestURL
+		return http.DefaultTransport.RoundTrip(request)
+	}))
+	return &passportClient{
+		client: client,
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestPassportCreateQRLogin(t *testing.T) {
