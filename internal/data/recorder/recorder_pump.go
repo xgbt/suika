@@ -134,6 +134,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 字节（writtenBytes），避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
 	s.speed.addReceived(int64(len(tag.Data)) + flv.TagEnvelopeSize)
 
+	// 如果当前尚未有打开的分段，则尝试开新段。新段会等待首个视频关键帧（如有）再真正创建文件。
 	if s.seg == nil {
 		// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃（头标签
 		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
@@ -258,8 +259,8 @@ func (s *pumpState) closeSegment() {
 // stop 在流干净结束或调用方取消时收尾：尽力落盘在途缓冲块，然后关段。
 func (s *pumpState) stop() {
 	// 尝试落盘在途缓冲块，避免丢失数据。
-	for _, bt := range s.guard.takeAll() {
-		if err := s.writeTag(bt, false); err != nil {
+	for _, tag := range s.guard.takeAll() {
+		if err := s.writeTag(tag, false); err != nil {
 			log.Warn("drain pending block failed", "room", s.roomID, "err", err)
 			return
 		}
@@ -302,9 +303,14 @@ func (s *pumpState) flushBlock() error {
 	return nil
 }
 
+// writeTag 将单个 FLV 标签写入当前分段，并根据 persistError 决定是否记录元信息错误。
 func (s *pumpState) writeTag(tag *flv.Tag, persistError bool) error {
+	// 将单个 FLV 标签写入当前分段
 	n, err := s.seg.writeTag(tag)
+
+	// 更新写入进度，即使写入失败也记录已写入的字节数
 	s.addWrittenBytes(n)
+
 	if err != nil && persistError {
 		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 	}
