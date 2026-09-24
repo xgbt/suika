@@ -21,7 +21,10 @@ const (
 var (
 	// unsafeChars 匹配文件名不安全字符：控制字符、路径分隔符及 Unicode 空白，
 	// + 折叠连续匹配为单个下划线。
-	unsafeChars       = regexp.MustCompile(`[\x00-\x1f\x7f\\/:*?"<>|\s\p{Z}]+`)
+	unsafeChars = regexp.MustCompile(`[\x00-\x1f\x7f\\/:*?"<>|\s\p{Z}]+`)
+	// partSuffixPattern 只认 .flv：分段一律是 FLV，编号探测也只覆盖 flv 分段，
+	// 同时借此滤掉 .danmu.jsonl 这类同前缀的非分段文件。不要为了兼容历史
+	// mp4 分段把它放宽——编号被占用与否只由当前这一种格式决定。
 	partSuffixPattern = regexp.MustCompile(`_part(\d+)\.flv$`)
 )
 

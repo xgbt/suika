@@ -244,17 +244,17 @@ func TestNextPartNumber(t *testing.T) {
 			want:  3,
 		},
 		{
-			name: "unrelated files ignored, padded and mp4 counted",
+			name: "unrelated files ignored, padded, non-flv not counted",
 			files: []string{
 				base + "_part001.flv",       // 前导零编号：Atoi 能处理
-				base + "_part002.mp4",       // 历史遗留的 mp4 分段也计入
+				base + "_part002.mp4",       // 分段只认 .flv：mp4 不计入编号
 				"other_part99.flv",          // 基座前缀不同
 				base + "_partX.flv",         // 编号非数字
 				base + "_part3.danmu.jsonl", // 扩展符不符
 				"random.txt",
 			},
 			dirOK: true,
-			want:  3, // max(1, 2) + 1
+			want:  2, // max(1) + 1
 		},
 		{
 			name:  "high part number",
