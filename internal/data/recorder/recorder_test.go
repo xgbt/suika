@@ -542,7 +542,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 }
 
 func TestPumpSessionProgressIncludesBufferedBlock(t *testing.T) {
-	stats := &pumpStats{}
+	stats := &sessionStats{}
 	loop := &pumpState{
 		stats:     stats,
 		baseBytes: 100,

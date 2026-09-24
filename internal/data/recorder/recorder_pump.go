@@ -17,15 +17,16 @@ import (
 // 分段），并把弹幕事件写入对应的 JSONL 文件，直到这次连接的流结束或 ctx 被
 // 取消。一个 Session（录制会话：一次连续直播，定义见 CONTEXT.md）在断流重连
 // 时会多次调用本方法（biz.RecorderUsecase.runRecordingLoop 是唯一调用方）；写入
-// 进度（pumpStats，见 stats.go）跨这些调用持久，不随重连重置。
-func (r *recorderRepo) PumpSession(ctx context.Context, session *biz.RecordingSession, stream *biz.LiveStream, events <-chan *biz.DanmakuEvent) (*biz.RecordingResult, error) {
+// 进度（sessionStats，见 stats.go）跨这些调用持久，不随重连重置。
+func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.RecordingSession, stream *biz.LiveStream, events <-chan *biz.DanmakuEvent) (*biz.RecordingResult, error) {
+	// 检查直播流是否有效
 	if stream == nil || stream.Body == nil {
 		return nil, biz.ErrRoomInternal
 	}
 	defer stream.Body.Close()
 
 	// 获取会话目录和文件名前缀
-	lay, err := sessionPaths(r.recordRoot, session)
+	lay, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		return nil, err
 	}
@@ -33,28 +34,26 @@ func (r *recorderRepo) PumpSession(ctx context.Context, session *biz.RecordingSe
 		return nil, err
 	}
 
-	// 读取 FLV 文件头
+	// 读取直播流 FLV 文件头
 	header, err := flv.ParseHeader(stream.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
 
-	// 记录当前会话的写入进度
-	stats := r.getOrCreateStats(session.RoomID)
-	// 记录本次录制之前的写入进度
-	baseBytes := stats.bytesWritten()
+	// 初始化当前会话的写入进度，确保新分段的统计从零开始。
+	stats := repo.getOrCreateStats(session.RoomID)
 	stats.setCurrentFile("")
 
 	// 把 CDN 实际授予的清晰度记入 meta
-	r.updateMeta(lay.metaPath(), func(meta *sessionMeta) {
+	repo.updateMeta(lay.metaPath(), func(meta *sessionMeta) {
 		meta.Quality = qualityMeta(stream.Quality)
 		meta.Title = session.Title
 	})
 
-	loop := newPumpSessionLoop(r, session, lay, header, stats, baseBytes)
-	tagCh := startTagReader(ctx, stream.Body)
+	state := newPumpState(repo, session.RoomID, lay, header, stats)
+	tagCh := flv.ReadTags(ctx, stream.Body)
 
-	health := time.NewTicker(r.healthInterval)
+	health := time.NewTicker(repo.healthInterval)
 	defer health.Stop()
 	speedSampler := time.NewTicker(time.Second)
 	defer speedSampler.Stop()
@@ -62,95 +61,67 @@ func (r *recorderRepo) PumpSession(ctx context.Context, session *biz.RecordingSe
 	for {
 		select {
 		case <-ctx.Done(): // 关闭录制开关、停机、房间被删除
-			loop.stop()
-			return &loop.result, ctx.Err()
+			state.stop()
+			return &state.result, ctx.Err()
 		case tr := <-tagCh:
 			// 读取 tag 失败：EOF 表示流干净结束，其他瞬时错误则返回，让上层决定是否重连。
-			if tr.err != nil {
-				loop.stop()
-				if tr.err == io.EOF {
-					return &loop.result, nil
+			if tr.Err != nil {
+				state.stop()
+				if tr.Err == io.EOF {
+					return &state.result, nil
 				}
-				return &loop.result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.err)
+				return &state.result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.Err)
 			}
-			if err := loop.handleTag(tr.tag); err != nil {
-				return &loop.result, err
+			if err := state.handleTag(tr.Tag); err != nil {
+				return &state.result, err
 			}
 		case ev := <-events: // 弹幕/礼物等事件写入
-			loop.handleEvent(ev)
+			state.handleEvent(ev)
 		case <-speedSampler.C:
-			loop.sampleSpeed()
+			if speed, ok := state.speed.sample(time.Now()); ok {
+				state.stats.setDownloadSpeed(speed)
+			}
 		case <-health.C:
-			if err := loop.checkHealth(); err != nil {
-				return &loop.result, err
+			if err := state.health.check(state.result.BytesWritten, state.repo.healthFailRounds); err != nil {
+				state.closeSegment()
+				return &state.result, err
 			}
 		}
 	}
-}
-
-// tagRead 是后台读取协程向 tagCh 投递的一次读取结果。
-type tagRead struct {
-	tag *flv.Tag // 成功读到的标签；err 非空时为 nil
-	err error    // 读取失败或流结束（io.EOF）时非空
-}
-
-// startTagReader 启动一个后台协程持续从 body 读取 FLV 标签并投递到返回的
-// channel，直到出错（含 EOF）后退出；使阻塞的标签读取与主循环的 tick、
-// 事件通道解耦。ctx 取消时即使主循环已停止消费也能退出，避免协程泄漏。
-func startTagReader(ctx context.Context, body io.Reader) <-chan tagRead {
-	tagCh := make(chan tagRead, 512)
-	go func() {
-		for {
-			tag, err := flv.ReadTag(body)
-			select {
-			case tagCh <- tagRead{tag: tag, err: err}:
-			case <-ctx.Done():
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	return tagCh
 }
 
 // pumpState 是单次 PumpSession 调用的会话态：随调用生命周期
 // 创建和销毁，串联段边界、去重、写入进度等每次拉流独有的可变状态，不
 // 与其他并发会话共享（跨会话共享状态仍在 recorderRepo 上）。
 type pumpState struct {
-	repo    *recorderRepo         // 所属仓储，读取切分/健康检查配置
-	session *biz.RecordingSession // 本次录制的会话信息
-	lay     sessionLayout         // 会话在磁盘上的位置（目录 + 文件名前缀）
-	header  *flv.FileHeader       // 拉流解析出的 FLV 文件头
-
-	stats     *pumpStats // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
-	baseBytes int64      // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
-
-	headers segmentHeaders    // 头标签缓存，供新分段/强制切分段重注入
-	guard   dupGuard          // CDN 循环吐流去重状态
-	seg     *recordingSegment // 当前打开的分段文件，nil 表示尚未开段
-
-	result biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
-	health healthMonitor       // 健康检查状态：连续无新数据落盘的轮数
-	speed  speedTracker        // 下载速度采样状态
+	repo      *recorderRepo       // 所属仓储，读取切分/健康检查配置
+	roomID    int64               // 当前录制房间 ID
+	lay       sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
+	header    *flv.FileHeader     // 拉流解析出的 FLV 文件头
+	stats     *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
+	baseBytes int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
+	headers   segmentHeaders      // 头标签缓存，供新分段/强制切分段重注入
+	guard     dupGuard            // CDN 循环吐流去重状态
+	seg       *recordingSegment   // 当前打开的分段文件，nil 表示尚未开段
+	result    biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
+	health    healthMonitor       // 健康检查状态：连续无新数据落盘的轮数
+	speed     speedTracker        // 下载速度采样状态
 }
 
-func newPumpSessionLoop(
+func newPumpState(
 	repo *recorderRepo,
-	session *biz.RecordingSession,
+	roomID int64,
 	lay sessionLayout,
 	header *flv.FileHeader,
-	stats *pumpStats,
-	baseBytes int64,
+	stats *sessionStats,
 ) *pumpState {
 	return &pumpState{
 		repo:      repo,
-		session:   session,
+		roomID:    roomID,
 		lay:       lay,
 		header:    header,
 		stats:     stats,
-		baseBytes: baseBytes,
+		baseBytes: stats.bytesWritten(),
 		speed:     newSpeedTracker(time.Now()),
 	}
 }
@@ -158,27 +129,27 @@ func newPumpSessionLoop(
 // handleTag 处理一个拉流读到的 FLV tag：开启首个分段（等待关键帧）、
 // 按块边界裁决去重缓冲、按大小/时长或序列头变化切分段，最后计入头
 // 标签缓存与去重块。
-func (l *pumpState) handleTag(tag *flv.Tag) error {
+func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 下载速度统计基于实际接收流量，而非块裁决后的落盘
 	// 字节（writtenBytes），避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
-	l.speed.addReceived(int64(len(tag.Data)) + flv.TagEnvelopeSize)
+	s.speed.addReceived(int64(len(tag.Data)) + flv.TagEnvelopeSize)
 
-	if l.seg == nil {
+	if s.seg == nil {
 		// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃（头标签
 		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
 		// 纯音频流没有视频关键帧，豁免等待。
-		if l.header.HasVideo && !tag.IsVideoKeyframe() {
-			l.headers.observe(tag)
+		if s.header.HasVideo && !tag.IsVideoKeyframe() {
+			s.headers.observe(tag)
 			return nil
 		}
-		if err := l.openNewSegment(); err != nil {
-			l.repo.appendMetaError(l.lay.metaPath(), "record", err)
+		if err := s.openNewSegment(); err != nil {
+			s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 			return err
 		}
-	} else if l.guard.boundary(tag) {
+	} else if s.guard.boundary(tag) {
 		// 块边界：先裁决缓冲块落盘，切段判定才能用上最新的段状态。
-		if err := l.flushBlock(); err != nil {
-			l.closeSegment()
+		if err := s.flushBlock(); err != nil {
+			s.closeSegment()
 			return err
 		}
 	}
@@ -186,17 +157,17 @@ func (l *pumpState) handleTag(tag *flv.Tag) error {
 	// 切段判定在块裁决之后；强切路径（超限/序列头变化）同样要先结束
 	// 缓冲块，避免关段时把在途数据留在缓冲里丢失。
 	switch {
-	case l.repo.shouldSplit(l.seg, tag):
-		if err := l.rotateSegment(); err != nil {
+	case s.repo.shouldSplit(s.seg, tag):
+		if err := s.rotateSegment(); err != nil {
 			return err
 		}
-	case l.headers.sequenceHeaderChanged(tag):
+	case s.headers.sequenceHeaderChanged(tag):
 		// 流中途序列头变化（CDN 换源、主播改码率）：继续写入旧分段会把
 		// 两种解码配置拼进同一个文件，强制切段。新段按既有规则从缓存
 		// 注入旧头标签，新序列头作为首个正文标签紧随其后写入，播放器
 		// 以最新的序列头为准。
-		log.Warn("sequence header changed, splitting segment", "room", l.session.RoomID, "part", l.seg.part)
-		if err := l.rotateSegment(); err != nil {
+		log.Warn("sequence header changed, splitting segment", "room", s.roomID, "part", s.seg.part)
+		if err := s.rotateSegment(); err != nil {
 			return err
 		}
 	}
@@ -204,39 +175,22 @@ func (l *pumpState) handleTag(tag *flv.Tag) error {
 	// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个标签不能从
 	// 缓存重注入，否则会被写两次（openSegment 写一次、上面的拉流写入
 	// 又一次）。切分前已见过的头标签仍会完整重注入。
-	l.headers.observe(tag)
-	l.guard.add(tag)
+	s.headers.observe(tag)
+	s.guard.add(tag)
 	// 当前块仍在去重缓冲中，但这些字节已经属于本次录制；先反映到
 	// 运行时统计，块关闭时 addWrittenBytes 会把最终落盘值校正回来。
-	l.updateProgress()
+	s.updateProgress()
 	return nil
 }
 
 // handleEvent 把弹幕/礼物等事件写入当前分段；尚未开段时静默丢弃。
-func (l *pumpState) handleEvent(ev *biz.DanmakuEvent) {
-	if l.seg == nil {
+func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
+	if s.seg == nil {
 		return
 	}
-	if err := l.seg.writeEvent(ev); err != nil {
-		log.Warn("danmaku write failed", "room", l.session.RoomID, "err", err) // 尽力而为, 不影响录制主流程
+	if err := s.seg.writeEvent(ev); err != nil {
+		log.Warn("danmaku write failed", "room", s.roomID, "err", err) // 尽力而为, 不影响录制主流程
 	}
-}
-
-// sampleSpeed 按接收字节增量采样下载速度。
-func (l *pumpState) sampleSpeed() {
-	if speed, ok := l.speed.sample(time.Now()); ok {
-		l.stats.setDownloadSpeed(speed)
-	}
-}
-
-// checkHealth 在 healthInterval 内未见新数据则计为一次失败，连续达到
-// healthFailRounds 次后关段并返回错误，判定本次录制异常。
-func (l *pumpState) checkHealth() error {
-	if err := l.health.check(l.result.BytesWritten, l.repo.healthFailRounds); err != nil {
-		l.closeSegment()
-		return err
-	}
-	return nil
 }
 
 // healthMonitor 跟踪连续无新数据落盘的轮数，是 pumpSessionLoop 的内部状态。
@@ -264,104 +218,104 @@ func (h *healthMonitor) resetFailRounds() {
 	h.failRounds = 0
 }
 
-func (l *pumpState) openNewSegment() error {
+func (s *pumpState) openNewSegment() error {
 	// 编号探测和 O_TRUNC 创建必须串行，否则并发的录制泵会同时选中
 	// 同一个 part，并截断彼此刚写入的分段。
-	l.repo.segmentMu.Lock()
-	defer l.repo.segmentMu.Unlock()
+	s.repo.segmentMu.Lock()
+	defer s.repo.segmentMu.Unlock()
 
-	part := nextPartNumber(l.lay)
-	seg, headerTagBytes, err := openSegment(l.lay, part, l.header, &l.headers)
+	part := nextPartNumber(s.lay)
+	seg, headerTagBytes, err := openSegment(s.lay, part, s.header, &s.headers)
 	if err != nil {
 		return err
 	}
 
-	l.seg = seg
-	l.result.Parts++
-	l.stats.setCurrentFile(seg.videoPath)
+	s.seg = seg
+	s.result.Parts++
+	s.stats.setCurrentFile(seg.videoPath)
 
 	// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
 	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
 	// FLV 文件头本身不计，与既有口径一致。
-	l.addWrittenBytes(headerTagBytes)
+	s.addWrittenBytes(headerTagBytes)
 
-	l.repo.appendSegmentMeta(l.lay.metaPath(), seg)
-	log.Info("segment opened", "room", l.session.RoomID, "part", part, "file", seg.videoPath)
+	s.repo.appendSegmentMeta(s.lay.metaPath(), seg)
+	log.Info("segment opened", "room", s.roomID, "part", part, "file", seg.videoPath)
 	return nil
 }
 
-func (l *pumpState) closeSegment() {
-	if l.seg == nil {
+func (s *pumpState) closeSegment() {
+	if s.seg == nil {
 		return
 	}
-	if err := l.seg.close(); err != nil {
-		log.Error("close segment failed", "room", l.session.RoomID, "file", l.seg.videoPath, "err", err)
+	if err := s.seg.close(); err != nil {
+		log.Error("close segment failed", "room", s.roomID, "file", s.seg.videoPath, "err", err)
 	}
-	l.repo.finishSegmentMeta(l.lay.metaPath(), l.seg)
-	l.seg = nil
+	s.repo.finishSegmentMeta(s.lay.metaPath(), s.seg)
+	s.seg = nil
 }
 
 // stop 在流干净结束或调用方取消时收尾：尽力落盘在途缓冲块，然后关段。
-func (l *pumpState) stop() {
+func (s *pumpState) stop() {
 	// 尝试落盘在途缓冲块，避免丢失数据。
-	for _, bt := range l.guard.takeAll() {
-		if err := l.writeTag(bt, false); err != nil {
-			log.Warn("drain pending block failed", "room", l.session.RoomID, "err", err)
+	for _, bt := range s.guard.takeAll() {
+		if err := s.writeTag(bt, false); err != nil {
+			log.Warn("drain pending block failed", "room", s.roomID, "err", err)
 			return
 		}
 	}
 
 	// 关闭当前分段，确保所有在途数据已落盘。
-	l.closeSegment()
+	s.closeSegment()
 }
 
 // rotateSegment 结束当前分段并立即开启新分段，用于达到切分阈值或序列头
 // 变化的强切路径；先裁决缓冲块落盘，避免在途数据留在缓冲里丢失。
-func (l *pumpState) rotateSegment() error {
-	if err := l.flushBlock(); err != nil {
-		l.closeSegment()
+func (s *pumpState) rotateSegment() error {
+	if err := s.flushBlock(); err != nil {
+		s.closeSegment()
 		return err
 	}
-	l.closeSegment()
-	if err := l.openNewSegment(); err != nil {
-		l.repo.appendMetaError(l.lay.metaPath(), "record", err)
+	s.closeSegment()
+	if err := s.openNewSegment(); err != nil {
+		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 		return err
 	}
 	return nil
 }
 
-func (l *pumpState) flushBlock() error {
-	buf, disconnect := l.guard.close()
+func (s *pumpState) flushBlock() error {
+	buf, disconnect := s.guard.close()
 	if disconnect {
 		return fmt.Errorf("%w: cdn looping duplicate stream data", biz.ErrStreamTransient)
 	}
 	if buf == nil {
-		l.health.resetFailRounds()
-		log.Warn("duplicate stream block dropped", "room", l.session.RoomID, "streak", l.guard.streak)
+		s.health.resetFailRounds()
+		log.Warn("duplicate stream block dropped", "room", s.roomID, "streak", s.guard.streak)
 		return nil
 	}
 	for _, bt := range buf {
-		if err := l.writeTag(bt, true); err != nil {
+		if err := s.writeTag(bt, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (l *pumpState) writeTag(tag *flv.Tag, persistError bool) error {
-	n, err := l.seg.writeTag(tag)
-	l.addWrittenBytes(n)
+func (s *pumpState) writeTag(tag *flv.Tag, persistError bool) error {
+	n, err := s.seg.writeTag(tag)
+	s.addWrittenBytes(n)
 	if err != nil && persistError {
-		l.repo.appendMetaError(l.lay.metaPath(), "record", err)
+		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 	}
 	return err
 }
 
-func (l *pumpState) addWrittenBytes(n int64) {
-	l.result.BytesWritten += n
-	l.updateProgress()
+func (s *pumpState) addWrittenBytes(n int64) {
+	s.result.BytesWritten += n
+	s.updateProgress()
 }
 
-func (l *pumpState) updateProgress() {
-	l.stats.setBytesWritten(l.baseBytes + l.result.BytesWritten + l.guard.bufBytes)
+func (s *pumpState) updateProgress() {
+	s.stats.setBytesWritten(s.baseBytes + s.result.BytesWritten + s.guard.bufBytes)
 }

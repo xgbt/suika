@@ -89,9 +89,9 @@ func saveMeta(path string, meta *sessionMeta) error {
 }
 
 // updateMeta 持锁读改写 meta.json，失败只记日志。
-func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
 
 	meta, err := loadMeta(metaPath)
 	if err != nil {
@@ -106,16 +106,16 @@ func (r *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 }
 
 // persistMeta 持锁用整份 meta 覆盖 meta.json，会盖掉 updateMeta 的写入；错误向上返回。
-func (r *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (repo *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
 
 	return saveMeta(metaPath, meta)
 }
 
 // appendSegmentMeta 追加一条分段记录到 meta.json。
-func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *recordingSegment) {
-	r.updateMeta(metaPath, func(meta *sessionMeta) {
+func (repo *recorderRepo) appendSegmentMeta(metaPath string, seg *recordingSegment) {
+	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Segments = append(meta.Segments, segmentMeta{
 			Part:      seg.part,
 			Video:     filepath.Base(seg.videoPath),
@@ -126,8 +126,8 @@ func (r *recorderRepo) appendSegmentMeta(metaPath string, seg *recordingSegment)
 }
 
 // finishSegmentMeta 回填指定分段的收尾字段（结束时间、时间戳、字节数）。
-func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *recordingSegment) {
-	r.updateMeta(metaPath, func(meta *sessionMeta) {
+func (repo *recorderRepo) finishSegmentMeta(metaPath string, seg *recordingSegment) {
+	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		for i := range meta.Segments {
 			s := &meta.Segments[i]
 			if s.Part != seg.part {
@@ -142,8 +142,8 @@ func (r *recorderRepo) finishSegmentMeta(metaPath string, seg *recordingSegment)
 }
 
 // appendMetaError 追加一条错误记录到 meta.json。
-func (r *recorderRepo) appendMetaError(metaPath, stage string, err error) {
-	r.updateMeta(metaPath, func(meta *sessionMeta) {
+func (repo *recorderRepo) appendMetaError(metaPath, stage string, err error) {
+	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
 	})
 }
