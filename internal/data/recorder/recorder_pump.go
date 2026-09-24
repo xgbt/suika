@@ -102,7 +102,7 @@ type pumpState struct {
 	baseBytes int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
 	headers   segmentHeaders      // 头标签缓存，供新分段/强制切分段重注入
 	guard     dupGuard            // CDN 循环吐流去重状态
-	seg       *recordingSegment   // 当前打开的分段文件，nil 表示尚未开段
+	writer    *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result    biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
 	health    healthMonitor       // 健康检查状态：连续无新数据落盘的轮数
 	speed     speedTracker        // 下载速度采样状态
@@ -135,7 +135,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	s.speed.addReceived(int64(len(tag.Data)) + flv.TagEnvelopeSize)
 
 	// 如果当前尚未有打开的分段，则尝试开新段。新段会等待首个视频关键帧（如有）再真正创建文件。
-	if s.seg == nil {
+	if s.writer == nil {
 		// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃（头标签
 		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
 		// 纯音频流没有视频关键帧，豁免等待。
@@ -158,7 +158,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 切段判定在块裁决之后；强切路径（超限/序列头变化）同样要先结束
 	// 缓冲块，避免关段时把在途数据留在缓冲里丢失。
 	switch {
-	case s.repo.shouldSplit(s.seg, tag):
+	case s.repo.shouldSplit(s.writer, tag):
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
@@ -167,7 +167,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 		// 两种解码配置拼进同一个文件，强制切段。新段按既有规则从缓存
 		// 注入旧头标签，新序列头作为首个正文标签紧随其后写入，播放器
 		// 以最新的序列头为准。
-		log.Warn("sequence header changed, splitting segment", "room", s.roomID, "part", s.seg.part)
+		log.Warn("sequence header changed, splitting segment", "room", s.roomID, "part", s.writer.part)
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
@@ -186,10 +186,10 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 
 // handleEvent 把弹幕/礼物等事件写入当前分段；尚未开段时静默丢弃。
 func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
-	if s.seg == nil {
+	if s.writer == nil {
 		return
 	}
-	if err := s.seg.writeEvent(ev); err != nil {
+	if err := s.writer.writeEvent(ev); err != nil {
 		log.Warn("danmaku write failed", "room", s.roomID, "err", err) // 尽力而为, 不影响录制主流程
 	}
 }
@@ -226,34 +226,34 @@ func (s *pumpState) openNewSegment() error {
 	defer s.repo.segmentMu.Unlock()
 
 	part := nextPartNumber(s.lay)
-	seg, headerTagBytes, err := openSegment(s.lay, part, s.header, &s.headers)
+	writer, headerTagBytes, err := openSegment(s.lay, part, s.header, &s.headers)
 	if err != nil {
 		return err
 	}
 
-	s.seg = seg
+	s.writer = writer
 	s.result.Parts++
-	s.stats.setCurrentFile(seg.videoPath)
+	s.stats.setCurrentFile(writer.videoPath)
 
 	// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
 	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
 	// FLV 文件头本身不计，与既有口径一致。
 	s.addWrittenBytes(headerTagBytes)
 
-	s.repo.appendSegmentMeta(s.lay.metaPath(), seg)
-	log.Info("segment opened", "room", s.roomID, "part", part, "file", seg.videoPath)
+	s.repo.appendSegmentMeta(s.lay.metaPath(), writer)
+	log.Info("segment opened", "room", s.roomID, "part", part, "file", writer.videoPath)
 	return nil
 }
 
 func (s *pumpState) closeSegment() {
-	if s.seg == nil {
+	if s.writer == nil {
 		return
 	}
-	if err := s.seg.close(); err != nil {
-		log.Error("close segment failed", "room", s.roomID, "file", s.seg.videoPath, "err", err)
+	if err := s.writer.close(); err != nil {
+		log.Error("close segment failed", "room", s.roomID, "file", s.writer.videoPath, "err", err)
 	}
-	s.repo.finishSegmentMeta(s.lay.metaPath(), s.seg)
-	s.seg = nil
+	s.repo.finishSegmentMeta(s.lay.metaPath(), s.writer)
+	s.writer = nil
 }
 
 // stop 在流干净结束或调用方取消时收尾：尽力落盘在途缓冲块，然后关段。
@@ -306,7 +306,7 @@ func (s *pumpState) flushBlock() error {
 // writeTag 将单个 FLV 标签写入当前分段，并根据 persistError 决定是否记录元信息错误。
 func (s *pumpState) writeTag(tag *flv.Tag, persistError bool) error {
 	// 将单个 FLV 标签写入当前分段
-	n, err := s.seg.writeTag(tag)
+	n, err := s.writer.writeTag(tag)
 
 	// 更新写入进度，即使写入失败也记录已写入的字节数
 	s.addWrittenBytes(n)

@@ -114,29 +114,29 @@ func (repo *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error 
 }
 
 // appendSegmentMeta 追加一条分段记录到 meta.json。
-func (repo *recorderRepo) appendSegmentMeta(metaPath string, seg *recordingSegment) {
+func (repo *recorderRepo) appendSegmentMeta(metaPath string, writer *segmentWriter) {
 	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Segments = append(meta.Segments, segmentMeta{
-			Part:      seg.part,
-			Video:     filepath.Base(seg.videoPath),
-			Danmaku:   filepath.Base(seg.danmakuPath),
-			WallStart: seg.wallStart.Unix(),
+			Part:      writer.part,
+			Video:     filepath.Base(writer.videoPath),
+			Danmaku:   filepath.Base(writer.danmakuPath),
+			WallStart: writer.wallStart.Unix(),
 		})
 	})
 }
 
 // finishSegmentMeta 回填指定分段的收尾字段（结束时间、时间戳、字节数）。
-func (repo *recorderRepo) finishSegmentMeta(metaPath string, seg *recordingSegment) {
+func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWriter) {
 	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		for i := range meta.Segments {
 			s := &meta.Segments[i]
-			if s.Part != seg.part {
+			if s.Part != writer.part {
 				continue
 			}
 			s.WallEnd = time.Now().Unix()
-			s.TsStart = seg.startTs
-			s.TsEnd = seg.lastTs
-			s.Bytes = seg.bytes
+			s.TsStart = writer.startTs
+			s.TsEnd = writer.lastTs
+			s.Bytes = writer.bytes
 		}
 	})
 }

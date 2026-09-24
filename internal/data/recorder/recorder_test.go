@@ -319,7 +319,7 @@ func TestShouldSplit(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := splitter{segmentDuration: tc.dur}
-			seg := &recordingSegment{hasStart: tc.hasStart, startTs: tc.startTs}
+			seg := &segmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
 			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
 				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
 			}
@@ -357,7 +357,7 @@ func TestShouldSplitBySize(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
 			policy := splitter{maxSegmentBytes: tc.maxBytes}
-			seg := &recordingSegment{hasStart: tc.hasStart, bytes: tc.bytes}
+			seg := &segmentWriter{hasStart: tc.hasStart, bytes: tc.bytes}
 			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
 				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
 			}
@@ -425,7 +425,7 @@ func TestPrepareSessionResumeKeepsSegments(t *testing.T) {
 	metaPath := lay.metaPath()
 
 	// 模拟崩溃/重启前已录好的一个分段
-	repo.appendSegmentMeta(metaPath, &recordingSegment{
+	repo.appendSegmentMeta(metaPath, &segmentWriter{
 		part:        1,
 		videoPath:   lay.segmentVideoPath(1),
 		danmakuPath: lay.segmentDanmakuPath(1),
@@ -1386,7 +1386,7 @@ func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (sessio
 		if err := os.WriteFile(danmuPath, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		repo.appendSegmentMeta(metaPath, &recordingSegment{
+		repo.appendSegmentMeta(metaPath, &segmentWriter{
 			part:        part,
 			videoPath:   videoPath,
 			danmakuPath: danmuPath,

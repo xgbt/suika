@@ -37,12 +37,12 @@ func newSplitter() splitter {
 //  1. 大小：已写字节达到上限，且该 tag 是关键帧；或超出上限的
 //     1/sizeSplitOverrunDivisor 裕度仍无关键帧则强制切分；
 //  2. 时长：达到目标时长且该 tag 是关键帧；或超出 splitOverrun 强制切分。
-func (s splitter) shouldSplit(seg *recordingSegment, tag *flv.Tag) bool {
-	if !seg.hasStart {
+func (s splitter) shouldSplit(writer *segmentWriter, tag *flv.Tag) bool {
+	if !writer.hasStart {
 		return false
 	}
 
-	return s.byBytes(seg, tag) || s.byDuration(seg, tag)
+	return s.byBytes(writer, tag) || s.byDuration(writer, tag)
 }
 
 // byBytes 判断当前分段是否应当因体积超限而切分。
@@ -54,14 +54,14 @@ func (s splitter) shouldSplit(seg *recordingSegment, tag *flv.Tag) bool {
 //  4. 若达到阈值后迟迟等不到关键帧，为避免单个分段无限膨胀，
 //     允许体积在阈值基础上再超出 overrun（maxSegmentBytes/sizeSplitOverrunDivisor）后强制切分，
 //     即便当前 tag 不是关键帧。
-func (s splitter) byBytes(seg *recordingSegment, tag *flv.Tag) bool {
+func (s splitter) byBytes(writer *segmentWriter, tag *flv.Tag) bool {
 	// 未设置最大分段字节数，不按大小切分
 	if s.maxSegmentBytes <= 0 {
 		return false
 	}
 
 	// 尚未达到阈值，无需切分
-	if seg.bytes < s.maxSegmentBytes {
+	if writer.bytes < s.maxSegmentBytes {
 		return false
 	}
 
@@ -72,7 +72,7 @@ func (s splitter) byBytes(seg *recordingSegment, tag *flv.Tag) bool {
 
 	// 非关键帧：仅当体积超出阈值 + 容忍裕度后，才强制切分
 	overrunThreshold := s.maxSegmentBytes + s.maxSegmentBytes/sizeSplitOverrunDivisor
-	return seg.bytes >= overrunThreshold
+	return writer.bytes >= overrunThreshold
 }
 
 // byDuration 判断当前分段是否应当因时长超限而切分。
@@ -84,14 +84,14 @@ func (s splitter) byBytes(seg *recordingSegment, tag *flv.Tag) bool {
 //  3. 一旦达到阈值，优先在关键帧处切分，以保证新分段能独立解码播放。
 //  4. 若达到阈值后迟迟等不到关键帧，允许时长在阈值基础上再超出 splitOverrun 后强制切分，
 //     即便当前 tag 不是关键帧，避免单个分段无限拉长。
-func (s splitter) byDuration(seg *recordingSegment, tag *flv.Tag) bool {
+func (s splitter) byDuration(writer *segmentWriter, tag *flv.Tag) bool {
 	// 未设置分段时长，不按时长切分
 	if s.segmentDuration <= 0 {
 		return false
 	}
 
 	// 已录制时长 = 当前 tag 时间戳 - 分段起始时间戳
-	elapsed := time.Duration(tag.Timestamp-seg.startTs) * time.Millisecond
+	elapsed := time.Duration(tag.Timestamp-writer.startTs) * time.Millisecond
 
 	// 尚未达到阈值，无需切分
 	if elapsed < s.segmentDuration {
