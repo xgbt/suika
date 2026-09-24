@@ -49,19 +49,22 @@ func (h *segmentHeaders) observe(tag *flv.Tag) {
 	}
 }
 
-// segmentWriter 表示一个录制分段（一段视频文件 + 对应弹幕文件）及其写入状态。
+// segmentWriter 是一个已打开分段的句柄：持有其文件描述（part/路径/文件指针）
+// 与运行时状态（写入进度、起止时间），并提供写入这段数据的方法。
 type segmentWriter struct {
-	part        int           // 分段编号，从 1 开始
-	videoPath   string        // 视频文件路径
-	danmakuPath string        // 弹幕文件路径
+	part        int    // 分段编号，从 1 开始
+	videoPath   string // 视频文件路径
+	danmakuPath string // 弹幕文件路径
+
 	videoFile   *os.File      // 视频文件句柄
 	danmakuFile *os.File      // 弹幕文件句柄
 	videoWriter *bufio.Writer // 视频文件缓冲写入器
-	hasStart    bool          // 是否已写入首个正文标签
-	startTs     int64         // 首个正文标签的时间戳，切分时长以此为起点
-	lastTs      int64         // 最近一次写入标签的时间戳
-	bytes       int64         // 已写入字节数（含文件头与头标签）
-	wallStart   time.Time     // 分段打开的墙钟时间
+
+	hasStart  bool      // 是否已写入首个正文标签
+	startTs   int64     // 首个正文标签的时间戳，切分时长以此为起点
+	lastTs    int64     // 最近一次写入标签的时间戳
+	bytes     int64     // 已写入字节数（含文件头与头标签）
+	wallStart time.Time // 分段打开的墙钟时间
 }
 
 // openSegment 创建并打开一个新的录制分段，写入 FLV 文件头及缓存的头标签后返回；
