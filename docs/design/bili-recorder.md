@@ -167,7 +167,7 @@ internal/data/
   meta.go                sessionMeta / segmentMeta / danmuLine PO：meta.json
                          读写、分段簿记（append/finishSegmentMeta）、
                          errors 追加
-  recorder_pump.go       RecordSession 泵送循环（切段判定、健康巡检）
+  recorder_pump.go       PumpSession 泵送循环（切段判定、健康巡检）
   recorder_segment.go    segmentFile：FLV part + 弹幕 JSONL 文件对，头标签
                          缓存与重注入，writeTag / writeEvent / close
   recorder_split.go      切分策略：按大小 / 按时长两个独立维度裁决
@@ -246,7 +246,7 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
-| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / RecordSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / recorder_segment.go / recorder_split.go / recorder_dedup.go / stats.go / recorder_merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
+| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / PumpSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / recorder_segment.go / recorder_split.go / recorder_dedup.go / stats.go / recorder_merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
 | 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤；UpdateRoom 仅供平台信息回写 |
 | 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站直播 HTTP API 与弹幕 WS 流量、风控 |
 | 凭据存储缝 | `CredentialRepo`（GetCredential / SaveCredential / DeleteCredential） | `credentialRepo`（`NewCredentialRepo(d *Data)` 返回接口；credentials 表单例行） | 登录凭据持久化；Save/Delete 落库后热替换内存 cookie |
@@ -255,7 +255,7 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 控制流/IO 分工：**biz 只做决定**（何时开录、是否重连、何时收尾），
 **data 做全部 IO**（HTTP、WS、FLV 解析、文件）。
 `LiveStream` 是 biz 层表示外部直播输入的类型：由 `LiveClient.OpenLiveStream` 产出、
-原样交给 `RecorderRepo.RecordSession` 消费，biz 不解其内部
+原样交给 `RecorderRepo.PumpSession` 消费，biz 不解其内部
 （`Body io.ReadCloser` + URL + Quality，同 `*sql.Rows` 穿过业务层的经典形态）。
 `DanmakuConn` 同理：biz 只消费 `Events()`（弹幕事件）与
 `RoomStateUpdates()`（房态复查结果 `*RoomInfo`）两个通道。
@@ -306,8 +306,8 @@ App.Run
                  ├─ 兜底轮询 timer（默认 600s ±10% 抖动）
                  └─ 开播且 record_enabled 时 → launchSession goroutine（sessionHandle：cancel + done）
                      ├─ registry.StartRecording + repo.PrepareSession
-                     ├─ recordLoop：OpenLiveStream → repo.RecordSession 泵送 → 断流决策树
-                     │    └─ RecordSession 内部：tag 读取 goroutine（chan 缓冲 512）
+                     ├─ recordLoop：OpenLiveStream → repo.PumpSession 泵送 → 断流决策树
+                     │    └─ PumpSession 内部：tag 读取 goroutine（chan 缓冲 512）
                      └─ SetMerging → repo.FinishSession（30s grace，脱离运行 ctx）→ 合并
 ```
 
@@ -322,7 +322,7 @@ App.Run
   conn 内部完成）。
 - `watchRoom` 的 select 六路：ctx 取消（cancel 活动场次并等 done）/
   弹幕事件排空（无活动场次时丢弃；有活动场次时该分支是 nil channel，
-  事件由 RecordSession 直接消费）/ 场次结束（`active.done` → 清 active）/
+  事件由 PumpSession 直接消费）/ 场次结束（`active.done` → 清 active）/
   `RoomStateUpdates` 房态事件 / 轮询定时器 / roomChanged 重评估信号。
 - 房态事件与轮询共用同一套动作：`registry.ApplyRoomInfo` 记录房态；
   "在播、record_enabled 且无活动场次" → `launchSession`；"未在播但有活动场次" →
@@ -471,7 +471,7 @@ SIGTERM → kratos 触发各 server.Stop
 
 ```
 HTTP body（原始字节，LiveClient 打开）
-  → RecordSession 泵送（data/recorder.go）
+  → PumpSession 泵送（data/recorder.go）
       ├─ flv.ParseHeader 读 9 字节文件头 + PreviousTagSize0
       ├─ tag 读取 goroutine：flv.ReadTag 逐个送入 chan（缓冲 512）
       ├─ 泵送开始时把实际清晰度写回 meta.json（quality 字段）
@@ -556,7 +556,7 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
   │       └─ 仍在播 → 按 cdn_transient_budget（代码常量 5）指数退避重试；
   │           耗尽 → 保留已录内容收尾
   └─ 成功 → session.Quality = 实际档位 → registry.SetStreamQuality 登记
-      → repo.RecordSession 泵送
+      → repo.PumpSession 泵送
 泵送返回（EOF / 读错误 / 巡检中止 / 写失败 / ctx 取消）
   ├─ ctx 已取消 → 返回（停机路径）
   ├─ 稳定录制预算重置：本腿录制时长 ≥ 5 分钟且写入过内容 →

@@ -35,7 +35,7 @@ type recordOutcome struct {
 
 func (r *fakeRepo) PrepareSession(_ context.Context, _ *RecordingSession) error { return r.prepareErr }
 
-func (r *fakeRepo) RecordSession(_ context.Context, session *RecordingSession, stream *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
+func (r *fakeRepo) PumpSession(_ context.Context, session *RecordingSession, stream *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
 	if stream != nil && stream.Body != nil {
 		stream.Body.Close()
 	}
@@ -391,7 +391,7 @@ type slowStableRepo struct {
 
 func (r *slowStableRepo) PrepareSession(context.Context, *RecordingSession) error { return nil }
 
-func (r *slowStableRepo) RecordSession(_ context.Context, _ *RecordingSession, stream *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
+func (r *slowStableRepo) PumpSession(_ context.Context, _ *RecordingSession, stream *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
 	if stream != nil && stream.Body != nil {
 		stream.Body.Close()
 	}
@@ -565,7 +565,7 @@ func (c *watchClient) DanmakuConn(context.Context, int64) (DanmakuConn, error) {
 	return c.conn, nil
 }
 
-// pumpBlockRepo 使 RecordSession 阻塞到 context 取消，模拟一路永不
+// pumpBlockRepo 使 PumpSession 阻塞到 context 取消，模拟一路永不
 // 断开的直播流。
 type pumpBlockRepo struct {
 	sessionStatsStub
@@ -574,7 +574,7 @@ type pumpBlockRepo struct {
 
 func (r *pumpBlockRepo) PrepareSession(context.Context, *RecordingSession) error { return nil }
 
-func (r *pumpBlockRepo) RecordSession(ctx context.Context, _ *RecordingSession, _ *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
+func (r *pumpBlockRepo) PumpSession(ctx context.Context, _ *RecordingSession, _ *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -767,7 +767,7 @@ func (r *gatedFinishRepo) PrepareSession(context.Context, *RecordingSession) err
 	return nil
 }
 
-func (r *gatedFinishRepo) RecordSession(ctx context.Context, _ *RecordingSession, _ *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
+func (r *gatedFinishRepo) PumpSession(ctx context.Context, _ *RecordingSession, _ *LiveStream, _ <-chan *DanmakuEvent) (*RecordingResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }

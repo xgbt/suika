@@ -505,8 +505,8 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 			Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 			Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 		}
-		if _, err := repo.RecordSession(ctx, session, stream, nil); err != nil {
-			t.Fatalf("RecordSession: %v", err)
+		if _, err := repo.PumpSession(ctx, session, stream, nil); err != nil {
+			t.Fatalf("PumpSession: %v", err)
 		}
 	}
 
@@ -541,9 +541,9 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 	}
 }
 
-func TestRecordSessionProgressIncludesBufferedBlock(t *testing.T) {
+func TestPumpSessionProgressIncludesBufferedBlock(t *testing.T) {
 	stats := &pumpStats{}
-	loop := &recordSessionLoop{
+	loop := &pumpState{
 		stats:     stats,
 		baseBytes: 100,
 		result:    biz.RecordingResult{BytesWritten: 200},
@@ -647,19 +647,19 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	}
 }
 
-// --- RecordSession ---
+// --- PumpSession ---
 
-func TestRecordSessionRejectsNilStream(t *testing.T) {
+func TestPumpSessionRejectsNilStream(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	if _, err := repo.RecordSession(context.Background(), testSession(), nil, nil); !errors.Is(err, biz.ErrRoomInternal) {
+	if _, err := repo.PumpSession(context.Background(), testSession(), nil, nil); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("err = %v, want ErrRoomInternal", err)
 	}
-	if _, err := repo.RecordSession(context.Background(), testSession(), &biz.LiveStream{}, nil); !errors.Is(err, biz.ErrRoomInternal) {
+	if _, err := repo.PumpSession(context.Background(), testSession(), &biz.LiveStream{}, nil); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("err = %v, want ErrRoomInternal", err)
 	}
 }
 
-func TestRecordSessionSingleSegment(t *testing.T) {
+func TestPumpSessionSingleSegment(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -684,9 +684,9 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
 	// events 传 nil：永远不就绪，不会有弹幕事件插入。
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 1 || result.BytesWritten != wantBytes {
 		t.Fatalf("result = %+v, want 1 part / %d bytes", result, wantBytes)
@@ -736,7 +736,7 @@ func TestRecordSessionSingleSegment(t *testing.T) {
 	}
 }
 
-func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
+func TestPumpSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -757,14 +757,14 @@ func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
 				Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 				Body:    io.NopCloser(bytes.NewReader(streamBytes)),
 			}
-			_, err := repo.RecordSession(ctx, session, stream, nil)
+			_, err := repo.PumpSession(ctx, session, stream, nil)
 			errs <- err
 		}()
 	}
 	close(start)
 	for range 2 {
 		if err := <-errs; err != nil {
-			t.Fatalf("RecordSession: %v", err)
+			t.Fatalf("PumpSession: %v", err)
 		}
 	}
 
@@ -789,7 +789,7 @@ func TestRecordSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
 	}
 }
 
-func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
+func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
@@ -820,9 +820,9 @@ func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 2 || result.BytesWritten != wantBytes {
 		t.Fatalf("result = %+v, want 2 parts / %d bytes", result, wantBytes)
@@ -857,7 +857,7 @@ func TestRecordSessionSplitsAtKeyframe(t *testing.T) {
 // 回归：触发新分段的那个 tag 必须恰好写入一次。此前拉流写入会在开启
 // part1 前先缓存首个头标签，openSegment 重注入（此时已非空的）缓存，
 // 拉流写入又把同一个标签写了一遍——part1 里的 onMetaData 因此重复。
-func TestRecordSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
+func TestPumpSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -877,9 +877,9 @@ func TestRecordSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 1 {
 		t.Fatalf("parts = %d, want 1", result.Parts)
@@ -905,7 +905,7 @@ func TestRecordSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 
 // 回归（切分的一半）：part2 必须把缓存的 metadata / AVC / AAC 头各恰好
 // 重注入一次——开启 part2 的切分关键帧不在缓存中，所以那边也不会重复。
-func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
+func TestPumpSessionSplitHeadersWrittenOnce(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
@@ -928,9 +928,9 @@ func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 2 {
 		t.Fatalf("parts = %d, want 2", result.Parts)
@@ -956,10 +956,10 @@ func TestRecordSessionSplitHeadersWrittenOnce(t *testing.T) {
 	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeq, audioSeq, key100, audio110, inter120})
 }
 
-// TestRecordSessionSplitsOnSeqHeaderChange 验证流中途序列头变化（CDN 换
+// TestPumpSessionSplitsOnSeqHeaderChange 验证流中途序列头变化（CDN 换
 // 源、主播改码率）触发强制切段：视频与音频序列头各变化一次，产生三段；
 // 每段从缓存注入当时的旧头标签，新序列头作为首个正文标签写入。
-func TestRecordSessionSplitsOnSeqHeaderChange(t *testing.T) {
+func TestPumpSessionSplitsOnSeqHeaderChange(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -983,9 +983,9 @@ func TestRecordSessionSplitsOnSeqHeaderChange(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 3 {
 		t.Fatalf("parts = %d, want 3 (split on video and audio seq header changes)", result.Parts)
@@ -1007,9 +1007,9 @@ func TestRecordSessionSplitsOnSeqHeaderChange(t *testing.T) {
 	assertTagsEqual(t, part3, []*flv.Tag{metaTag, videoSeqB, audioSeqA, audioSeqB, key100})
 }
 
-// TestRecordSessionRepeatedSeqHeaderDoesNotSplit 验证重复出现的相同序列头
+// TestPumpSessionRepeatedSeqHeaderDoesNotSplit 验证重复出现的相同序列头
 // （字节一致）不触发切段：只有解码配置真正变化才值得切。
-func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
+func TestPumpSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -1030,9 +1030,9 @@ func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 1 {
 		t.Fatalf("parts = %d, want 1 (identical seq headers must not split)", result.Parts)
@@ -1046,11 +1046,11 @@ func TestRecordSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 	assertTagsEqual(t, part1, tags)
 }
 
-// TestRecordSessionSplitsAtSizeLimit 验证大小切分的端到端行为：阈值设为
+// TestPumpSessionSplitsAtSizeLimit 验证大小切分的端到端行为：阈值设为
 // 250 字节，正文 tag 每个 20 字节、每 5 个一个关键帧。每个分段写到约
 // 282 字节（82 字节的头 + 10 个正文 tag）后越过阈值，在下一个关键帧处
 // 切分，共产出 4 段；每段（含最后一段）都 ≥ 阈值，且切分点都是关键帧。
-func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
+func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	repo.maxSegmentBytes = 250 // 测试中使用小阈值
 	ctx := context.Background()
@@ -1075,9 +1075,9 @@ func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 4 {
 		t.Fatalf("parts = %d, want 4", result.Parts)
@@ -1106,10 +1106,10 @@ func TestRecordSessionSplitsAtSizeLimit(t *testing.T) {
 	}
 }
 
-// TestRecordSessionWaitsForFirstKeyframe 验证新场次的首个分段只在第一个视
+// TestPumpSessionWaitsForFirstKeyframe 验证新场次的首个分段只在第一个视
 // 频关键帧处开启：关键帧之前的正文标签被丢弃（流内重连后的新段同理），
 // 头标签照常入缓存并在开段时注入，保证段首即关键帧、独立可解码。
-func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
+func TestPumpSessionWaitsForFirstKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -1130,9 +1130,9 @@ func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
 		Body: io.NopCloser(bytes.NewReader(buildFLVStream(t,
 			metaTag, videoSeq, audioSeq, earlyInter1, earlyInter2, key40, inter60))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 1 {
 		t.Fatalf("parts = %d, want 1", result.Parts)
@@ -1155,9 +1155,9 @@ func TestRecordSessionWaitsForFirstKeyframe(t *testing.T) {
 	assertTagsEqual(t, got, want)
 }
 
-// TestRecordSessionAudioOnlyOpensWithoutKeyframe 验证纯音频流的豁免：文件
+// TestPumpSessionAudioOnlyOpensWithoutKeyframe 验证纯音频流的豁免：文件
 // 头无视频轨时没有关键帧可等，首个标签即开段。
-func TestRecordSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
+func TestPumpSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -1173,9 +1173,9 @@ func TestRecordSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
 			&flv.FileHeader{Version: 1, HasAudio: true, HasVideo: false},
 			audioSeq, audio20))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 1 {
 		t.Fatalf("parts = %d, want 1", result.Parts)
@@ -1189,10 +1189,10 @@ func TestRecordSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
 	assertTagsEqual(t, got, []*flv.Tag{audioSeq, audio20})
 }
 
-// TestRecordSessionDropsDuplicateBlocks 验证 CDN 循环吐流的去重：内容指纹
+// TestPumpSessionDropsDuplicateBlocks 验证 CDN 循环吐流的去重：内容指纹
 // （类型+载荷）重复的块整块丢弃不落盘，唯一块正常写入；未达断开上限时
 // 会话正常收尾。
-func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
+func TestPumpSessionDropsDuplicateBlocks(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -1235,9 +1235,9 @@ func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v (streak 2 must stay below disconnect threshold)", err)
+		t.Fatalf("PumpSession: %v (streak 2 must stay below disconnect threshold)", err)
 	}
 	if result.Parts != 1 {
 		t.Fatalf("parts = %d, want 1", result.Parts)
@@ -1261,9 +1261,9 @@ func TestRecordSessionDropsDuplicateBlocks(t *testing.T) {
 	assertTagsEqual(t, got, want)
 }
 
-// TestRecordSessionDisconnectsOnCDNLoop 验证连续重复块达到上限时泵送以
+// TestPumpSessionDisconnectsOnCDNLoop 验证连续重复块达到上限时泵送以
 // ErrStreamTransient 中止，交由断流决策树换流地址重连（换 CDN 节点）。
-func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
+func TestPumpSessionDisconnectsOnCDNLoop(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
 	session := testSession()
@@ -1292,7 +1292,7 @@ func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if !errors.Is(err, biz.ErrStreamTransient) {
 		t.Fatalf("err = %v, want ErrStreamTransient on CDN loop disconnect", err)
 	}
@@ -1313,9 +1313,9 @@ func TestRecordSessionDisconnectsOnCDNLoop(t *testing.T) {
 	assertTagsEqual(t, got, want)
 }
 
-// TestRecordSessionSplitOverrunFlushesPendingBlock 验证强制切分（时长超限
+// TestPumpSessionSplitOverrunFlushesPendingBlock 验证强制切分（时长超限
 // 且仍无关键帧）会先裁决缓冲块：在途数据不能因为关段而丢失。
-func TestRecordSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
+func TestPumpSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
@@ -1338,9 +1338,9 @@ func TestRecordSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
 		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 	}
-	result, err := repo.RecordSession(ctx, session, stream, nil)
+	result, err := repo.PumpSession(ctx, session, stream, nil)
 	if err != nil {
-		t.Fatalf("RecordSession: %v", err)
+		t.Fatalf("PumpSession: %v", err)
 	}
 	if result.Parts != 2 {
 		t.Fatalf("parts = %d, want 2 (overrun force split)", result.Parts)
@@ -1472,7 +1472,7 @@ func TestFinishedSessionCanAppendAfterRecordingIsReenabled(t *testing.T) {
 			Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
 			Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
 		}
-		if _, err := repo.RecordSession(context.Background(), session, stream, nil); err != nil {
+		if _, err := repo.PumpSession(context.Background(), session, stream, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := repo.FinishSession(context.Background(), session); err != nil {

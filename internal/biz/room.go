@@ -63,7 +63,8 @@ type RoomRepo interface {
 	DeleteRoom(context.Context, int64) error
 }
 
-// SessionStats 是当前录制会话的写入进度快照。
+// SessionStats 是当前 Session（录制会话：一次连续直播，定义见 CONTEXT.md）的
+// 累计写入进度快照：该 Session 内因断流重连而产生的多次拉流不会使进度清零。
 type SessionStats struct {
 	CurrentFile   string // 当前正在写入的分段文件名，可能为空
 	BytesWritten  int64  // 当前分段已写入的字节数

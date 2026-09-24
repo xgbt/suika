@@ -260,7 +260,7 @@ sequenceDiagram
         LC->>CDN: getRoomPlayInfo 选流 → GET FLV 长连接
         LC-->>Sess: LiveStream{URL, Quality, Body}
         Sess->>G: SetStreamQuality(roomID, Quality)
-        Sess->>RR: RecordSession(session, stream, events)
+        Sess->>RR: PumpSession(session, stream, events)
         RR->>FS: 开分段写 FLV（按关键帧切分，默认 120min / 2.5GiB）<br/>弹幕事件写 JSONL；健康检查（10s × 3 轮无新数据即失败）<br/>速度采样（1s）更新 pumpStats
         RR-->>Sess: RecordingResult{BytesWritten, Parts}, err
         Sess->>LC: GetRoomInfo(roomID)　探测是否仍在播

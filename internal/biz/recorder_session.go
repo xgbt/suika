@@ -124,7 +124,7 @@ func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, session *Record
 		session.Quality = stream.Quality
 		uc.roomRegistry.SetStreamQuality(roomID, stream.Quality)
 		legStart := time.Now()
-		result, recErr := uc.repo.RecordSession(ctx, session, stream, events)
+		result, recErr := uc.repo.PumpSession(ctx, session, stream, events)
 		if result != nil {
 			log.Info("pump ended", "room", roomID, "bytes", result.BytesWritten, "parts", result.Parts, "err", recErr)
 		}

@@ -211,7 +211,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    OPEN["OpenLiveStream"] -->|"成功"| REC["SetStreamQuality<br/>RecordSession 写盘<br/>（阻塞至断流/结束）"]
+    OPEN["OpenLiveStream"] -->|"成功"| REC["SetStreamQuality<br/>PumpSession 写盘<br/>（阻塞至断流/结束）"]
     OPEN -->|"ErrStreamTransient<br/>如 CDN 404"| PROBE
     OPEN -->|"其他错误<br/>如风控 -352/412"| STOP
     OPEN -->|"ctx 已取消"| STOP
@@ -226,7 +226,7 @@ flowchart TD
     PROBE{"probeLive（3d）"} -->|"探测失败 或 已下播"| STOP
     PROBE -->|"仍在播"| KIND{"断流类型"}
 
-    KIND -->|"ErrStreamTransient<br/>（拉流失败 或 RecordSession 返回）"| CDN{"cdnBudget > 0?"}
+    KIND -->|"ErrStreamTransient<br/>（拉流失败 或 PumpSession 返回）"| CDN{"cdnBudget > 0?"}
     CDN -->|是| B1["cdnBudget--<br/>指数退避后重试"]
     CDN -->|否| STOP
     KIND -->|"其他（流正常结束/中断）"| AUTO{"AutoReconnect 且<br/>reconnects < MaxReconnect?"}

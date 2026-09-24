@@ -70,7 +70,7 @@ suika 的骨架——开播检测（WS 事件驱动 + 兜底轮询 + 下播多�
 - **问题**：B 站 CDN 断流/换源时流内时间戳跳变常见。suika 透传 tag，
   只在 `internal/data/recorder/recorder_merge.go` 做段间边界平移，段内跳变原样落盘：
   播放器告警、seek 异常，第二阶段弹幕烧录对齐受影响。
-- **做法**：在 `data` 层录制泵（`recorder.go` 的 `RecordSession`）维护
+- **做法**：在 `data` 层录制泵（`recorder.go` 的 `PumpSession`）维护
   期望时间戳——上一 tag 时间戳 + 帧间隔估算（录播姬取前 2 帧间隔，
   视频合法域 15–50ms 兜底 33ms、音频 20–24ms 兜底 22ms，两者取大）；
   偏差超 ±500ms 即累计一个会话级 `offset` 施加到后续所有 tag。
@@ -100,7 +100,7 @@ suika 的骨架——开播检测（WS 事件驱动 + 兜底轮询 + 下播多�
 - **来源**：biliup `downloader/httpflv.rs`（非关键帧 tag 驻内存缓存，
   关键帧才落盘）、录播姬 `Flv/Writer/FlvProcessingContextWriter.cs`
   （文件惰性打开，首个数据组即关键帧组）。
-- **问题**：`RecordSession` 中 `seg == nil → openNewSegment()` 在任意
+- **问题**：`PumpSession` 中 `seg == nil → openNewSegment()` 在任意
   首个 tag 就开段。新会话与每次重连后的段首都可能不是关键帧，开头
   数帧不可解码，播放器跳到首个关键帧才能出画面。
 - **做法**：开段前丢弃（或暂存）首个视频关键帧之前的 tag；音频流
