@@ -410,18 +410,35 @@ func packPacket(operation uint32, protocolVersion uint16, body []byte) []byte {
 	return packet
 }
 
+// maxUnpackDepth 是压缩包递归解包的最大层数。真实协议只有一层（压缩包内
+// 是明文包），这里给出宽松上限，避免畸形帧用"压缩套压缩"把递归栈打爆。
+const maxUnpackDepth = 8
+
 // unpackMessages 把一帧字节流还原成逐条的 JSON 消息：
 // 一帧可能首尾相连地合并多个包（循环切片）；压缩包（协议版本
 // 2=zlib / 3=brotli）先解压，解压结果本身又是同样的包序列，
 // 因此递归解包。非消息包（如人气值包）直接跳过。
 func unpackMessages(data []byte) ([]json.RawMessage, error) {
+	return unpackMessagesDepth(data, 0)
+}
+
+func unpackMessagesDepth(data []byte, depth int) ([]json.RawMessage, error) {
+	if depth > maxUnpackDepth {
+		return nil, stderrors.New("danmaku packet nesting too deep")
+	}
+
 	var messages []json.RawMessage
 	for len(data) >= packetHeaderLength {
 		packetLength := int(binary.BigEndian.Uint32(data[0:4]))
 		headerLength := int(binary.BigEndian.Uint16(data[4:6]))
 		protocolVersion := binary.BigEndian.Uint16(data[6:8])
 		operation := binary.BigEndian.Uint32(data[8:12])
-		if packetLength < headerLength || packetLength > len(data) {
+		// packetLength 必须同时容得下包头（否则 data = data[packetLength:]
+		// 原地不动，循环永不结束，还会每轮追加一条空消息把内存吃光）和
+		// 头部长度（否则下面的切片会越界 panic）。
+		if packetLength < packetHeaderLength ||
+			packetLength < headerLength ||
+			packetLength > len(data) {
 			return nil, stderrors.New("invalid danmaku packet length")
 		}
 		body := data[headerLength:packetLength]
@@ -434,7 +451,7 @@ func unpackMessages(data []byte) ([]json.RawMessage, error) {
 				if err != nil {
 					return nil, err
 				}
-				nested, err := unpackMessages(decompressed)
+				nested, err := unpackMessagesDepth(decompressed, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -444,7 +461,7 @@ func unpackMessages(data []byte) ([]json.RawMessage, error) {
 				if err != nil {
 					return nil, err
 				}
-				nested, err := unpackMessages(decompressed)
+				nested, err := unpackMessagesDepth(decompressed, depth+1)
 				if err != nil {
 					return nil, err
 				}

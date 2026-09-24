@@ -7,16 +7,11 @@ import (
 )
 
 const (
-	defaultSegmentMinutes = 120 // 分段时长（分钟）
+	defaultSegmentMinutes  = 120           // 分段时长默认值（分钟）
+	defaultMaxSegmentBytes = 2_684_354_560 //  分段大小上限（2.5 GiB
 
-	// defaultMaxSegmentBytes 分段大小上限（2.5 GiB，对齐 biliup 默认值）：
-	// 原画长直播的单段体积和崩溃时的损失半径由此封顶，与时长上限取或。
-	defaultMaxSegmentBytes int64 = 2_684_354_560
-
-	splitOverrun = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
-	// sizeSplitOverrunDivisor 大小切分等待关键帧的强切裕度：超出阈值
-	// 1/该值仍未等到关键帧则强制切分（GOP 增量相对 GiB 级阈值可忽略）。
-	sizeSplitOverrunDivisor = 10
+	splitOverrun            = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
+	sizeSplitOverrunDivisor = 10               // 大小切分等待关键帧的强切裕度分母
 )
 
 // splitter 负责分段判定策略：按大小和时长两个维度独立裁决。
@@ -41,7 +36,6 @@ func (s splitter) shouldSplit(writer *segmentWriter, tag *flv.Tag) bool {
 	if !writer.hasStart {
 		return false
 	}
-
 	return s.byBytes(writer, tag) || s.byDuration(writer, tag)
 }
 

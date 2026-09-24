@@ -73,10 +73,12 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 		bili: bili.NewClient(cookie),
 	}
 
-	if rc != nil {
+	// 只在该字段确实被设置时才告警：recorder 块里的 record_root 人人都会填，
+	// 按块判断会让每次启动都打两条与操作者无关的废弃告警。
+	if rc != nil && rc.MergeEnabled != nil {
 		log.Warn("recorder: config field recorder.merge_enabled is deprecated and ignored; recorder sessions are always merged at finish")
 	}
-	if rc != nil {
+	if rc != nil && rc.GetCookie() != "" {
 		log.Warn("recorder: config field recorder.cookie is deprecated and ignored; the credential is managed in the database via web QR login")
 	}
 	if cookie == "" {

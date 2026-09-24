@@ -5,6 +5,7 @@ package bili
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"net/url"
@@ -57,10 +58,9 @@ type jsonGet struct {
 // getJSON 按描述执行一次 JSON GET 请求，并将 2xx 响应体解码至 out
 // 仅在成功时返回非 nil 的 *resty.Response 以供读取 Header（如 Set-Cookie）
 func getJSON(ctx context.Context, g *jsonGet) (*resty.Response, error) {
-	// 构造带浏览器伪装头的请求，并设置上下文与解码落点
+	// 构造带浏览器伪装头的请求，并设置上下文
 	req := browserRequest(g.client, g.referer, g.origin, g.cookie).
-		SetContext(ctx).
-		SetResult(g.out)
+		SetContext(ctx)
 
 	// 设置 Query 参数
 	if len(g.query) > 0 {
@@ -74,6 +74,17 @@ func getJSON(ctx context.Context, g *jsonGet) (*resty.Response, error) {
 	}
 	if !resp.IsSuccess() {
 		return nil, &httpStatusError{code: resp.StatusCode()}
+	}
+
+	// 显式解码，不用 resty 的 SetResult 自动解析：它只在响应 Content-Type
+	// 是 JSON 时才反序列化，遇到 text/html（风控拦截页、CDN 错误页）会既不报错
+	// 也不写 out。那样调用方拿到的是零值响应却以为调用成功 —— 风控模块读业务码
+	// 得到 0 因而认不出风控页，房间信息被读成"未开播"，扫码登录被读成"已登录"。
+	// 这里的要求是：只要是 2xx，就必须是能解码的 JSON。
+	if g.out != nil {
+		if err := json.Unmarshal(resp.Body(), g.out); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", g.endpoint, err)
+		}
 	}
 
 	return resp, nil

@@ -63,7 +63,15 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 		case <-ctx.Done(): // 关闭录制开关、停机、房间被删除
 			state.stop()
 			return &state.result, ctx.Err()
-		case tr := <-tagCh:
+		case tr, ok := <-tagCh:
+			// 通道已关闭说明读取协程退出了，且没有投递终止结果——只可能是
+			// ctx 被取消（出错时终止结果会先投递，走下面的 tr.Err 分支）。
+			// 必须在这里收尾：关闭的通道会持续投递零值 TagResult，直接当
+			// 正常 tag 交给 handleTag 就会解引用 nil 的 *flv.Tag 而 panic。
+			if !ok {
+				state.stop()
+				return &state.result, ctx.Err()
+			}
 			// 读取 tag 失败：EOF 表示流干净结束，其他瞬时错误则返回，让上层决定是否重连。
 			if tr.Err != nil {
 				state.stop()
@@ -258,11 +266,13 @@ func (s *pumpState) closeSegment() {
 
 // stop 在流干净结束或调用方取消时收尾：尽力落盘在途缓冲块，然后关段。
 func (s *pumpState) stop() {
-	// 尝试落盘在途缓冲块，避免丢失数据。
+	// 尝试落盘在途缓冲块，避免丢失数据。写失败时中断排空，但仍要往下走
+	// 到 closeSegment()：否则句柄不关、缓冲区不刷、meta 的收尾字段不写，
+	// 而这些恰恰是磁盘写满时最需要保住的东西。
 	for _, tag := range s.guard.takeAll() {
 		if err := s.writeTag(tag, false); err != nil {
 			log.Warn("drain pending block failed", "room", s.roomID, "err", err)
-			return
+			break
 		}
 	}
 
