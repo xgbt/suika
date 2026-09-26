@@ -144,7 +144,7 @@ func TestMetaJSONRoundTrip(t *testing.T) {
 		},
 		MergedVideo:   "base.flv",
 		MergedDanmaku: "base.danmu.jsonl",
-		Errors:        []errorMeta{{Time: 55, Stage: "record", Msg: "write failed"}},
+		Errors:        []errorMeta{{Ts: 55, Stage: "record", Msg: "write failed"}},
 	}
 
 	before := time.Now().Unix()

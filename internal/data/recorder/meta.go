@@ -57,7 +57,7 @@ type segmentMeta struct {
 
 // errorMeta 记录一次录制/合并过程中的错误，存储在 meta.json 中。
 type errorMeta struct {
-	Time  int64  `json:"time"`  // 发生时间（unix 秒）
+	Ts    int64  `json:"ts"`    // 发生时间（unix 秒）
 	Stage string `json:"stage"` // 发生阶段，如 record / merge
 	Msg   string `json:"msg"`   // 错误信息
 }
@@ -144,6 +144,10 @@ func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWrit
 // appendMetaError 追加一条错误记录到 meta.json。
 func (repo *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	repo.updateMeta(metaPath, func(meta *sessionMeta) {
-		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
+		meta.Errors = append(meta.Errors, errorMeta{
+			Ts:    time.Now().Unix(),
+			Stage: stage,
+			Msg:   err.Error(),
+		})
 	})
 }

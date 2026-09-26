@@ -183,7 +183,11 @@ func (repo *recorderRepo) finalizeSession(ctx context.Context, lay sessionLayout
 	videoName, danmuName, err := mergeSessionFiles(ctx, lay, meta.Segments)
 	if err != nil {
 		meta.Status = metaStatusPartial
-		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: "merge", Msg: err.Error()})
+		meta.Errors = append(meta.Errors, errorMeta{
+			Ts:    time.Now().Unix(),
+			Stage: "merge",
+			Msg:   err.Error(),
+		})
 		log.Error("merge failed, keeping segments", "dir", lay.dir, "err", err)
 		return repo.persistMeta(lay.metaPath(), meta)
 	}
