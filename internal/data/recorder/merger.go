@@ -31,7 +31,7 @@ func NewMerger() merger {
 // 铁律：输出先写临时文件，校验字节数无误后原子改名；只有改名成功后，
 // 调用方才允许删除源分段。任何失败都会清理临时文件并原样保留源文件。
 // 返回合并产物的文件名（相对会话目录）；没有任何弹幕源时 danmakuName 为 ""。
-func (m merger) MergeSessionFiles(ctx context.Context, lay sessionLayout, segs []segmentMeta) (videoName, danmakuName string, err error) {
+func (m *merger) MergeSessionFiles(ctx context.Context, lay sessionLayout, segs []segmentMeta) (videoName, danmakuName string, err error) {
 	if err := m.mergeFLV(ctx, lay, segs); err != nil {
 		return "", "", err
 	}
@@ -50,7 +50,7 @@ func (m merger) MergeSessionFiles(ctx context.Context, lay sessionLayout, segs [
 }
 
 // mergeFLV 将各分段 FLV 合并写入会话的合并视频路径。
-func (m merger) mergeFLV(ctx context.Context, lay sessionLayout, segs []segmentMeta) error {
+func (m *merger) mergeFLV(ctx context.Context, lay sessionLayout, segs []segmentMeta) error {
 	return utils.WriteFileAtomic(lay.mergedVideoPath(), func(bw *bufio.Writer) (int64, error) {
 		var written int64
 		// write 写入 b 并累计 written，供 WriteFileAtomic 校验落盘字节数。
@@ -139,7 +139,7 @@ func (m merger) mergeFLV(ctx context.Context, lay sessionLayout, segs []segmentM
 
 // mergeDanmaku 将各分段弹幕 JSONL 按顺序拼接写入会话的合并弹幕路径。没有
 // 任何弹幕源文件时不产出文件并返回 false。
-func (m merger) mergeDanmaku(ctx context.Context, lay sessionLayout, segs []segmentMeta) (bool, error) {
+func (m *merger) mergeDanmaku(ctx context.Context, lay sessionLayout, segs []segmentMeta) (bool, error) {
 	var sources []string
 	for _, seg := range segs {
 		if seg.Danmaku == "" {
