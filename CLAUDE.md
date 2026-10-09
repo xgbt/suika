@@ -173,7 +173,7 @@ declared in `biz` and implemented in `data`:
   with hot-swap, and the signer/buvid wiring.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
-  the session-end merge (`recorder_merge.go`). It embeds
+  the session-end merge (`merger.go`). It embeds
   `SessionStatsRepo` — write-progress stats come from the same
   implementation's in-memory state, so the wiring narrows the interface
   instead of asserting it. Implemented across `internal/data/recorder/`

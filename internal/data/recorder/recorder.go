@@ -25,12 +25,13 @@ const (
 // 具体职责按文件拆分：recorder.go 会话生命周期（Prepare/Finish/Recover）、
 // paths.go 会话布局与文件名派生、meta.go meta.json 的 schema 与读写、
 // recorder_pump.go 拉流写入循环、recorder_segment.go 分段文件与头标签缓存、
-// recorder_split.go 切分策略、recorder_dedup.go CDN 循环吐流去重、
-// stats.go 写入进度统计、recorder_merge.go 收尾合并。meta.json 与合并产物
+// splitter.go 切分策略、recorder_dedup.go CDN 循环吐流去重、
+// stats.go 写入进度统计、merger.go 收尾合并。meta.json 与合并产物
 // 共用的原子替换不在本包，由 internal/utils.WriteFileAtomic 提供。
 type recorderRepo struct {
 	splitter
 	statsStore
+	merger
 
 	// recordRoot 录制根目录
 	recordRoot string
@@ -47,6 +48,7 @@ func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 	r := &recorderRepo{
 		splitter:         newSplitter(),
 		statsStore:       newStatsStore(),
+		merger:           NewMerger(),
 		recordRoot:       defaultRecordRoot,
 		healthInterval:   defaultHealthInterval,
 		healthFailRounds: defaultHealthRounds,
@@ -188,7 +190,7 @@ func archiveMergedSession(lay sessionLayout, meta *sessionMeta) error {
 // 下次启动的 RecoverPending 重试；只有合并产物验证通过后才删除源分段。
 func (repo *recorderRepo) finalizeSession(ctx context.Context, lay sessionLayout, meta *sessionMeta) error {
 	// 合并失败：保留源分段并标记 partial，由 RecoverPending 重试。
-	mergedVideoName, mergedDanmakuName, err := mergeSessionFiles(ctx, lay, meta.Segments)
+	mergedVideoName, mergedDanmakuName, err := repo.merger.MergeSessionFiles(ctx, lay, meta.Segments)
 	if err != nil {
 		meta.Status = metaStatusPartial
 		meta.Errors = append(meta.Errors, errorMeta{
