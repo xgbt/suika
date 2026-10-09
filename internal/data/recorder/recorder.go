@@ -64,6 +64,7 @@ func (repo *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recor
 	if err != nil {
 		return err
 	}
+	// rwx r-x r-x
 	if err := os.MkdirAll(lay.dir, 0o755); err != nil {
 		return err
 	}
@@ -108,24 +109,30 @@ func (repo *recorderRepo) FinishSession(ctx context.Context, session *biz.Record
 	}
 	metaPath := lay.metaPath()
 
-	repo.mu.Lock()
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		repo.mu.Unlock()
-		if os.IsNotExist(err) {
-			return nil // 没有录到任何内容
+	// 将 meta.json 的状态更新为合并中，并记录结束时间
+	meta, err := func() (*sessionMeta, error) {
+		repo.mu.Lock()
+		defer repo.mu.Unlock()
+
+		meta, err := loadMeta(metaPath)
+		if err != nil {
+			return nil, err
 		}
-		return err
+		meta.Status = metaStatusMerging
+		meta.EndTime = time.Now().Unix()
+		meta.Title = session.Title
+		meta.Quality = qualityMeta(session.Quality)
+		return meta, saveMeta(metaPath, meta)
+	}()
+
+	// 如果 meta.json 不存在，说明没有录到任何内容，直接返回
+	if os.IsNotExist(err) {
+		return nil // 没有录到任何内容
 	}
-	meta.Status = metaStatusMerging
-	meta.EndTime = time.Now().Unix()
-	meta.Title = session.Title
-	meta.Quality = qualityMeta(session.Quality)
-	err = saveMeta(metaPath, meta)
-	repo.mu.Unlock()
 	if err != nil {
 		return err
 	}
+
 	return repo.finalizeSession(ctx, lay, meta)
 }
 
