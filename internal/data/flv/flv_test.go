@@ -57,7 +57,7 @@ func TestReadTagStream(t *testing.T) {
 		t.Fatalf("script tag = %+v, %v", tag, err)
 	}
 	tag, err = ReadTag(r)
-	if err != nil || !tag.IsAVCSequenceHeader() || tag.IsVideoKeyframe() {
+	if err != nil || !tag.IsAVCSequenceHeader() || tag.IsAVCKeyframe() {
 		t.Fatalf("avc seq tag = %+v, %v", tag, err)
 	}
 	tag, err = ReadTag(r)
@@ -65,11 +65,11 @@ func TestReadTagStream(t *testing.T) {
 		t.Fatalf("aac seq tag = %+v, %v", tag, err)
 	}
 	tag, err = ReadTag(r)
-	if err != nil || !tag.IsVideoKeyframe() || tag.Timestamp != 1000 {
+	if err != nil || !tag.IsAVCKeyframe() || tag.Timestamp != 1000 {
 		t.Fatalf("keyframe tag = %+v, %v", tag, err)
 	}
 	tag, err = ReadTag(r)
-	if err != nil || tag.IsVideoKeyframe() || tag.Timestamp != 1040 {
+	if err != nil || tag.IsAVCKeyframe() || tag.Timestamp != 1040 {
 		t.Fatalf("inter tag = %+v, %v", tag, err)
 	}
 	tag, err = ReadTag(r)
@@ -90,5 +90,9 @@ func TestReadTagTruncated(t *testing.T) {
 	// 在载荷中间截断：必须报错，而不是干净的 EOF
 	if _, err := ReadTag(bytes.NewReader(full[:len(full)-3])); err == nil {
 		t.Fatal("want error for truncated tag")
+	}
+	// 头部残缺：按 EOF 处理
+	if _, err := ReadTag(bytes.NewReader(full[:5])); err != io.EOF {
+		t.Fatalf("partial header err = %v, want io.EOF", err)
 	}
 }

@@ -140,14 +140,14 @@ func newPumpState(
 func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 下载速度统计基于实际接收流量，而非块裁决后的落盘
 	// 字节（writtenBytes），避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
-	s.speed.addReceived(int64(len(tag.Data)) + flv.TagEnvelopeSize)
+	s.speed.addReceived(int64(len(tag.Data)) + flv.TagOverhead)
 
 	// 如果当前尚未有打开的分段，则尝试开新段。新段会等待首个视频关键帧（如有）再真正创建文件。
 	if s.writer == nil {
 		// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃（头标签
 		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
 		// 纯音频流没有视频关键帧，豁免等待。
-		if s.header.HasVideo && !tag.IsVideoKeyframe() {
+		if s.header.HasVideo && !tag.IsAVCKeyframe() {
 			s.headers.observe(tag)
 			return nil
 		}

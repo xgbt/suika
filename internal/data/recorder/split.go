@@ -47,7 +47,7 @@ func splitBySize(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64) boo
 	}
 
 	// 已达到阈值：关键帧处可直接切分，保证分段独立可解码
-	if tag.IsVideoKeyframe() {
+	if tag.IsAVCKeyframe() {
 		return true
 	}
 
@@ -81,5 +81,5 @@ func splitByDuration(writer *segmentWriter, tag *flv.Tag, segmentDuration time.D
 
 	// 已达到阈值：关键帧处可直接切分；否则仅当超出容忍裕度后强制切分
 	overrunThreshold := segmentDuration + splitOverrun
-	return tag.IsVideoKeyframe() || elapsed >= overrunThreshold
+	return tag.IsAVCKeyframe() || elapsed >= overrunThreshold
 }

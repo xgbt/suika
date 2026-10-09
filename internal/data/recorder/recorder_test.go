@@ -550,7 +550,7 @@ func TestPumpSessionProgressIncludesBufferedBlock(t *testing.T) {
 	loop.guard.add(tag)
 	loop.updateProgress()
 
-	want := int64(100 + 200 + len(tag.Data) + flv.TagEnvelopeSize)
+	want := int64(100 + 200 + len(tag.Data) + flv.TagOverhead)
 	got := stats.bytesWritten()
 	if got != want {
 		t.Fatalf("progress = %d, want %d", got, want)
@@ -1098,7 +1098,7 @@ func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
 			continue
 		}
 		_, segTags := readSegmentTags(t, lay.filePath(seg.Video))
-		if len(segTags) < 4 || !segTags[3].IsVideoKeyframe() {
+		if len(segTags) < 4 || !segTags[3].IsAVCKeyframe() {
 			t.Fatalf("segment %d first body tag after injected headers is not a keyframe", seg.Part)
 		}
 	}
