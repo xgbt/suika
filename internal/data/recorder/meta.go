@@ -43,7 +43,7 @@ type qualityMeta struct {
 }
 
 // segmentMeta 记录每个分段的元数据，存储在 meta.json 中。源文件是否还在
-// 磁盘上一律以文件系统为准（allSegmentSourcesExist），不在此另记一份。
+// 磁盘上一律以文件系统为准（RecoverPending 直接检查），不在此另记一份。
 type segmentMeta struct {
 	Part      int    `json:"part"`       // 分段编号
 	Video     string `json:"video"`      // 视频文件名

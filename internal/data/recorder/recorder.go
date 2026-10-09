@@ -232,6 +232,15 @@ func (repo *recorderRepo) RecoverPending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// 所有分段的 FLV 源文件是否都在磁盘上，决定 partial 会话是否值得重试。
+	sourcesOnDisk := func(lay sessionLayout, segs []segmentMeta) bool {
+		for _, segment := range segs {
+			if _, err := os.Stat(lay.filePath(segment.Video)); err != nil {
+				return false
+			}
+		}
+		return len(segs) > 0
+	}
 	for _, path := range paths {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -260,7 +269,7 @@ func (repo *recorderRepo) RecoverPending(ctx context.Context) error {
 		case metaStatusPartial:
 			// 合并失败且源分段仍在磁盘上才值得重试；源文件缺失
 			//（如旧版本遗留的转封装产物）时原样保留。
-			if allSegmentSourcesExist(lay, meta.Segments) {
+			if sourcesOnDisk(lay, meta.Segments) {
 				log.Info("retrying failed merge", "path", path)
 				if err := repo.finalizeSession(ctx, lay, meta); err != nil {
 					log.Warn("recover: finalize failed", "path", path, "err", err)

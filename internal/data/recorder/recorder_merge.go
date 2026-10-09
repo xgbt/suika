@@ -171,14 +171,3 @@ func mergeDanmaku(ctx context.Context, lay sessionLayout, segs []segmentMeta) (b
 	}
 	return true, nil
 }
-
-// allSegmentSourcesExist 判断所有分段的 FLV 源文件是否都在磁盘上，
-// 用于决定一个 partial 会话是否值得重试合并。
-func allSegmentSourcesExist(lay sessionLayout, segs []segmentMeta) bool {
-	for _, seg := range segs {
-		if _, err := os.Stat(lay.filePath(seg.Video)); err != nil {
-			return false
-		}
-	}
-	return len(segs) > 0
-}
