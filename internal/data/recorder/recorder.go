@@ -187,7 +187,8 @@ func archiveMergedSession(lay sessionLayout, meta *sessionMeta) error {
 // 上返回错误，而是记录在 meta.json（状态 partial、源分段保留），由
 // 下次启动的 RecoverPending 重试；只有合并产物验证通过后才删除源分段。
 func (repo *recorderRepo) finalizeSession(ctx context.Context, lay sessionLayout, meta *sessionMeta) error {
-	videoName, danmuName, err := mergeSessionFiles(ctx, lay, meta.Segments)
+	// 合并失败：保留源分段并标记 partial，由 RecoverPending 重试。
+	mergedVideoName, mergedDanmakuName, err := mergeSessionFiles(ctx, lay, meta.Segments)
 	if err != nil {
 		meta.Status = metaStatusPartial
 		meta.Errors = append(meta.Errors, errorMeta{
@@ -199,25 +200,28 @@ func (repo *recorderRepo) finalizeSession(ctx context.Context, lay sessionLayout
 		return repo.persistMeta(lay.metaPath(), meta)
 	}
 
-	meta.MergedVideo = videoName
-	meta.MergedDanmaku = danmuName
-	for i := range meta.Segments {
-		seg := &meta.Segments[i]
-		repo.removeSegmentSource(lay.filePath(seg.Video))
-		if seg.Danmaku != "" {
-			repo.removeSegmentSource(lay.filePath(seg.Danmaku))
+	// 先落盘 done 再删源：崩溃时最多遗留孤儿源文件，不会把已完成的产物标成 partial。
+	meta.MergedVideo = mergedVideoName
+	meta.MergedDanmaku = mergedDanmakuName
+	meta.Status = metaStatusDone
+	if err := repo.persistMeta(lay.metaPath(), meta); err != nil {
+		return err
+	}
+
+	// 清理源分段：删除失败只记日志，不影响收尾结果。
+	removeSegmentSource := func(path string) {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Warn("remove merged segment source failed", "path", path, "err", err)
 		}
 	}
-	meta.Status = metaStatusDone
-	return repo.persistMeta(lay.metaPath(), meta)
-}
-
-// removeSegmentSource 删除已被合并产物取代的源分段。删除失败不影响收尾
-// 结果（合并产物已就绪），但残留文件要留下日志。
-func (repo *recorderRepo) removeSegmentSource(path string) {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.Warn("remove merged segment source failed", "path", path, "err", err)
+	for _, segment := range meta.Segments {
+		removeSegmentSource(lay.filePath(segment.Video))
+		if segment.Danmaku != "" {
+			removeSegmentSource(lay.filePath(segment.Danmaku))
+		}
 	}
+
+	return nil
 }
 
 // RecoverPending 扫描录制根目录下的所有 meta.json，完成上次运行遗留
