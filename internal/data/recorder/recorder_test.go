@@ -607,10 +607,10 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 		TS: time.Unix(124, 0), Type: biz.EventGift,
 		UID: 7, Uname: "user", GiftName: "火箭", Num: 2, Price: 1000, CoinType: "gold",
 	}
-	if err := seg.writeEvent(danmaku); err != nil {
+	if err := seg.writeDanmaku(danmaku); err != nil {
 		t.Fatal(err)
 	}
-	if err := seg.writeEvent(gift); err != nil {
+	if err := seg.writeDanmaku(gift); err != nil {
 		t.Fatal(err)
 	}
 	if err := seg.close(); err != nil {

@@ -196,7 +196,7 @@ func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
 	if s.writer == nil {
 		return
 	}
-	if err := s.writer.writeEvent(ev); err != nil {
+	if err := s.writer.writeDanmaku(ev); err != nil {
 		log.Warn("danmaku write failed", "room", s.roomID, "err", err) // 尽力而为, 不影响录制主流程
 	}
 }
@@ -270,7 +270,7 @@ func (s *pumpState) stop() {
 	// 到 closeSegment()：否则句柄不关、缓冲区不刷、meta 的收尾字段不写，
 	// 而这些恰恰是磁盘写满时最需要保住的东西。
 	for _, tag := range s.guard.takeAll() {
-		if err := s.writeTag(tag, false); err != nil {
+		if err := s.writeFLVTag(tag, false); err != nil {
 			log.Warn("drain pending block failed", "room", s.roomID, "err", err)
 			break
 		}
@@ -305,17 +305,17 @@ func (s *pumpState) flushBlock() error {
 		return nil
 	}
 	for _, bt := range buf {
-		if err := s.writeTag(bt, true); err != nil {
+		if err := s.writeFLVTag(bt, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// writeTag 将单个 FLV 标签写入当前分段，并根据 persistError 决定是否记录元信息错误。
-func (s *pumpState) writeTag(tag *flv.Tag, persistError bool) error {
+// writeFLVTag 将单个 FLV 标签写入当前分段，并根据 persistError 决定是否记录元信息错误。
+func (s *pumpState) writeFLVTag(tag *flv.Tag, persistError bool) error {
 	// 将单个 FLV 标签写入当前分段
-	n, err := s.writer.writeTag(tag)
+	n, err := s.writer.writeBodyTag(tag)
 
 	// 更新写入进度，即使写入失败也记录已写入的字节数
 	s.addWrittenBytes(n)
