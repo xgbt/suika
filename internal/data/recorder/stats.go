@@ -12,7 +12,7 @@ import (
 )
 
 type statsStore struct {
-	mu    sync.Mutex
+	mu    sync.Mutex // 保护 stats 映射
 	stats map[int64]*sessionStats
 }
 

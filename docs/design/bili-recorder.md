@@ -486,7 +486,7 @@ HTTP body（原始字节，LiveClient 打开）
       │     连续 10 块重复 → 判定 CDN 循环吐流，包装为 ErrStreamTransient
       │     中止，决策树换流地址重连（换 CDN 节点）；
       │     块裁决先于切段判定，强切/流结束先落盘缓冲块，不丢在途数据
-      ├─ 切段判定 shouldSplit（两个独立触发，都优先等关键帧）：
+      ├─ 切段判定 ShouldSplit（两个独立触发，都优先等关键帧）：
       │     1) 大小：已写字节达上限 2.5 GiB（代码常量，对齐 biliup 默认）
       │        且当前 tag 是关键帧；超出上限 1/10 裕度仍无关键帧则强切；
       │     2) 时长：段时长达 120 分钟（代码常量）且当前 tag 是关键帧；
@@ -594,7 +594,7 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 
    - 会话收尾总是执行合并：`recorder.merge_enabled` 已废弃且被忽略
      （`internal/data/data.go` 启动时告警），不存在保留散装分段的分支。
-   - `merger.MergeSessionFiles` 将全部 `_partN.flv` 合并
+   - `MergeSessionFiles` 将全部 `_partN.flv` 合并
      为 `{base}.flv`，弹幕 JSONL 按 part 顺序拼接为 `{base}.danmu.jsonl`。
      FLV 合并规则：
      - 第 2 段起跳过 FLV 文件头；所有分段的 onMetaData 脚本标签一律跳过

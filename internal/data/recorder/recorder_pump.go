@@ -165,7 +165,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 切段判定在块裁决之后；强切路径（超限/序列头变化）同样要先结束
 	// 缓冲块，避免关段时把在途数据留在缓冲里丢失。
 	switch {
-	case s.repo.shouldSplit(s.writer, tag):
+	case ShouldSplit(s.writer, tag, s.repo.maxSegmentBytes, s.repo.segmentDuration):
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}

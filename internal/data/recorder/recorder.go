@@ -29,26 +29,29 @@ const (
 // stats.go 写入进度统计、merger.go 收尾合并。meta.json 与合并产物
 // 共用的原子替换不在本包，由 internal/utils.WriteFileAtomic 提供。
 type recorderRepo struct {
-	splitter
 	statsStore
-	merger
 
-	// recordRoot 录制根目录
+	// 分段切分（<= 0 时对应维度不切分）
+	maxSegmentBytes int64
+	segmentDuration time.Duration
+
+	// 存储布局
 	recordRoot string
-	// healthInterval 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败。
-	healthInterval time.Duration
-	// healthFailRounds 连续健康检查失败轮数，达到该轮数则判定录制异常。
-	healthFailRounds int
 
-	mu        sync.Mutex // 保护 meta.json 的读改写
-	segmentMu sync.Mutex // 串行化分段编号探测与创建，避免并发录制泵选中同一 part
+	// 健康检查
+	healthInterval   time.Duration // 该间隔内无新数据计为一次失败
+	healthFailRounds int           // 连续失败达到该轮数判定录制异常
+
+	// 并发控制
+	metaMu    sync.Mutex // 保护 meta.json 读改写
+	segmentMu sync.Mutex // 串行化分段编号探测与创建
 }
 
 func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 	r := &recorderRepo{
-		splitter:         newSplitter(),
+		maxSegmentBytes:  defaultMaxSegmentBytes,
+		segmentDuration:  defaultSegmentMinutes * time.Minute,
 		statsStore:       newStatsStore(),
-		merger:           NewMerger(),
 		recordRoot:       defaultRecordRoot,
 		healthInterval:   defaultHealthInterval,
 		healthFailRounds: defaultHealthRounds,
@@ -73,8 +76,8 @@ func (repo *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recor
 	repo.getOrCreateStats(session.RoomID).reset() // 一次录制会话启动时，把写入进度清零
 
 	metaPath := lay.metaPath()
-	repo.mu.Lock()
-	defer repo.mu.Unlock()
+	repo.metaMu.Lock()
+	defer repo.metaMu.Unlock()
 	// 尝试加载已有的 meta.json，如果存在则更新其状态为录制中，否则创建新的 meta.json
 	if meta, err := loadMeta(metaPath); err == nil {
 		// 同一场直播此前已录过：把上次的合并产物归档为历史分段，然后续录。
@@ -113,8 +116,8 @@ func (repo *recorderRepo) FinishSession(ctx context.Context, session *biz.Record
 
 	// 将 meta.json 的状态更新为合并中，并记录结束时间
 	meta, err := func() (*sessionMeta, error) {
-		repo.mu.Lock()
-		defer repo.mu.Unlock()
+		repo.metaMu.Lock()
+		defer repo.metaMu.Unlock()
 
 		meta, err := loadMeta(metaPath)
 		if err != nil {
@@ -190,7 +193,7 @@ func archiveMergedSession(lay sessionLayout, meta *sessionMeta) error {
 // 下次启动的 RecoverPending 重试；只有合并产物验证通过后才删除源分段。
 func (repo *recorderRepo) finalizeSession(ctx context.Context, lay sessionLayout, meta *sessionMeta) error {
 	// 合并失败：保留源分段并标记 partial，由 RecoverPending 重试。
-	mergedVideoName, mergedDanmakuName, err := repo.merger.MergeSessionFiles(ctx, lay, meta.Segments)
+	mergedVideoName, mergedDanmakuName, err := MergeSessionFiles(ctx, lay, meta.Segments)
 	if err != nil {
 		meta.Status = metaStatusPartial
 		meta.Errors = append(meta.Errors, errorMeta{
@@ -248,9 +251,9 @@ func (repo *recorderRepo) RecoverPending(ctx context.Context) error {
 			return ctx.Err()
 		}
 		lay := sessionLayoutFromMetaPath(path)
-		repo.mu.Lock()
+		repo.metaMu.Lock()
 		meta, err := loadMeta(path)
-		repo.mu.Unlock()
+		repo.metaMu.Unlock()
 		if err != nil {
 			log.Warn("recover: unreadable meta.json", "path", path, "err", err)
 			continue

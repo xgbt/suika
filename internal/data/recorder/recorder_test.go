@@ -278,7 +278,7 @@ func TestNextPartNumber(t *testing.T) {
 	}
 }
 
-// --- shouldSplit ---
+// --- ShouldSplit ---
 
 func TestShouldSplit(t *testing.T) {
 	key := []byte{0x17, 0x01, 0, 0, 0}   // 关键帧 NALU
@@ -318,10 +318,9 @@ func TestShouldSplit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy := splitter{segmentDuration: tc.dur}
 			seg := &segmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
-			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
-				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
+			if got := ShouldSplit(seg, tc.tag, 0, tc.dur); got != tc.want {
+				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -356,10 +355,9 @@ func TestShouldSplitBySize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
-			policy := splitter{maxSegmentBytes: tc.maxBytes}
 			seg := &segmentWriter{hasStart: tc.hasStart, bytes: tc.bytes}
-			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
-				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
+			if got := ShouldSplit(seg, tc.tag, tc.maxBytes, 0); got != tc.want {
+				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}

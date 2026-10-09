@@ -14,32 +14,19 @@ const (
 	sizeSplitOverrunDivisor = 10               // 大小切分等待关键帧的强切裕度分母
 )
 
-// splitter 负责分段判定策略：按大小和时长两个维度独立裁决。
-type splitter struct {
-	maxSegmentBytes int64         // 分段大小上限，<= 0 时不按大小切分
-	segmentDuration time.Duration // 分段时长上限，<= 0 时不按时长切分
-}
-
-func newSplitter() splitter {
-	return splitter{
-		maxSegmentBytes: defaultMaxSegmentBytes,
-		segmentDuration: defaultSegmentMinutes * time.Minute,
-	}
-}
-
-// shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
+// ShouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
 // 等待视频关键帧以保证分段可独立播放：
 //  1. 大小：已写字节达到上限，且该 tag 是关键帧；或超出上限的
 //     1/sizeSplitOverrunDivisor 裕度仍无关键帧则强制切分；
 //  2. 时长：达到目标时长且该 tag 是关键帧；或超出 splitOverrun 强制切分。
-func (s splitter) shouldSplit(writer *segmentWriter, tag *flv.Tag) bool {
+func ShouldSplit(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64, segmentDuration time.Duration) bool {
 	if !writer.hasStart {
 		return false
 	}
-	return s.byBytes(writer, tag) || s.byDuration(writer, tag)
+	return splitBySize(writer, tag, maxSegmentBytes) || splitByDuration(writer, tag, segmentDuration)
 }
 
-// byBytes 判断当前分段是否应当因体积超限而切分。
+// splitBySize 判断当前分段是否应当因体积超限而切分。
 //
 // 切分策略：
 //  1. 若未配置 maxSegmentBytes（<=0），表示不启用按大小切分，直接返回 false。
@@ -48,14 +35,14 @@ func (s splitter) shouldSplit(writer *segmentWriter, tag *flv.Tag) bool {
 //  4. 若达到阈值后迟迟等不到关键帧，为避免单个分段无限膨胀，
 //     允许体积在阈值基础上再超出 overrun（maxSegmentBytes/sizeSplitOverrunDivisor）后强制切分，
 //     即便当前 tag 不是关键帧。
-func (s splitter) byBytes(writer *segmentWriter, tag *flv.Tag) bool {
+func splitBySize(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64) bool {
 	// 未设置最大分段字节数，不按大小切分
-	if s.maxSegmentBytes <= 0 {
+	if maxSegmentBytes <= 0 {
 		return false
 	}
 
 	// 尚未达到阈值，无需切分
-	if writer.bytes < s.maxSegmentBytes {
+	if writer.bytes < maxSegmentBytes {
 		return false
 	}
 
@@ -65,11 +52,11 @@ func (s splitter) byBytes(writer *segmentWriter, tag *flv.Tag) bool {
 	}
 
 	// 非关键帧：仅当体积超出阈值 + 容忍裕度后，才强制切分
-	overrunThreshold := s.maxSegmentBytes + s.maxSegmentBytes/sizeSplitOverrunDivisor
+	overrunThreshold := maxSegmentBytes + maxSegmentBytes/sizeSplitOverrunDivisor
 	return writer.bytes >= overrunThreshold
 }
 
-// byDuration 判断当前分段是否应当因时长超限而切分。
+// splitByDuration 判断当前分段是否应当因时长超限而切分。
 //
 // 切分策略：
 //  1. 若未配置 segmentDuration（<=0），表示不启用按时长切分，直接返回 false。
@@ -78,9 +65,9 @@ func (s splitter) byBytes(writer *segmentWriter, tag *flv.Tag) bool {
 //  3. 一旦达到阈值，优先在关键帧处切分，以保证新分段能独立解码播放。
 //  4. 若达到阈值后迟迟等不到关键帧，允许时长在阈值基础上再超出 splitOverrun 后强制切分，
 //     即便当前 tag 不是关键帧，避免单个分段无限拉长。
-func (s splitter) byDuration(writer *segmentWriter, tag *flv.Tag) bool {
+func splitByDuration(writer *segmentWriter, tag *flv.Tag, segmentDuration time.Duration) bool {
 	// 未设置分段时长，不按时长切分
-	if s.segmentDuration <= 0 {
+	if segmentDuration <= 0 {
 		return false
 	}
 
@@ -88,11 +75,11 @@ func (s splitter) byDuration(writer *segmentWriter, tag *flv.Tag) bool {
 	elapsed := time.Duration(tag.Timestamp-writer.startTs) * time.Millisecond
 
 	// 尚未达到阈值，无需切分
-	if elapsed < s.segmentDuration {
+	if elapsed < segmentDuration {
 		return false
 	}
 
 	// 已达到阈值：关键帧处可直接切分；否则仅当超出容忍裕度后强制切分
-	overrunThreshold := s.segmentDuration + splitOverrun
+	overrunThreshold := segmentDuration + splitOverrun
 	return tag.IsVideoKeyframe() || elapsed >= overrunThreshold
 }
