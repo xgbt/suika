@@ -87,7 +87,7 @@ func (s *segmentWriter) close() error {
 
 // openSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
 // headerTagBytes 为头标签字节数（不含文件头），供调用方计入写入进度。
-func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) (seg *segmentWriter, headerTagBytes int64, err error) {
+func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) (writer *segmentWriter, headerTagBytes int64, err error) {
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
@@ -116,35 +116,37 @@ func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) 
 		return nil, 0, err
 	}
 
-	seg = &segmentWriter{
+	writer = &segmentWriter{
 		part:        part,
 		videoPath:   videoPath,
-		danmakuPath: danmakuPath,
 		videoFile:   videoFile,
-		danmakuFile: danmakuFile,
 		videoWriter: bufio.NewWriterSize(videoFile, 1<<20),
+		danmakuPath: danmakuPath,
+		danmakuFile: danmakuFile,
 		wallStart:   time.Now(),
 	}
 	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
-	if headerTagBytes, err = seg.writeHeaderTags(header, cache); err != nil {
+	if headerTagBytes, err = writer.writeHeaderTags(header, cache); err != nil {
 		return nil, 0, err
 	}
-	return seg, headerTagBytes, nil
+	return writer, headerTagBytes, nil
 }
 
 // writeHeaderTags 写入 FLV 文件头及缓存的头标签，返回头标签字节数（不含文件头）。
 func (s *segmentWriter) writeHeaderTags(header *flv.FileHeader, cache *headerCache) (int64, error) {
-	headerBytes := header.Bytes()
-	if _, err := s.videoWriter.Write(headerBytes); err != nil {
+	// 写入 FLV 文件头
+	if _, err := s.videoWriter.Write(header.Bytes()); err != nil {
 		return 0, err
 	}
-	s.bytesWritten += int64(len(headerBytes))
+	s.bytesWritten += int64(len(header.Bytes()))
 
+	// 写入缓存的头标签（metadata/序列头）
 	var tagBytes int64
 	for _, tag := range []*flv.Tag{cache.metadata, cache.videoSeqHeader, cache.audioSeqHeader} {
 		if tag == nil {
 			continue
 		}
+		// 写入单个头标签
 		n, err := s.writeRawTag(tag)
 		tagBytes += n
 		if err != nil {
