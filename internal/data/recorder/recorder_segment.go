@@ -87,7 +87,8 @@ func (s *segmentWriter) close() error {
 
 // openSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
 // headerTagBytes 为头标签字节数（不含文件头），供调用方计入写入进度。
-func openSegment(lay sessionLayout, part int, header *flv.FileHeader, cache *headerCache) (seg *segmentWriter, headerTagBytes int64, err error) {
+func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) (seg *segmentWriter, headerTagBytes int64, err error) {
+	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
 

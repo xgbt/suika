@@ -55,26 +55,26 @@ func TestDupGuardBlockBoundaries(t *testing.T) {
 	var g dupGuard
 	g.add(&flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x27, 0x01, 1}})
 
-	if !g.boundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 10, Data: []byte{0x17, 0x01, 2}}) {
+	if !g.isBoundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 10, Data: []byte{0x17, 0x01, 2}}) {
 		t.Error("video keyframe must close the current block")
 	}
-	if !g.boundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 10, Data: []byte{0x17, 0x00, 2}}) {
+	if !g.isBoundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 10, Data: []byte{0x17, 0x00, 2}}) {
 		t.Error("sequence header must close the current block")
 	}
-	if !g.boundary(&flv.Tag{Type: flv.TagScript, Timestamp: 10, Data: []byte{0x02}}) {
+	if !g.isBoundary(&flv.Tag{Type: flv.TagScript, Timestamp: 10, Data: []byte{0x02}}) {
 		t.Error("metadata tag must close the current block")
 	}
-	if !g.boundary(&flv.Tag{Type: flv.TagVideo, Timestamp: dupGapThreshold, Data: []byte{0x27, 0x01, 2}}) {
+	if !g.isBoundary(&flv.Tag{Type: flv.TagVideo, Timestamp: dupGapThreshold, Data: []byte{0x27, 0x01, 2}}) {
 		t.Error("timestamp gap beyond threshold must close the current block")
 	}
-	if g.boundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 10, Data: []byte{0x27, 0x01, 2}}) {
+	if g.isBoundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 10, Data: []byte{0x27, 0x01, 2}}) {
 		t.Error("ordinary inter frame within limits must not close the block")
 	}
 }
 
 func TestDupGuardEmptyBoundary(t *testing.T) {
 	var g dupGuard
-	if g.boundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 1}}) {
+	if g.isBoundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 1}}) {
 		t.Error("empty guard has no block to close")
 	}
 	if buf, disconnect := g.close(); buf != nil || disconnect {

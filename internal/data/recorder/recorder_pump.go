@@ -134,59 +134,54 @@ func newPumpState(
 	}
 }
 
-// handleTag 处理一个拉流读到的 FLV tag：开启首个分段（等待关键帧）、
-// 按块边界裁决去重缓冲、按大小/时长或序列头变化切分段，最后计入头
-// 标签缓存与去重块。
+// handleTag 处理拉流读到的一个 FLV tag
 func (s *pumpState) handleTag(tag *flv.Tag) error {
-	// 下载速度统计基于实际接收流量，而非块裁决后的落盘
-	// 字节（writtenBytes），避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
+	// 速度按实际接收字节统计，而非落盘字节：去重缓冲会把写盘集中成脉冲，
+	// 若按落盘口径采样，多数采样周期会得到 0。
 	s.speed.addReceived(int64(len(tag.Data)) + flv.TagOverhead)
 
-	// 如果当前尚未有打开的分段，则尝试开新段。新段会等待首个视频关键帧（如有）再真正创建文件。
-	if s.writer == nil {
-		// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃（头标签
-		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
-		// 纯音频流没有视频关键帧，豁免等待。
-		if s.header.HasVideo && !tag.IsAVCKeyframe() {
-			s.headers.remember(tag)
-			return nil
-		}
+	// 分段须从视频关键帧开始：尚未开段时丢弃首个关键帧之前的
+	// 正文 tag；头标签仍需缓存，供开段时注入。
+	if s.writer == nil && s.header.HasVideo && !tag.IsAVCKeyframe() {
+		s.headers.remember(tag)
+		return nil
+	}
+
+	switch {
+	// 保证存在可写分段：无分段则开段。
+	case s.writer == nil:
 		if err := s.openNewSegment(); err != nil {
 			return err
 		}
-	} else if s.guard.boundary(tag) {
-		// 块边界：先裁决缓冲块落盘，切段判定才能用上最新的段状态。
+	// 当前 tag 是块边界时，先裁决并落盘缓冲块。
+	case s.guard.isBoundary(tag):
 		if err := s.flushBlock(); err != nil {
 			s.closeSegment()
 			return err
 		}
 	}
 
-	// 切段判定在块裁决之后；强切路径（超限/序列头变化）同样要先结束
-	// 缓冲块，避免关段时把在途数据留在缓冲里丢失。
+	// 切段判定：大小或时长超限时优先切段；否则检查序列头是否变化。
+	// 序列头变化时若继续写旧段，两种解码配置会混入同一文件，因此强制切段。
 	switch {
 	case ShouldSplit(s.writer, tag, s.repo.maxSegmentBytes, s.repo.segmentDuration):
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
 	case s.headers.sequenceHeaderChanged(tag):
-		// 流中途序列头变化（CDN 换源、主播改码率）：继续写入旧分段会把
-		// 两种解码配置拼进同一个文件，强制切段。新段按既有规则从缓存
-		// 注入旧头标签，新序列头作为首个正文标签紧随其后写入，播放器
-		// 以最新的序列头为准。
 		log.Warn("sequence header changed, splitting segment", "room", s.roomID, "part", s.writer.part)
+		// 强制切段，确保新序列头写入新段。
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
 	}
 
-	// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个标签不能从
-	// 缓存重注入，否则会被写两次（openSegment 写一次、上面的拉流写入
-	// 又一次）。切分前已见过的头标签仍会完整重注入。
+	// 记录状态。头标签须在切段判定之后入缓存：序列头变化触发的切段会把新序列头
+	// 注入新段，若此时已入缓存，同一个 tag 还会作为正文再写一次，造成重复。
 	s.headers.remember(tag)
 	s.guard.add(tag)
-	// 当前块仍在去重缓冲中，但这些字节已经属于本次录制；先反映到
-	// 运行时统计，块关闭时 addWrittenBytes 会把最终落盘值校正回来。
+	// 进度计入去重缓冲中已接收但未落盘的字节（见 updateProgress），块落盘后
+	// 这部分转为已写字节，进度随之校正为实际落盘值。
 	s.updateProgress()
 	return nil
 }
@@ -201,39 +196,13 @@ func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
 	}
 }
 
-// healthMonitor 跟踪连续无新数据落盘的轮数，是 pumpSessionLoop 的内部状态。
-type healthMonitor struct {
-	lastGrowth int64 // 上次检查时的累计写入字节数
-	failRounds int   // 连续未见新数据的轮数
-}
-
-// check 用当前累计写入字节数更新状态，连续失败达到 maxRounds 时返回错误。
-func (h *healthMonitor) check(written int64, maxRounds int) error {
-	if written > h.lastGrowth {
-		h.lastGrowth = written
-		h.failRounds = 0
-		return nil
-	}
-	h.failRounds++
-	if h.failRounds < maxRounds {
-		return nil
-	}
-	return fmt.Errorf("recording unhealthy: no new data for %d rounds", h.failRounds)
-}
-
-// resetFailRounds 清零连续失败计数：CDN 重复块被丢弃不计入无新数据。
-func (h *healthMonitor) resetFailRounds() {
-	h.failRounds = 0
-}
-
 func (s *pumpState) openNewSegment() error {
 	// 编号探测和 O_TRUNC 创建必须串行，否则并发的录制泵会同时选中
 	// 同一个 part，并截断彼此刚写入的分段。
 	s.repo.segmentMu.Lock()
 	defer s.repo.segmentMu.Unlock()
 
-	part := nextPartNumber(s.lay)
-	writer, headerTagBytes, err := openSegment(s.lay, part, s.header, &s.headers)
+	writer, headerTagBytes, err := openSegment(s.lay, s.header, &s.headers)
 	if err != nil {
 		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
 		return err
@@ -249,7 +218,7 @@ func (s *pumpState) openNewSegment() error {
 	s.addWrittenBytes(headerTagBytes)
 
 	s.repo.appendSegmentMeta(s.lay.metaPath(), writer)
-	log.Info("segment opened", "room", s.roomID, "part", part, "file", writer.videoPath)
+	log.Info("segment opened", "room", s.roomID, "part", writer.part, "file", writer.videoPath)
 	return nil
 }
 
@@ -333,4 +302,29 @@ func (s *pumpState) addWrittenBytes(n int64) {
 
 func (s *pumpState) updateProgress() {
 	s.stats.setBytesWritten(s.baseBytes + s.result.BytesWritten + s.guard.bufBytes)
+}
+
+// healthMonitor 跟踪连续无新数据落盘的轮数，是 pumpSessionLoop 的内部状态。
+type healthMonitor struct {
+	lastGrowth int64 // 上次检查时的累计写入字节数
+	failRounds int   // 连续未见新数据的轮数
+}
+
+// check 用当前累计写入字节数更新状态，连续失败达到 maxRounds 时返回错误。
+func (h *healthMonitor) check(written int64, maxRounds int) error {
+	if written > h.lastGrowth {
+		h.lastGrowth = written
+		h.failRounds = 0
+		return nil
+	}
+	h.failRounds++
+	if h.failRounds < maxRounds {
+		return nil
+	}
+	return fmt.Errorf("recording unhealthy: no new data for %d rounds", h.failRounds)
+}
+
+// resetFailRounds 清零连续失败计数：CDN 重复块被丢弃不计入无新数据。
+func (h *healthMonitor) resetFailRounds() {
+	h.failRounds = 0
 }
