@@ -14,7 +14,7 @@ import (
 
 // segmentHeaders 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
 type segmentHeaders struct {
-	metadata *flv.Tag // 最近一次 onMetaData 脚本标签
+	metaData *flv.Tag // 最近一次 onMetaData 脚本标签
 	videoSeq *flv.Tag // 最近一次 AVC 序列头
 	audioSeq *flv.Tag // 最近一次 AAC 序列头
 }
@@ -35,7 +35,7 @@ func (h *segmentHeaders) sequenceHeaderChanged(tag *flv.Tag) bool {
 func (h *segmentHeaders) observe(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
-		h.metadata = tag
+		h.metaData = tag
 	case tag.IsAVCSequenceHeader():
 		h.videoSeq = tag
 	case tag.IsAACSequenceHeader():
@@ -116,7 +116,7 @@ func (s *segmentWriter) writeHeaderTags(header *flv.FileHeader, headers *segment
 	s.bytes += int64(len(headerBytes))
 
 	var tagBytes int64
-	for _, tag := range []*flv.Tag{headers.metadata, headers.videoSeq, headers.audioSeq} {
+	for _, tag := range []*flv.Tag{headers.metaData, headers.videoSeq, headers.audioSeq} {
 		if tag == nil {
 			continue
 		}

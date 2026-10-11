@@ -564,7 +564,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
 	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
 	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	cache := &segmentHeaders{metadata: metaTag, videoSeq: videoSeq, audioSeq: audioSeq}
+	cache := &segmentHeaders{metaData: metaTag, videoSeq: videoSeq, audioSeq: audioSeq}
 
 	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, cache)
 	if err != nil {
