@@ -51,12 +51,19 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 	})
 
 	state := newPumpState(repo, session.RoomID, lay, header, stats)
+
+	// 启动读取 FLV tag 的协程，返回一个通道用于接收解析结果。
 	tagCh := flv.ReadTags(ctx, stream.Body)
 
+	// 健康检查定时器：用于检测连续无新数据落盘的情况，触发重连或终止。
 	health := time.NewTicker(repo.healthInterval)
 	defer health.Stop()
+
+	// 定时采样下载速度，避免频繁计算。
+	// 下载速度跟踪：生命周期仅限本次拉流连接，断流重连后从零重新计算。
 	speedSampler := time.NewTicker(time.Second)
 	defer speedSampler.Stop()
+	speed := newSpeedTracker(time.Now())
 
 	for {
 		select {
@@ -80,14 +87,19 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 				}
 				return &state.result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.Err)
 			}
+			// 下载速度统计基于实际接收流量，而非块裁决后的落盘
+			// 字节（BytesWritten），避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
+			speed.addReceived(int64(len(tr.Tag.Data)) + flv.TagOverhead)
+
+			// 处理当前 tag，可能触发新分段的创建或现有分段的写入。
 			if err := state.handleTag(tr.Tag); err != nil {
 				return &state.result, err
 			}
 		case ev := <-events: // 弹幕/礼物等事件写入
 			state.handleEvent(ev)
 		case <-speedSampler.C:
-			if speed, ok := state.speed.sample(time.Now()); ok {
-				state.stats.setDownloadSpeed(speed)
+			if bps, ok := speed.sample(time.Now()); ok {
+				state.stats.setDownloadSpeed(bps)
 			}
 		case <-health.C:
 			if err := state.health.check(state.result.BytesWritten, state.repo.healthFailRounds); err != nil {
@@ -113,7 +125,6 @@ type pumpState struct {
 	writer    *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result    biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
 	health    healthMonitor       // 健康检查状态：连续无新数据落盘的轮数
-	speed     speedTracker        // 下载速度采样状态
 }
 
 func newPumpState(
@@ -130,7 +141,6 @@ func newPumpState(
 		header:    header,
 		stats:     stats,
 		baseBytes: stats.bytesWritten(),
-		speed:     newSpeedTracker(time.Now()),
 	}
 }
 
@@ -138,10 +148,6 @@ func newPumpState(
 // 按块边界裁决去重缓冲、按大小/时长或序列头变化切分段，最后计入头
 // 标签缓存与去重块。
 func (s *pumpState) handleTag(tag *flv.Tag) error {
-	// 下载速度统计基于实际接收流量，而非块裁决后的落盘
-	// 字节（writtenBytes），避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
-	s.speed.addReceived(int64(len(tag.Data)) + flv.TagOverhead)
-
 	// 如果当前尚未有打开的分段，则尝试开新段。新段会等待首个视频关键帧（如有）再真正创建文件。
 	if s.writer == nil {
 		// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃（头标签

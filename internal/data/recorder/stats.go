@@ -99,6 +99,7 @@ func newSpeedTracker(now time.Time) speedTracker {
 	return speedTracker{lastSampleAt: now}
 }
 
+// addReceived 累加本次会话接收的字节数。
 func (st *speedTracker) addReceived(n int64) {
 	st.receiveBytes += n
 }
