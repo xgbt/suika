@@ -625,7 +625,7 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("lines = %d, want 2: %q", len(lines), data)
 	}
-	var first, second danmakuLine
+	var first, second danmakuEventPO
 	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
 		t.Fatal(err)
 	}

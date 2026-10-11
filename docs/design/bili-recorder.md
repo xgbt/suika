@@ -164,7 +164,7 @@ internal/data/
                          finalizeSession 收尾合并、RecoverPending 启动补跑
   paths.go               sessionLayout（会话目录 + 文件名前缀）与全部会话内
                          文件名的派生；nextPartNumber 扫描目录推导分段编号
-  meta.go                sessionMeta / segmentMeta / danmuLine PO：meta.json
+  meta.go                sessionMeta / segmentMeta / danmakuEventPO：meta.json
                          读写、分段簿记（append/finishSegmentMeta）、
                          errors 追加
   recorder_pump.go       PumpSession 泵送循环（切段判定、健康巡检）

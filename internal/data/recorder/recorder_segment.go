@@ -175,9 +175,10 @@ func (s *segmentWriter) writeBodyTag(tag *flv.Tag) (int64, error) {
 	return n, nil
 }
 
-// danmakuLine 是 biz.DanmakuEvent 落盘到弹幕 JSONL 的行结构，字段含义与
-// DanmakuEvent 一致。
-type danmakuLine struct {
+// danmakuEventPO 是弹幕事件的持久化对象（PO），即 biz.DanmakuEvent（DO）落盘到弹幕 JSONL
+// 时的存储形状。与 DO 的差异：时间戳为 unix 毫秒整数而非 time.Time，字段带 JSON tag，
+// 空值按 omitempty 省略。
+type danmakuEventPO struct {
 	Ts       int64           `json:"ts"`                  // 接收时刻（unix 毫秒）
 	SendTs   int64           `json:"send_ts,omitempty"`   // 平台载荷中的发送时刻（unix 毫秒），未知省略
 	Type     string          `json:"type"`                // 事件类型，如弹幕、礼物、进场特效等
@@ -195,9 +196,9 @@ type danmakuLine struct {
 	Raw      json.RawMessage `json:"raw,omitempty"`       // 原始 JSON Payload
 }
 
-// writeDanmaku 将一个弹幕事件序列化为一行 JSON 写入弹幕文件。
+// writeDanmaku 将 DO 转换为 danmakuEventPO 后序列化为一行 JSON 写入弹幕文件。
 func (s *segmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
-	entry := danmakuLine{
+	entry := danmakuEventPO{
 		Ts:       ev.TS.UnixMilli(),
 		SendTs:   ev.SendTS,
 		Type:     ev.Type,
