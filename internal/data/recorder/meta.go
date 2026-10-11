@@ -43,7 +43,7 @@ type qualityMeta struct {
 }
 
 // segmentMeta 记录每个分段的元数据，存储在 meta.json 中。源文件是否还在
-// 磁盘上一律以文件系统为准（allSegmentSourcesExist），不在此另记一份。
+// 磁盘上一律以文件系统为准（RecoverPending 直接检查），不在此另记一份。
 type segmentMeta struct {
 	Part      int    `json:"part"`       // 分段编号
 	Video     string `json:"video"`      // 视频文件名
@@ -57,7 +57,7 @@ type segmentMeta struct {
 
 // errorMeta 记录一次录制/合并过程中的错误，存储在 meta.json 中。
 type errorMeta struct {
-	Time  int64  `json:"time"`  // 发生时间（unix 秒）
+	Ts    int64  `json:"ts"`    // 发生时间（unix 秒）
 	Stage string `json:"stage"` // 发生阶段，如 record / merge
 	Msg   string `json:"msg"`   // 错误信息
 }
@@ -90,8 +90,8 @@ func saveMeta(path string, meta *sessionMeta) error {
 
 // updateMeta 持锁读改写 meta.json，失败只记日志。
 func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
-	repo.mu.Lock()
-	defer repo.mu.Unlock()
+	repo.metaMu.Lock()
+	defer repo.metaMu.Unlock()
 
 	meta, err := loadMeta(metaPath)
 	if err != nil {
@@ -107,8 +107,8 @@ func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 
 // persistMeta 持锁用整份 meta 覆盖 meta.json，会盖掉 updateMeta 的写入；错误向上返回。
 func (repo *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
-	repo.mu.Lock()
-	defer repo.mu.Unlock()
+	repo.metaMu.Lock()
+	defer repo.metaMu.Unlock()
 
 	return saveMeta(metaPath, meta)
 }
@@ -136,7 +136,7 @@ func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWrit
 			s.WallEnd = time.Now().Unix()
 			s.TsStart = writer.startTs
 			s.TsEnd = writer.lastTs
-			s.Bytes = writer.bytes
+			s.Bytes = writer.bytesWritten
 		}
 	})
 }
@@ -144,6 +144,10 @@ func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWrit
 // appendMetaError 追加一条错误记录到 meta.json。
 func (repo *recorderRepo) appendMetaError(metaPath, stage string, err error) {
 	repo.updateMeta(metaPath, func(meta *sessionMeta) {
-		meta.Errors = append(meta.Errors, errorMeta{Time: time.Now().Unix(), Stage: stage, Msg: err.Error()})
+		meta.Errors = append(meta.Errors, errorMeta{
+			Ts:    time.Now().Unix(),
+			Stage: stage,
+			Msg:   err.Error(),
+		})
 	})
 }

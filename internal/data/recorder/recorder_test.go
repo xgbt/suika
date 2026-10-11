@@ -144,7 +144,7 @@ func TestMetaJSONRoundTrip(t *testing.T) {
 		},
 		MergedVideo:   "base.flv",
 		MergedDanmaku: "base.danmu.jsonl",
-		Errors:        []errorMeta{{Time: 55, Stage: "record", Msg: "write failed"}},
+		Errors:        []errorMeta{{Ts: 55, Stage: "record", Msg: "write failed"}},
 	}
 
 	before := time.Now().Unix()
@@ -244,17 +244,17 @@ func TestNextPartNumber(t *testing.T) {
 			want:  3,
 		},
 		{
-			name: "unrelated files ignored, padded and mp4 counted",
+			name: "unrelated files ignored, padded, non-flv not counted",
 			files: []string{
 				base + "_part001.flv",       // 前导零编号：Atoi 能处理
-				base + "_part002.mp4",       // 历史遗留的 mp4 分段也计入
+				base + "_part002.mp4",       // 分段只认 .flv：mp4 不计入编号
 				"other_part99.flv",          // 基座前缀不同
 				base + "_partX.flv",         // 编号非数字
 				base + "_part3.danmu.jsonl", // 扩展符不符
 				"random.txt",
 			},
 			dirOK: true,
-			want:  3, // max(1, 2) + 1
+			want:  2, // max(1) + 1
 		},
 		{
 			name:  "high part number",
@@ -278,7 +278,7 @@ func TestNextPartNumber(t *testing.T) {
 	}
 }
 
-// --- shouldSplit ---
+// --- ShouldSplit ---
 
 func TestShouldSplit(t *testing.T) {
 	key := []byte{0x17, 0x01, 0, 0, 0}   // 关键帧 NALU
@@ -318,10 +318,9 @@ func TestShouldSplit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy := splitter{segmentDuration: tc.dur}
 			seg := &segmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
-			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
-				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
+			if got := ShouldSplit(seg, tc.tag, 0, tc.dur); got != tc.want {
+				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -356,10 +355,9 @@ func TestShouldSplitBySize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
-			policy := splitter{maxSegmentBytes: tc.maxBytes}
-			seg := &segmentWriter{hasStart: tc.hasStart, bytes: tc.bytes}
-			if got := policy.shouldSplit(seg, tc.tag); got != tc.want {
-				t.Fatalf("segmentSplitPolicy.shouldSplit = %v, want %v", got, tc.want)
+			seg := &segmentWriter{hasStart: tc.hasStart, bytesWritten: tc.bytes}
+			if got := ShouldSplit(seg, tc.tag, tc.maxBytes, 0); got != tc.want {
+				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -552,7 +550,7 @@ func TestPumpSessionProgressIncludesBufferedBlock(t *testing.T) {
 	loop.guard.add(tag)
 	loop.updateProgress()
 
-	want := int64(100 + 200 + len(tag.Data) + flv.TagEnvelopeSize)
+	want := int64(100 + 200 + len(tag.Data) + flv.TagOverhead)
 	got := stats.bytesWritten()
 	if got != want {
 		t.Fatalf("progress = %d, want %d", got, want)
@@ -566,7 +564,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
 	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
 	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	cache := &segmentHeaders{metadata: metaTag, videoSeq: videoSeq, audioSeq: audioSeq}
+	cache := &headerCache{metadata: metaTag, videoSeqHeader: videoSeq, audioSeqHeader: audioSeq}
 
 	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, cache)
 	if err != nil {
@@ -586,8 +584,8 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seg.bytes != fi.Size() {
-		t.Fatalf("seg.bytes = %d, file size = %d", seg.bytes, fi.Size())
+	if seg.bytesWritten != fi.Size() {
+		t.Fatalf("seg.bytesWritten = %d, file size = %d", seg.bytesWritten, fi.Size())
 	}
 	if fi2, err := os.Stat(seg.danmakuPath); err != nil || fi2.Size() != 0 {
 		t.Fatalf("danmu file = %+v, %v; want empty existing file", fi2, err)
@@ -596,7 +594,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 
 func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, &segmentHeaders{})
+	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, &headerCache{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,10 +607,10 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 		TS: time.Unix(124, 0), Type: biz.EventGift,
 		UID: 7, Uname: "user", GiftName: "火箭", Num: 2, Price: 1000, CoinType: "gold",
 	}
-	if err := seg.writeEvent(danmaku); err != nil {
+	if err := seg.writeDanmaku(danmaku); err != nil {
 		t.Fatal(err)
 	}
-	if err := seg.writeEvent(gift); err != nil {
+	if err := seg.writeDanmaku(gift); err != nil {
 		t.Fatal(err)
 	}
 	if err := seg.close(); err != nil {
@@ -627,7 +625,7 @@ func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("lines = %d, want 2: %q", len(lines), data)
 	}
-	var first, second danmakuLine
+	var first, second danmakuEventPO
 	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
 		t.Fatal(err)
 	}
@@ -1100,7 +1098,7 @@ func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
 			continue
 		}
 		_, segTags := readSegmentTags(t, lay.filePath(seg.Video))
-		if len(segTags) < 4 || !segTags[3].IsVideoKeyframe() {
+		if len(segTags) < 4 || !segTags[3].IsAVCKeyframe() {
 			t.Fatalf("segment %d first body tag after injected headers is not a keyframe", seg.Part)
 		}
 	}

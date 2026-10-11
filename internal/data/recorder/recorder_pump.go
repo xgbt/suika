@@ -108,7 +108,7 @@ type pumpState struct {
 	header    *flv.FileHeader     // 拉流解析出的 FLV 文件头
 	stats     *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
 	baseBytes int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
-	headers   segmentHeaders      // 头标签缓存，供新分段/强制切分段重注入
+	headers   headerCache         // 头标签缓存，供新分段/强制切分段重注入
 	guard     dupGuard            // CDN 循环吐流去重状态
 	writer    *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result    biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
@@ -140,15 +140,15 @@ func newPumpState(
 func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 下载速度统计基于实际接收流量，而非块裁决后的落盘
 	// 字节（writtenBytes），避免去重/缓冲导致的写盘脉冲把速度采样打成 0。
-	s.speed.addReceived(int64(len(tag.Data)) + flv.TagEnvelopeSize)
+	s.speed.addReceived(int64(len(tag.Data)) + flv.TagOverhead)
 
 	// 如果当前尚未有打开的分段，则尝试开新段。新段会等待首个视频关键帧（如有）再真正创建文件。
 	if s.writer == nil {
 		// 新段等待首个视频关键帧再开文件：关键帧之前的标签丢弃（头标签
 		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
 		// 纯音频流没有视频关键帧，豁免等待。
-		if s.header.HasVideo && !tag.IsVideoKeyframe() {
-			s.headers.observe(tag)
+		if s.header.HasVideo && !tag.IsAVCKeyframe() {
+			s.headers.remember(tag)
 			return nil
 		}
 		if err := s.openNewSegment(); err != nil {
@@ -165,7 +165,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 切段判定在块裁决之后；强切路径（超限/序列头变化）同样要先结束
 	// 缓冲块，避免关段时把在途数据留在缓冲里丢失。
 	switch {
-	case s.repo.shouldSplit(s.writer, tag):
+	case ShouldSplit(s.writer, tag, s.repo.maxSegmentBytes, s.repo.segmentDuration):
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
@@ -183,7 +183,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个标签不能从
 	// 缓存重注入，否则会被写两次（openSegment 写一次、上面的拉流写入
 	// 又一次）。切分前已见过的头标签仍会完整重注入。
-	s.headers.observe(tag)
+	s.headers.remember(tag)
 	s.guard.add(tag)
 	// 当前块仍在去重缓冲中，但这些字节已经属于本次录制；先反映到
 	// 运行时统计，块关闭时 addWrittenBytes 会把最终落盘值校正回来。
@@ -196,7 +196,7 @@ func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
 	if s.writer == nil {
 		return
 	}
-	if err := s.writer.writeEvent(ev); err != nil {
+	if err := s.writer.writeDanmaku(ev); err != nil {
 		log.Warn("danmaku write failed", "room", s.roomID, "err", err) // 尽力而为, 不影响录制主流程
 	}
 }
@@ -270,7 +270,7 @@ func (s *pumpState) stop() {
 	// 到 closeSegment()：否则句柄不关、缓冲区不刷、meta 的收尾字段不写，
 	// 而这些恰恰是磁盘写满时最需要保住的东西。
 	for _, tag := range s.guard.takeAll() {
-		if err := s.writeTag(tag, false); err != nil {
+		if err := s.writeFLVTag(tag, false); err != nil {
 			log.Warn("drain pending block failed", "room", s.roomID, "err", err)
 			break
 		}
@@ -305,17 +305,17 @@ func (s *pumpState) flushBlock() error {
 		return nil
 	}
 	for _, bt := range buf {
-		if err := s.writeTag(bt, true); err != nil {
+		if err := s.writeFLVTag(bt, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// writeTag 将单个 FLV 标签写入当前分段，并根据 persistError 决定是否记录元信息错误。
-func (s *pumpState) writeTag(tag *flv.Tag, persistError bool) error {
+// writeFLVTag 将单个 FLV 标签写入当前分段，并根据 persistError 决定是否记录元信息错误。
+func (s *pumpState) writeFLVTag(tag *flv.Tag, persistError bool) error {
 	// 将单个 FLV 标签写入当前分段
-	n, err := s.writer.writeTag(tag)
+	n, err := s.writer.writeBodyTag(tag)
 
 	// 更新写入进度，即使写入失败也记录已写入的字节数
 	s.addWrittenBytes(n)

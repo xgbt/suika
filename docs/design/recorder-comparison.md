@@ -39,7 +39,7 @@ blrec 重写）。
 | 关键帧对齐切段 | ▲ 首段在任意首个 tag 开段 | ✔ 文件惰性打开在关键帧组边界 | ✔ 非关键帧驻内存等关键帧 | ✔ `Limiter` 只在关键帧切 | ✘（HLS 天然分片） |
 | 时间 + 大小双触发分段 | ✔ 120min / 2.5GiB + 裕度强切 | ✔ ByTime / BySize 二选一 | ✔ 默认仅大小 2500MB | ✔ 仅时长 30min | ✔ |
 | 序列头变化强制切段 | ✔（`headerChanged`） | ✔（`HandleNewHeaderRule`） | ✔ | ✘ | ✔（init segment 签名，只比影响拼接的字段） |
-| **流内时间戳跳变修复** | ✘（仅 `recorder_merge.go` 边界平移） | ✔ ±500ms 阈值 + 帧间隔外推 | ✘（仅告警） | ✔ `fix`/`correct` 链 | ✘ |
+| **流内时间戳跳变修复** | ✘（仅 `merger.go` 边界平移） | ✔ ±500ms 阈值 + 帧间隔外推 | ✘（仅告警） | ✔ `fix`/`correct` 链 | ✘ |
 | **CDN 重复数据去重** | ✘ | ✔ FarmHash 组指纹，16 组历史，连续 10 组断开 | ✘ | ✘ | ✘ |
 | 无数据健康检查 | ✔ 10s×3 轮 | ✔ 10s 网络字节看门狗 | ✔ 30s 读超时 | ✔ 3s 读超时 | ✔ clamp(3×TARGETDURATION, 60, 300)s |
 | 断流重连预算 + 稳定重置 | ✔ 稳定录 ≥5min 重置预算 | ✔ 无限重连，仅磁盘满/房间加密放弃 | ✔ 探测仍在播即重置计数 | ✔ 小间隔无限重试 + 连通性探测 | ✔ 无上限重连 + 下播确认收口 |
@@ -68,7 +68,7 @@ suika 的骨架——开播检测（WS 事件驱动 + 兜底轮询 + 下播多�
 - **来源**：录播姬 `Flv/Pipeline/UpdateTimestampJumpRule.cs`、blrec
   `flv/operators/fix.py` + `correct.py`。
 - **问题**：B 站 CDN 断流/换源时流内时间戳跳变常见。suika 透传 tag，
-  只在 `internal/data/recorder/recorder_merge.go` 做段间边界平移，段内跳变原样落盘：
+  只在 `internal/data/recorder/merger.go` 做段间边界平移，段内跳变原样落盘：
   播放器告警、seek 异常，第二阶段弹幕烧录对齐受影响。
 - **做法**：在 `data` 层录制泵（`recorder.go` 的 `PumpSession`）维护
   期望时间戳——上一 tag 时间戳 + 帧间隔估算（录播姬取前 2 帧间隔，
@@ -155,7 +155,7 @@ suika 的骨架——开播检测（WS 事件驱动 + 兜底轮询 + 下播多�
   CODECS 含 avc 的变体，DDTV 硬编码 `codec_name == "avc"`，blrec
   文档明记 HEVC 流解析失败。这不是巧合。
 - **问题**（ADR-0004 之前）：`pickFLVStream` 当时 AVC 优先但接受 HEVC，而
-  `flv.IsVideoKeyframe` / `IsAVCSequenceHeader` 按 AVC 布局判定：
+  `flv.IsAVCKeyframe` / `IsAVCSequenceHeader` 按 AVC 布局判定：
   legacy-FLV HEVC 碰巧兼容；B 站在铺的 enhanced-RTMP（FourCC `hvc1`）
   布局下关键帧判定恒为 false——切段退化为超限强切，头注入失效。
 - **做法**：`bestFLVStream` 排除非 avc codec（一行级改动，消除整类

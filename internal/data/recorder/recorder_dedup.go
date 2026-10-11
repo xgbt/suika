@@ -64,7 +64,7 @@ func (g *dupGuard) boundary(tag *flv.Tag) bool {
 	if len(g.buf) == 0 {
 		return false
 	}
-	if tag.IsVideoKeyframe() || tag.IsMetadata() ||
+	if tag.IsAVCKeyframe() || tag.IsMetadata() ||
 		tag.IsAVCSequenceHeader() || tag.IsAACSequenceHeader() {
 		return true
 	}
@@ -85,7 +85,7 @@ func (g *dupGuard) add(tag *flv.Tag) {
 	g.lastTs = tag.Timestamp
 	g.count++
 	g.sum = g.sum*131 + digestTag(tag)
-	g.bufBytes += int64(len(tag.Data)) + flv.TagEnvelopeSize
+	g.bufBytes += int64(len(tag.Data)) + flv.TagOverhead
 	g.buf = append(g.buf, tag)
 }
 

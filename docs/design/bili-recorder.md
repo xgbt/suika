@@ -164,16 +164,16 @@ internal/data/
                          finalizeSession 收尾合并、RecoverPending 启动补跑
   paths.go               sessionLayout（会话目录 + 文件名前缀）与全部会话内
                          文件名的派生；nextPartNumber 扫描目录推导分段编号
-  meta.go                sessionMeta / segmentMeta / danmuLine PO：meta.json
+  meta.go                sessionMeta / segmentMeta / danmakuEventPO：meta.json
                          读写、分段簿记（append/finishSegmentMeta）、
                          errors 追加
   recorder_pump.go       PumpSession 泵送循环（切段判定、健康巡检）
   recorder_segment.go    segmentFile：FLV part + 弹幕 JSONL 文件对，头标签
                          缓存与重注入，writeTag / writeEvent / close
-  recorder_split.go      切分策略：按大小 / 按时长两个独立维度裁决
+  splitter.go            切分策略：按大小 / 按时长两个独立维度裁决
   recorder_dedup.go      CDN 循环吐流去重（dupGuard）
   stats.go               pumpStats（原子 file/bytes/speed）与 SessionStats 读取
-  recorder_merge.go      纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
+  merger.go              纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
                          边界平移序列头时间戳）、弹幕 JSONL 拼接，验证后才删源
   flv/                   FLV tag 解析子包：FileHeader / Tag 读写、关键帧与
                          sequence header 识别（切段点的判定依据）
@@ -246,7 +246,7 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
-| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / PumpSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / recorder_segment.go / recorder_split.go / recorder_dedup.go / stats.go / recorder_merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
+| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / PumpSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / recorder_segment.go / splitter.go / recorder_dedup.go / stats.go / merger.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
 | 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤；UpdateRoom 仅供平台信息回写 |
 | 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站直播 HTTP API 与弹幕 WS 流量、风控 |
 | 凭据存储缝 | `CredentialRepo`（GetCredential / SaveCredential / DeleteCredential） | `credentialRepo`（`NewCredentialRepo(d *Data)` 返回接口；credentials 表单例行） | 登录凭据持久化；Save/Delete 落库后热替换内存 cookie |
@@ -486,7 +486,7 @@ HTTP body（原始字节，LiveClient 打开）
       │     连续 10 块重复 → 判定 CDN 循环吐流，包装为 ErrStreamTransient
       │     中止，决策树换流地址重连（换 CDN 节点）；
       │     块裁决先于切段判定，强切/流结束先落盘缓冲块，不丢在途数据
-      ├─ 切段判定 shouldSplit（两个独立触发，都优先等关键帧）：
+      ├─ 切段判定 ShouldSplit（两个独立触发，都优先等关键帧）：
       │     1) 大小：已写字节达上限 2.5 GiB（代码常量，对齐 biliup 默认）
       │        且当前 tag 是关键帧；超出上限 1/10 裕度仍无关键帧则强切；
       │     2) 时长：段时长达 120 分钟（代码常量）且当前 tag 是关键帧；
@@ -594,7 +594,7 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 
    - 会话收尾总是执行合并：`recorder.merge_enabled` 已废弃且被忽略
      （`internal/data/data.go` 启动时告警），不存在保留散装分段的分支。
-   - `mergeSessionFiles` 将全部 `_partN.flv` 合并
+   - `MergeSessionFiles` 将全部 `_partN.flv` 合并
      为 `{base}.flv`，弹幕 JSONL 按 part 顺序拼接为 `{base}.danmu.jsonl`。
      FLV 合并规则：
      - 第 2 段起跳过 FLV 文件头；所有分段的 onMetaData 脚本标签一律跳过

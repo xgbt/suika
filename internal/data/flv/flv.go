@@ -14,11 +14,17 @@ const (
 )
 
 const (
-	HeaderSize     = 9
-	tagHeaderSize  = 11
+	// fileHeaderSize 是 FLV 文件头的字节数（不含 PreviousTagSize0）。
+	fileHeaderSize = 9
+
+	// tagHeaderSize 是单个 tag 头部的字节数（不含载荷和 PreviousTagSize）。
+	tagHeaderSize = 11
+
+	// prevTagSizeLen 是 PreviousTagSize 的字节数。
 	prevTagSizeLen = 4
-	// TagEnvelopeSize 是单个 tag 的封装开销（头 + 尾部 PreviousTagSize），供调用方不序列化即估算字节数。
-	TagEnvelopeSize = tagHeaderSize + prevTagSizeLen
+
+	// TagOverhead 是单个 tag 的头与尾部 PreviousTagSize 字节数，供调用方估算时无需序列化。
+	TagOverhead = tagHeaderSize + prevTagSizeLen
 )
 
 // FileHeader 是解析后的 FLV 文件头。
@@ -30,7 +36,7 @@ type FileHeader struct {
 
 // ParseHeader 读取 9 字节 FLV 头及紧随其后的 PreviousTagSize0。
 func ParseHeader(r io.Reader) (*FileHeader, error) {
-	var buf [HeaderSize + prevTagSizeLen]byte
+	var buf [fileHeaderSize + prevTagSizeLen]byte
 	if _, err := io.ReadFull(r, buf[:]); err != nil {
 		return nil, fmt.Errorf("flv: read header: %w", err)
 	}
@@ -46,7 +52,7 @@ func ParseHeader(r io.Reader) (*FileHeader, error) {
 
 // Bytes 渲染文件头及紧随其后的零值 PreviousTagSize0。
 func (h *FileHeader) Bytes() []byte {
-	buf := make([]byte, HeaderSize+prevTagSizeLen)
+	buf := make([]byte, fileHeaderSize+prevTagSizeLen)
 	buf[0], buf[1], buf[2] = 'F', 'L', 'V'
 	buf[3] = h.Version
 	var flags byte
@@ -57,7 +63,7 @@ func (h *FileHeader) Bytes() []byte {
 		flags |= 0x01
 	}
 	buf[4] = flags
-	binary.BigEndian.PutUint32(buf[5:9], HeaderSize)
+	binary.BigEndian.PutUint32(buf[5:9], fileHeaderSize)
 	// PreviousTagSize0 保持为零。
 	return buf
 }
@@ -70,7 +76,7 @@ type Tag struct {
 }
 
 // ReadTag 读取一个 tag（11 字节头、载荷、尾部 PreviousTagSize）。
-// 仅当流在读到任何头字节之前干净结束时才返回 io.EOF。
+// 头部不完整（含零字节）时返回 io.EOF；载荷或尾部截断返回错误。
 func ReadTag(r io.Reader) (*Tag, error) {
 	// 读取 tag 头部
 	var head [tagHeaderSize]byte
@@ -82,7 +88,7 @@ func ReadTag(r io.Reader) (*Tag, error) {
 	}
 	// 解析 tag 头部, 计算得到 dataSize 和时间戳
 	dataSize := int(head[1])<<16 | int(head[2])<<8 | int(head[3])
-	ts := int64(head[7])<<24 | int64(head[4])<<16 | int64(head[5])<<8 | int64(head[6])
+	timestamp := int64(head[7])<<24 | int64(head[4])<<16 | int64(head[5])<<8 | int64(head[6])
 
 	// 读取 tag payload 和尾部 PreviousTagSize
 	data := make([]byte, dataSize)
@@ -93,7 +99,7 @@ func ReadTag(r io.Reader) (*Tag, error) {
 	if _, err := io.ReadFull(r, prev[:]); err != nil {
 		return nil, fmt.Errorf("flv: read previous tag size: %w", err)
 	}
-	return &Tag{Type: head[0], Timestamp: ts, Data: data}, nil
+	return &Tag{Type: head[0], Timestamp: timestamp, Data: data}, nil
 }
 
 // AppendTo 把 tag（头、载荷、PreviousTagSize）序列化后追加到 b。
@@ -122,9 +128,9 @@ func (t *Tag) IsMetadata() bool {
 	return t.Type == TagScript
 }
 
-// IsVideoKeyframe 判断 tag 是否携带关键帧画面（frameType 1 且载荷为
-// NALU，即非序列头）。用于选择安全的切分点。
-func (t *Tag) IsVideoKeyframe() bool {
+// IsAVCKeyframe 判断 tag 是否携带 AVC 关键帧画面（frameType 1 且
+// AVCPacketType 1，即 NALU 而非序列头）。用于选择安全的切分点。
+func (t *Tag) IsAVCKeyframe() bool {
 	return t.Type == TagVideo && len(t.Data) > 1 && t.Data[0]>>4 == 1 && t.Data[1] == 1
 }
 

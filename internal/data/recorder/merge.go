@@ -11,7 +11,7 @@ import (
 	"suika/internal/utils"
 )
 
-// mergeSessionFiles 把一个会话的所有分段合并为单个文件：分段 FLV 合并为
+// MergeSessionFiles 把一个会话的所有分段合并为单个文件：分段 FLV 合并为
 // {base}.flv，分段弹幕 JSONL 按 part 顺序拼接为 {base}.danmu.jsonl。
 //
 // FLV 合并规则：
@@ -24,7 +24,7 @@ import (
 // 铁律：输出先写临时文件，校验字节数无误后原子改名；只有改名成功后，
 // 调用方才允许删除源分段。任何失败都会清理临时文件并原样保留源文件。
 // 返回合并产物的文件名（相对会话目录）；没有任何弹幕源时 danmakuName 为 ""。
-func mergeSessionFiles(ctx context.Context, lay sessionLayout, segs []segmentMeta) (videoName, danmakuName string, err error) {
+func MergeSessionFiles(ctx context.Context, lay sessionLayout, segs []segmentMeta) (videoName, danmakuName string, err error) {
 	if err := mergeFLV(ctx, lay, segs); err != nil {
 		return "", "", err
 	}
@@ -170,15 +170,4 @@ func mergeDanmaku(ctx context.Context, lay sessionLayout, segs []segmentMeta) (b
 		return false, err
 	}
 	return true, nil
-}
-
-// allSegmentSourcesExist 判断所有分段的 FLV 源文件是否都在磁盘上，
-// 用于决定一个 partial 会话是否值得重试合并。
-func allSegmentSourcesExist(lay sessionLayout, segs []segmentMeta) bool {
-	for _, seg := range segs {
-		if _, err := os.Stat(lay.filePath(seg.Video)); err != nil {
-			return false
-		}
-	}
-	return len(segs) > 0
 }
