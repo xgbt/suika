@@ -125,10 +125,12 @@ func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) 
 		danmakuFile: danmakuFile,
 		wallStart:   time.Now(),
 	}
+
 	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
 	if headerTagBytes, err = writer.writeHeaderTags(header, cache); err != nil {
 		return nil, 0, err
 	}
+
 	return writer, headerTagBytes, nil
 }
 
