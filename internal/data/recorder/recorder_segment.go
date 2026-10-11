@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -45,20 +46,43 @@ func (h *headerCache) remember(tag *flv.Tag) {
 
 // segmentWriter 是一个已打开分段的句柄，持有文件与写入进度。
 type segmentWriter struct {
-	part        int    // 分段编号，从 1 开始
-	videoPath   string // 视频文件路径
-	danmakuPath string // 弹幕文件路径
+	part int // 分段编号，从 1 开始，同时用于生成文件名
 
+	// 视频文件
+	videoPath   string        // 视频文件路径
 	videoFile   *os.File      // 视频文件句柄
-	danmakuFile *os.File      // 弹幕文件句柄
-	videoWriter *bufio.Writer // 视频文件缓冲写入器
-	buf         []byte        // 标签序列化复用缓冲
+	videoWriter *bufio.Writer // 视频文件缓冲写入器（1MB）
 
-	hasStart     bool      // 是否已写入首个正文标签
+	// 弹幕文件（无缓冲，事件直接写入）
+	danmakuPath string   // 弹幕文件路径
+	danmakuFile *os.File // 弹幕文件句柄
+
+	buf []byte // 标签序列化复用缓冲，writeRawTag 每次复用，避免逐标签分配
+
+	hasStart     bool      // 是否已写入首个正文标签；头标签不计，未写入时 startTs 无效
 	startTs      int64     // 首个正文标签的时间戳，切分时长以此为起点
-	lastTs       int64     // 最近一次写入标签的时间戳
-	bytesWritten int64     // 已写入字节数（含文件头与头标签）
-	wallStart    time.Time // 分段打开的墙钟时间
+	lastTs       int64     // 最近一次写入的正文标签的时间戳，即本段结束时间
+	bytesWritten int64     // 已写入视频文件的字节数，含 FLV 文件头、头标签与正文标签
+	wallStart    time.Time // 分段打开的墙钟时间，对应 meta.json 的 WallStart
+}
+
+// close 刷新视频缓冲并关闭两个文件。任一步骤失败都不会跳过后续步骤，
+// 以保证文件句柄全部释放，所有错误合并返回。
+func (s *segmentWriter) close() error {
+	var errs []error
+
+	// 视频文件需先刷新缓冲再关闭，否则尾部数据丢失；弹幕文件无缓冲，直接关闭即可。
+	if err := s.videoWriter.Flush(); err != nil {
+		errs = append(errs, fmt.Errorf("flush video buffer: %w", err))
+	}
+	if err := s.videoFile.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close video file: %w", err))
+	}
+	if err := s.danmakuFile.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close danmaku file: %w", err))
+	}
+
+	return errors.Join(errs...)
 }
 
 // openSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
@@ -191,10 +215,4 @@ func (s *segmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
 		Raw:      ev.Raw,
 	}
 	return json.NewEncoder(s.danmakuFile).Encode(entry)
-}
-
-// close 刷新视频缓冲并关闭两个文件。
-func (s *segmentWriter) close() error {
-	err := s.videoWriter.Flush()
-	return errors.Join(err, s.videoFile.Close(), s.danmakuFile.Close())
 }
