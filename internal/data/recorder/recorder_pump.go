@@ -108,7 +108,7 @@ type pumpState struct {
 	header    *flv.FileHeader     // 拉流解析出的 FLV 文件头
 	stats     *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
 	baseBytes int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
-	headers   segmentHeaders      // 头标签缓存，供新分段/强制切分段重注入
+	headers   headerCache         // 头标签缓存，供新分段/强制切分段重注入
 	guard     dupGuard            // CDN 循环吐流去重状态
 	writer    *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result    biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
@@ -148,7 +148,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 		// 仍照常入缓存，供开段注入），保证段首即关键帧、独立可解码；
 		// 纯音频流没有视频关键帧，豁免等待。
 		if s.header.HasVideo && !tag.IsAVCKeyframe() {
-			s.headers.observe(tag)
+			s.headers.remember(tag)
 			return nil
 		}
 		if err := s.openNewSegment(); err != nil {
@@ -183,7 +183,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 头标签只在开/切分段决策之后才入缓存：触发新分段的那个标签不能从
 	// 缓存重注入，否则会被写两次（openSegment 写一次、上面的拉流写入
 	// 又一次）。切分前已见过的头标签仍会完整重注入。
-	s.headers.observe(tag)
+	s.headers.remember(tag)
 	s.guard.add(tag)
 	// 当前块仍在去重缓冲中，但这些字节已经属于本次录制；先反映到
 	// 运行时统计，块关闭时 addWrittenBytes 会把最终落盘值校正回来。

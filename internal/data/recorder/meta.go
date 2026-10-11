@@ -136,7 +136,7 @@ func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWrit
 			s.WallEnd = time.Now().Unix()
 			s.TsStart = writer.startTs
 			s.TsEnd = writer.lastTs
-			s.Bytes = writer.bytes
+			s.Bytes = writer.bytesWritten
 		}
 	})
 }

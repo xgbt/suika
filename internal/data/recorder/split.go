@@ -42,7 +42,7 @@ func splitBySize(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64) boo
 	}
 
 	// 尚未达到阈值，无需切分
-	if writer.bytes < maxSegmentBytes {
+	if writer.bytesWritten < maxSegmentBytes {
 		return false
 	}
 
@@ -53,7 +53,7 @@ func splitBySize(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64) boo
 
 	// 非关键帧：仅当体积超出阈值 + 容忍裕度后，才强制切分
 	overrunThreshold := maxSegmentBytes + maxSegmentBytes/sizeSplitOverrunDivisor
-	return writer.bytes >= overrunThreshold
+	return writer.bytesWritten >= overrunThreshold
 }
 
 // splitByDuration 判断当前分段是否应当因时长超限而切分。

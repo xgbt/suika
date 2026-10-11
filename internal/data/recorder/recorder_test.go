@@ -355,7 +355,7 @@ func TestShouldSplitBySize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
-			seg := &segmentWriter{hasStart: tc.hasStart, bytes: tc.bytes}
+			seg := &segmentWriter{hasStart: tc.hasStart, bytesWritten: tc.bytes}
 			if got := ShouldSplit(seg, tc.tag, tc.maxBytes, 0); got != tc.want {
 				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
 			}
@@ -564,7 +564,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
 	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
 	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	cache := &segmentHeaders{metaData: metaTag, videoSeq: videoSeq, audioSeq: audioSeq}
+	cache := &headerCache{metadata: metaTag, videoSeqHeader: videoSeq, audioSeqHeader: audioSeq}
 
 	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, cache)
 	if err != nil {
@@ -584,8 +584,8 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seg.bytes != fi.Size() {
-		t.Fatalf("seg.bytes = %d, file size = %d", seg.bytes, fi.Size())
+	if seg.bytesWritten != fi.Size() {
+		t.Fatalf("seg.bytesWritten = %d, file size = %d", seg.bytesWritten, fi.Size())
 	}
 	if fi2, err := os.Stat(seg.danmakuPath); err != nil || fi2.Size() != 0 {
 		t.Fatalf("danmu file = %+v, %v; want empty existing file", fi2, err)
@@ -594,7 +594,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 
 func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, &segmentHeaders{})
+	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, 1, header, &headerCache{})
 	if err != nil {
 		t.Fatal(err)
 	}

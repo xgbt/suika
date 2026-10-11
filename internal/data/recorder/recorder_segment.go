@@ -12,34 +12,34 @@ import (
 	"suika/internal/data/flv"
 )
 
-// segmentHeaders 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
-type segmentHeaders struct {
-	metaData *flv.Tag // 最近一次 onMetaData 脚本标签
-	videoSeq *flv.Tag // 最近一次 AVC 序列头
-	audioSeq *flv.Tag // 最近一次 AAC 序列头
+// headerCache 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
+type headerCache struct {
+	metadata       *flv.Tag // 最近一次 onMetaData 脚本标签
+	videoSeqHeader *flv.Tag // 最近一次 AVC 序列头
+	audioSeqHeader *flv.Tag // 最近一次 AAC 序列头
 }
 
 // sequenceHeaderChanged 报告 tag 是否为与缓存不同的序列头（首次出现不算），变化时需切段。
-func (h *segmentHeaders) sequenceHeaderChanged(tag *flv.Tag) bool {
+func (h *headerCache) sequenceHeaderChanged(tag *flv.Tag) bool {
 	switch {
 	case tag.IsAVCSequenceHeader():
-		return h.videoSeq != nil && !bytes.Equal(h.videoSeq.Data, tag.Data)
+		return h.videoSeqHeader != nil && !bytes.Equal(h.videoSeqHeader.Data, tag.Data)
 	case tag.IsAACSequenceHeader():
-		return h.audioSeq != nil && !bytes.Equal(h.audioSeq.Data, tag.Data)
+		return h.audioSeqHeader != nil && !bytes.Equal(h.audioSeqHeader.Data, tag.Data)
 	}
 	// metadata 不参与判断：它只是分辨率/帧率等展示用提示值，不影响解码器配置。
 	return false
 }
 
-// observe 缓存头标签；非头标签不改变缓存。
-func (h *segmentHeaders) observe(tag *flv.Tag) {
+// remember 缓存头标签；非头标签不改变缓存。
+func (h *headerCache) remember(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
-		h.metaData = tag
+		h.metadata = tag
 	case tag.IsAVCSequenceHeader():
-		h.videoSeq = tag
+		h.videoSeqHeader = tag
 	case tag.IsAACSequenceHeader():
-		h.audioSeq = tag
+		h.audioSeqHeader = tag
 	}
 }
 
@@ -54,16 +54,16 @@ type segmentWriter struct {
 	videoWriter *bufio.Writer // 视频文件缓冲写入器
 	buf         []byte        // 标签序列化复用缓冲
 
-	hasStart  bool      // 是否已写入首个正文标签
-	startTs   int64     // 首个正文标签的时间戳，切分时长以此为起点
-	lastTs    int64     // 最近一次写入标签的时间戳
-	bytes     int64     // 已写入字节数（含文件头与头标签）
-	wallStart time.Time // 分段打开的墙钟时间
+	hasStart     bool      // 是否已写入首个正文标签
+	startTs      int64     // 首个正文标签的时间戳，切分时长以此为起点
+	lastTs       int64     // 最近一次写入标签的时间戳
+	bytesWritten int64     // 已写入字节数（含文件头与头标签）
+	wallStart    time.Time // 分段打开的墙钟时间
 }
 
 // openSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
 // headerTagBytes 为头标签字节数（不含文件头），供调用方计入写入进度。
-func openSegment(lay sessionLayout, part int, header *flv.FileHeader, headers *segmentHeaders) (seg *segmentWriter, headerTagBytes int64, err error) {
+func openSegment(lay sessionLayout, part int, header *flv.FileHeader, cache *headerCache) (seg *segmentWriter, headerTagBytes int64, err error) {
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
 
@@ -101,26 +101,26 @@ func openSegment(lay sessionLayout, part int, header *flv.FileHeader, headers *s
 		wallStart:   time.Now(),
 	}
 	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
-	if headerTagBytes, err = seg.writeHeaderTags(header, headers); err != nil {
+	if headerTagBytes, err = seg.writeHeaderTags(header, cache); err != nil {
 		return nil, 0, err
 	}
 	return seg, headerTagBytes, nil
 }
 
 // writeHeaderTags 写入 FLV 文件头及缓存的头标签，返回头标签字节数（不含文件头）。
-func (s *segmentWriter) writeHeaderTags(header *flv.FileHeader, headers *segmentHeaders) (int64, error) {
+func (s *segmentWriter) writeHeaderTags(header *flv.FileHeader, cache *headerCache) (int64, error) {
 	headerBytes := header.Bytes()
 	if _, err := s.videoWriter.Write(headerBytes); err != nil {
 		return 0, err
 	}
-	s.bytes += int64(len(headerBytes))
+	s.bytesWritten += int64(len(headerBytes))
 
 	var tagBytes int64
-	for _, tag := range []*flv.Tag{headers.metaData, headers.videoSeq, headers.audioSeq} {
+	for _, tag := range []*flv.Tag{cache.metadata, cache.videoSeqHeader, cache.audioSeqHeader} {
 		if tag == nil {
 			continue
 		}
-		n, err := s.writeTagBytes(tag)
+		n, err := s.writeRawTag(tag)
 		tagBytes += n
 		if err != nil {
 			return tagBytes, err
@@ -129,17 +129,17 @@ func (s *segmentWriter) writeHeaderTags(header *flv.FileHeader, headers *segment
 	return tagBytes, nil
 }
 
-// writeTagBytes 序列化 tag 并写入视频文件，只累计字节数。
-func (s *segmentWriter) writeTagBytes(tag *flv.Tag) (int64, error) {
+// writeRawTag 序列化 tag 并写入视频文件，只累计字节数，不推进时间戳。
+func (s *segmentWriter) writeRawTag(tag *flv.Tag) (int64, error) {
 	s.buf = tag.AppendTo(s.buf[:0])
 	n, err := s.videoWriter.Write(s.buf)
-	s.bytes += int64(n)
+	s.bytesWritten += int64(n)
 	return int64(n), err
 }
 
 // writeBodyTag 写入正文标签，仅在写入成功时推进起止时间戳。
 func (s *segmentWriter) writeBodyTag(tag *flv.Tag) (int64, error) {
-	n, err := s.writeTagBytes(tag)
+	n, err := s.writeRawTag(tag)
 	if err != nil {
 		return n, err
 	}
