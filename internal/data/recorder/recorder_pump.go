@@ -131,13 +131,7 @@ type pumpState struct {
 	health healthMonitor // 健康检查状态：连续无新数据落盘的轮数
 }
 
-func newPumpState(
-	repo *recorderRepo,
-	roomID int64,
-	lay sessionLayout,
-	header *flv.FileHeader,
-	stats *sessionStats,
-) *pumpState {
+func newPumpState(repo *recorderRepo, roomID int64, lay sessionLayout, header *flv.FileHeader, stats *sessionStats) *pumpState {
 	return &pumpState{
 		repo:      repo,
 		roomID:    roomID,
@@ -155,20 +149,20 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 若按落盘口径采样，多数采样周期会得到 0。
 	s.speed.addReceived(int64(len(tag.Data)) + flv.TagOverhead)
 
-	// 分段须从视频关键帧开始：尚未开段时丢弃首个关键帧之前的
-	// 正文 tag；头标签仍需缓存，供开段时注入。
+	// 分段须从视频关键帧开始：尚未开段时丢弃首个关键帧之前的正文 tag
+	// 头标签仍需缓存，供开段时注入。
 	if s.writer == nil && s.header.HasVideo && !tag.IsAVCKeyframe() {
 		s.headers.remember(tag)
 		return nil
 	}
 
 	switch {
-	// 保证存在可写分段：无分段则开段。
+	// 当前没有可写分段时，开新段
 	case s.writer == nil:
 		if err := s.openNewSegment(); err != nil {
 			return err
 		}
-	// 当前 tag 是块边界时，先裁决并落盘缓冲块。
+	// 当前 tag 是块边界, 说明可以落盘当前缓冲块了
 	case s.guard.isBoundary(tag):
 		if err := s.flushBlock(); err != nil {
 			s.closeSegment()
@@ -264,17 +258,22 @@ func (s *pumpState) stop() {
 	s.closeSegment()
 }
 
-// rotateSegment 结束当前分段并立即开启新分段，用于达到切分阈值或序列头
-// 变化的强切路径；先裁决缓冲块落盘，避免在途数据留在缓冲里丢失。
+// rotateSegment 结束当前分段并立即开启新分段
 func (s *pumpState) rotateSegment() error {
+	// 先尝试落盘当前缓冲块，避免在途数据丢失。
 	if err := s.flushBlock(); err != nil {
 		s.closeSegment()
 		return err
 	}
+
+	// 关闭当前分段，确保所有在途数据已落盘。
 	s.closeSegment()
+
+	// 开启新分段，准备继续写入数据。
 	if err := s.openNewSegment(); err != nil {
 		return err
 	}
+
 	return nil
 }
 
