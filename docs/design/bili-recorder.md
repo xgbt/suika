@@ -504,7 +504,7 @@ HTTP body（原始字节，LiveClient 打开）
       │     （返回普通错误 → 走决策树普通重连分支）
       └─ 统计：pumpStats（atomic 文件路径/字节数），字节数跨重连续泵累加
           （baseBytes + 本次泵送量；PrepareSession 在新场次开始时清零；
-          注入的头标签计入字节数，FLV 文件头不计）
+          仅统计正文标签字节，头标签与 FLV 文件头均不计）
 ```
 
 为什么用纯 Go 录制而不依赖外部工具：切段必须发生在 FLV tag 层（重启外部进程拿不到
@@ -1030,7 +1030,7 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | biz | `account_test.go`（5） | fake PassportClient + CredentialRepo 脚本化：轮询确认才持久化凭据、未确认状态不落库、参数校验、账号状态（无凭据=已登出）、本地登出 |
 | service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（MergeEnabled=false 关闭收尾合并），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、坏 page_token）、**平台刷新回填 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
 | service | `account_test.go`（5） | 真 sqlite 端到端：QR 登录创建/轮询全流程、凭据跨重启持久化、空 qrcode_key 校验、过期凭据的状态行为、平台错误传播（503） |
-| data | `recorder_test.go`（39） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定（时长 + **大小双触发：阈值/关键帧/裕度强切各分支**）、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、**并发泵送分配不同 part**、新段头注入且不重复写（单段/切段各一）、**序列头变化强制切段（视频/音频各一次变头共三段；重复相同序列头不切）**、**大小上限端到端切分（段体积与关键帧切点断言）**、**新段等待首个视频关键帧（关键帧前正文丢弃、头标签注入、音频流豁免，ADR-0005）**、**CDN 循环吐流去重（重复块丢弃/连续上限断流/强切先落盘缓冲块，ADR-0006）**、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、**合并产物后再开录的回滚追加（含弹幕缺失回滚）**、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
+| data | `recorder_test.go`（39） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定（时长 + **大小双触发：阈值/关键帧/裕度强切各分支**）、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、**序列头变化强制切段（视频/音频各一次变头共三段；重复相同序列头不切）**、**大小上限端到端切分（段体积与关键帧切点断言）**、**新段等待首个视频关键帧（关键帧前正文丢弃、头标签注入、音频流豁免，ADR-0005）**、**CDN 循环吐流去重（重复块丢弃/连续上限断流/强切先落盘缓冲块，ADR-0006）**、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、**合并产物后再开录的回滚追加（含弹幕缺失回滚）**、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
 | data | `recorder_dedup_test.go`（5） | dupGuard 单元：重复块丢弃与连续计数、块边界（关键帧/头标签/时间戳间隔）、空块裁决、连续上限断开、takeAll 不计指纹 |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `credential_test.go`（5） | 空库读取、单例行 upsert、Save/Delete 热替换 `Data.Cookie`、删除幂等、并发读 Cookie 安全 |

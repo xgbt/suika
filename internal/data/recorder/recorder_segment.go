@@ -86,8 +86,7 @@ func (s *segmentWriter) close() error {
 }
 
 // openSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
-// headerTagBytes 为头标签字节数（不含文件头），供调用方计入写入进度。
-func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) (writer *segmentWriter, headerTagBytes int64, err error) {
+func openSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *headerCache) (writer *segmentWriter, err error) {
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
@@ -109,11 +108,11 @@ func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) 
 	}()
 
 	if videoFile, err = os.OpenFile(videoPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	// 与视频文件一致使用 O_TRUNC，part 编号复用时避免旧弹幕残留。
 	if danmakuFile, err = os.OpenFile(danmakuPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	writer = &segmentWriter{
@@ -127,35 +126,31 @@ func openSegment(lay sessionLayout, header *flv.FileHeader, cache *headerCache) 
 	}
 
 	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
-	if headerTagBytes, err = writer.writeHeaderTags(header, cache); err != nil {
-		return nil, 0, err
+	if err = writer.writeHeaderTags(fileHeader, cache); err != nil {
+		return nil, err
 	}
 
-	return writer, headerTagBytes, nil
+	return writer, nil
 }
 
-// writeHeaderTags 写入 FLV 文件头及缓存的头标签，返回头标签字节数（不含文件头）。
-func (s *segmentWriter) writeHeaderTags(header *flv.FileHeader, cache *headerCache) (int64, error) {
+// writeHeaderTags 写入 FLV 文件头及缓存的头标签。
+func (s *segmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *headerCache) error {
 	// 写入 FLV 文件头
-	if _, err := s.videoWriter.Write(header.Bytes()); err != nil {
-		return 0, err
+	if _, err := s.videoWriter.Write(fileHeader.Bytes()); err != nil {
+		return err
 	}
-	s.bytesWritten += int64(len(header.Bytes()))
+	s.bytesWritten += int64(len(fileHeader.Bytes()))
 
 	// 写入缓存的头标签（metadata/序列头）
-	var tagBytes int64
 	for _, tag := range []*flv.Tag{cache.metadata, cache.videoSeqHeader, cache.audioSeqHeader} {
 		if tag == nil {
 			continue
 		}
-		// 写入单个头标签
-		n, err := s.writeRawTag(tag)
-		tagBytes += n
-		if err != nil {
-			return tagBytes, err
+		if _, err := s.writeRawTag(tag); err != nil {
+			return err
 		}
 	}
-	return tagBytes, nil
+	return nil
 }
 
 // writeRawTag 序列化 tag 并写入视频文件，只累计字节数，不推进时间戳。

@@ -125,7 +125,7 @@ type pumpState struct {
 	headerCache headerCache         // 头标签缓存，供新分段/强制切分段重注入
 	guard       dupGuard            // CDN 循环吐流去重状态
 	writer      *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
-	result      biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
+	result      biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘的正文 tag 字节，不含文件头与头标签
 
 	speed  speedTracker  // 下载速度采样状态
 	health healthMonitor // 健康检查状态：连续无新数据落盘的轮数
@@ -206,7 +206,7 @@ func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
 }
 
 func (s *pumpState) openNewSegment() error {
-	writer, headerTagBytes, err := openSegment(s.layout, s.fileHeader, &s.headerCache)
+	writer, err := openSegment(s.layout, s.fileHeader, &s.headerCache)
 	if err != nil {
 		s.repo.appendMetaError(s.layout.metaPath(), "record", err)
 		return err
@@ -215,11 +215,6 @@ func (s *pumpState) openNewSegment() error {
 	s.writer = writer
 	s.result.Parts++
 	s.stats.setCurrentFile(writer.videoPath)
-
-	// 注入的头标签同样是本场次的实际写入字节（等待关键帧后 part1 的
-	// 头标签走注入而非泵送；切分段每段重注入），计入写入进度；
-	// FLV 文件头本身不计，与既有口径一致。
-	s.addWrittenBytes(headerTagBytes)
 
 	s.repo.appendSegmentMeta(s.layout.metaPath(), writer)
 	log.Info("segment opened", "room", s.roomID, "part", writer.part, "file", writer.videoPath)

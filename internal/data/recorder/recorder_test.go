@@ -494,7 +494,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40}
 	var wantBytes int64
-	for _, tag := range tags {
+	for _, tag := range []*flv.Tag{key0, inter40} { // 头标签不计入
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 	pump := func(session *biz.RecordingSession) {
@@ -566,7 +566,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
 	cache := &headerCache{metadata: metaTag, videoSeqHeader: videoSeq, audioSeqHeader: audioSeq}
 
-	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, cache)
+	seg, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +594,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 
 func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	seg, _, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, &headerCache{})
+	seg, err := openSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, &headerCache{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +673,7 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40}
 
 	var wantBytes int64
-	for _, tag := range tags {
+	for _, tag := range []*flv.Tag{key0, inter40} { // 头标签不计入
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 
@@ -694,8 +694,8 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// part1 在第一个（metadata）tag 处以空缓存开启，流内容原样写入：
-	// 任何头标签都不会出现两次。
+	// part1 在首个视频关键帧处开启，头标签取自缓存注入，
+	// 流内容原样写入：任何头标签都不会出现两次。
 	videoPath := lay.segmentVideoPath(1)
 	header, gotTags := readSegmentTags(t, videoPath)
 	if !header.HasAudio || !header.HasVideo {
@@ -753,11 +753,7 @@ func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40, key100, inter120}
 
 	var wantBytes int64
-	for _, tag := range tags {
-		wantBytes += int64(len(tag.AppendTo(nil)))
-	}
-	// part2 重注入的三个头标签同样是实际写入字节。
-	for _, tag := range []*flv.Tag{metaTag, videoSeq, audioSeq} {
+	for _, tag := range []*flv.Tag{key0, inter40, key100, inter120} { // 头标签不计入
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 
@@ -1085,7 +1081,7 @@ func TestPumpSessionWaitsForFirstKeyframe(t *testing.T) {
 
 	want := []*flv.Tag{metaTag, videoSeq, audioSeq, key40, inter60}
 	var wantBytes int64
-	for _, tag := range want {
+	for _, tag := range []*flv.Tag{key40, inter60} {
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 	if result.BytesWritten != wantBytes {
@@ -1191,7 +1187,7 @@ func TestPumpSessionDropsDuplicateBlocks(t *testing.T) {
 	want := append([]*flv.Tag{metaTag, videoSeq, audioSeq},
 		append(append(blockA, blockB...), tail...)...)
 	var wantBytes int64
-	for _, tag := range want {
+	for _, tag := range want[3:] { // 跳过头标签
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 	if result.BytesWritten != wantBytes {

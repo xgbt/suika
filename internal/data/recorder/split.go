@@ -7,8 +7,6 @@ import (
 )
 
 const (
-
-
 	splitOverrun            = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 	sizeSplitOverrunDivisor = 10               // 大小切分等待关键帧的强切裕度分母
 )
