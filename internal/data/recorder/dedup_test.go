@@ -15,7 +15,7 @@ func dupBlock(k byte, ts int64) []*flv.Tag {
 }
 
 func TestDupGuardDropsRepeatedBlock(t *testing.T) {
-	var g DupGuard
+	var g dupGuard
 
 	feed := func(tags []*flv.Tag) {
 		for _, tag := range tags {
@@ -52,7 +52,7 @@ func TestDupGuardDropsRepeatedBlock(t *testing.T) {
 }
 
 func TestDupGuardBlockBoundaries(t *testing.T) {
-	var g DupGuard
+	var g dupGuard
 	g.add(&flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x27, 0x01, 1}})
 
 	if !g.isBoundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 10, Data: []byte{0x17, 0x01, 2}}) {
@@ -73,7 +73,7 @@ func TestDupGuardBlockBoundaries(t *testing.T) {
 }
 
 func TestDupGuardEmptyBoundary(t *testing.T) {
-	var g DupGuard
+	var g dupGuard
 	if g.isBoundary(&flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 1}}) {
 		t.Error("empty guard has no block to close")
 	}
@@ -83,7 +83,7 @@ func TestDupGuardEmptyBoundary(t *testing.T) {
 }
 
 func TestDupGuardDisconnectAfterStreak(t *testing.T) {
-	var g DupGuard
+	var g dupGuard
 
 	// 首次出现：唯一。
 	for _, tag := range dupBlock(0xAA, 0) {
@@ -113,7 +113,7 @@ func TestDupGuardDisconnectAfterStreak(t *testing.T) {
 }
 
 func TestDupGuardTakeAllSkipsVerdict(t *testing.T) {
-	var g DupGuard
+	var g dupGuard
 	block := dupBlock(0xAA, 0)
 	for _, tag := range block {
 		g.add(tag)

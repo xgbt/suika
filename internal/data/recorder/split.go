@@ -16,7 +16,7 @@ const (
 //  1. 大小：已写字节达到上限，且该 tag 是关键帧；或超出上限的
 //     1/sizeSplitOverrunDivisor 裕度仍无关键帧则强制切分；
 //  2. 时长：达到目标时长且该 tag 是关键帧；或超出 splitOverrun 强制切分。
-func ShouldSplit(writer *SegmentWriter, tag *flv.Tag, maxSegmentBytes int64, segmentDuration time.Duration) bool {
+func ShouldSplit(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64, segmentDuration time.Duration) bool {
 	if !writer.hasStart {
 		return false
 	}
@@ -32,7 +32,7 @@ func ShouldSplit(writer *SegmentWriter, tag *flv.Tag, maxSegmentBytes int64, seg
 //  4. 若达到阈值后迟迟等不到关键帧，为避免单个分段无限膨胀，
 //     允许体积在阈值基础上再超出 overrun（maxSegmentBytes/sizeSplitOverrunDivisor）后强制切分，
 //     即便当前 tag 不是关键帧。
-func splitBySize(writer *SegmentWriter, tag *flv.Tag, maxSegmentBytes int64) bool {
+func splitBySize(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64) bool {
 	// 未设置最大分段字节数，不按大小切分
 	if maxSegmentBytes <= 0 {
 		return false
@@ -62,7 +62,7 @@ func splitBySize(writer *SegmentWriter, tag *flv.Tag, maxSegmentBytes int64) boo
 //  3. 一旦达到阈值，优先在关键帧处切分，以保证新分段能独立解码播放。
 //  4. 若达到阈值后迟迟等不到关键帧，允许时长在阈值基础上再超出 splitOverrun 后强制切分，
 //     即便当前 tag 不是关键帧，避免单个分段无限拉长。
-func splitByDuration(writer *SegmentWriter, tag *flv.Tag, segmentDuration time.Duration) bool {
+func splitByDuration(writer *segmentWriter, tag *flv.Tag, segmentDuration time.Duration) bool {
 	// 未设置分段时长，不按时长切分
 	if segmentDuration <= 0 {
 		return false

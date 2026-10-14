@@ -21,7 +21,7 @@ const (
 	defaultHealthRounds      = 3                // 健康检查失败轮数，连续失败达到该轮数则判定为录制异常
 )
 
-// RecorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与收尾合并。
+// recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与收尾合并。
 //
 // 具体职责按文件拆分：recorder.go 会话生命周期（Prepare/Finish/Recover）、
 // paths.go 会话布局与文件名派生、meta.go meta.json 的 schema 与读写、
@@ -29,7 +29,7 @@ const (
 // splitter.go 切分策略、recorder_dedup.go CDN 循环吐流去重、
 // stats.go 写入进度统计、merger.go 收尾合并。meta.json 与合并产物
 // 共用的原子替换不在本包，由 internal/utils.WriteFileAtomic 提供。
-type RecorderRepo struct {
+type recorderRepo struct {
 	statsStore
 
 	// 存储根目录
@@ -45,7 +45,7 @@ type RecorderRepo struct {
 }
 
 func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
-	r := &RecorderRepo{
+	r := &recorderRepo{
 		statsStore:       newStatsStore(),
 		recordRoot:       defaultRecordRoot,
 		maxSegmentBytes:  defaultMaxSegmentBytes,
@@ -60,7 +60,7 @@ func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 }
 
 // PrepareSession 创建（或在重启后重新定位）会话目录和 meta.json。
-func (repo *RecorderRepo) PrepareSession(ctx context.Context, session *biz.RecordingSession) error {
+func (repo *recorderRepo) PrepareSession(ctx context.Context, session *biz.RecordingSession) error {
 	// 创建会话目录及 meta.json 文件
 	lay, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
@@ -102,7 +102,7 @@ func (repo *RecorderRepo) PrepareSession(ctx context.Context, session *biz.Recor
 }
 
 // FinishSession 收尾 meta.json 并合并所有已录分段。
-func (repo *RecorderRepo) FinishSession(ctx context.Context, session *biz.RecordingSession) error {
+func (repo *recorderRepo) FinishSession(ctx context.Context, session *biz.RecordingSession) error {
 	lay, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		return err
@@ -135,7 +135,7 @@ func (repo *RecorderRepo) FinishSession(ctx context.Context, session *biz.Record
 // 场次关闭录制后再次开启时，可以继续追加而不是覆盖旧产物。
 //
 // 就地更新 meta 的分段列表与合并产物字段，由调用方负责落盘。
-func archiveMergedSession(lay SessionLayout, meta *sessionMeta) error {
+func archiveMergedSession(lay sessionLayout, meta *sessionMeta) error {
 	part := nextPartNumber(lay)
 	videoName := lay.segmentVideoName(part)
 	videoPath := lay.filePath(videoName)
@@ -181,7 +181,7 @@ func archiveMergedSession(lay SessionLayout, meta *sessionMeta) error {
 // finalizeSession 执行会话收尾：把全部分段合并为单个文件。合并失败不向
 // 上返回错误，而是记录在 meta.json（状态 partial、源分段保留），由
 // 下次启动的 RecoverPending 重试；只有合并产物验证通过后才删除源分段。
-func (repo *RecorderRepo) finalizeSession(ctx context.Context, lay SessionLayout, meta *sessionMeta) error {
+func (repo *recorderRepo) finalizeSession(ctx context.Context, lay sessionLayout, meta *sessionMeta) error {
 	// 合并失败：保留源分段并标记 partial，由 RecoverPending 重试。
 	mergedVideoName, mergedDanmakuName, err := MergeSessionFiles(ctx, lay, meta.Segments)
 	if err != nil {
@@ -221,14 +221,14 @@ func (repo *RecorderRepo) finalizeSession(ctx context.Context, lay SessionLayout
 
 // RecoverPending 扫描录制根目录下的所有 meta.json，完成上次运行遗留
 // 的合并工作。
-func (repo *RecorderRepo) RecoverPending(ctx context.Context) error {
+func (repo *recorderRepo) RecoverPending(ctx context.Context) error {
 	pattern := filepath.Join(repo.recordRoot, "*", "*", "*"+metaExt)
 	paths, err := filepath.Glob(pattern)
 	if err != nil {
 		return err
 	}
 	// 所有分段的 FLV 源文件是否都在磁盘上，决定 partial 会话是否值得重试。
-	sourcesOnDisk := func(lay SessionLayout, segs []segmentMeta) bool {
+	sourcesOnDisk := func(lay sessionLayout, segs []segmentMeta) bool {
 		for _, segment := range segs {
 			if _, err := os.Stat(lay.filePath(segment.Video)); err != nil {
 				return false

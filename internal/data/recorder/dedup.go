@@ -27,7 +27,7 @@ const (
 	tagDigestSampleBytes = 64
 )
 
-// DupGuard 检测 CDN 循环吐流：泵送把标签按"块"（从视频关键帧开始、到
+// dupGuard 检测 CDN 循环吐流：泵送把标签按"块"（从视频关键帧开始、到
 // 下一个边界之前）缓冲，块关闭时以内容指纹与最近窗口比对，重复块整块
 // 丢弃，连续重复达到上限则请求断开（调用方包装为 ErrStreamTransient，
 // 由断流决策树换流地址重连）。块先整块缓冲再裁决落盘，因此重复内容不
@@ -36,7 +36,7 @@ const (
 //
 // 注意：当前实现使用 tag 载荷前缀采样（见 digestTag），是吞吐与误判率
 // 的折中；通过块级聚合和连续重复阈值降低静态画面误判带来的影响。
-type DupGuard struct {
+type dupGuard struct {
 	// hist 是最近块的指纹滑动窗口。
 	hist [dupHistorySize]uint64
 	// histN 是累计入窗次数（可超过窗口长度），用于定位环形写入位置。
@@ -60,7 +60,7 @@ type DupGuard struct {
 // isBoundary 判断 tag 是否为块边界：当前块非空且 tag 是视频关键帧、头标
 // 签，或触发间隔/跨度/字节上限时，应先关闭当前块。头标签作为边界是为
 // 了避免它们被缓冲到下一块之后才落盘，破坏与数据标签的先后顺序。
-func (g *DupGuard) isBoundary(tag *flv.Tag) bool {
+func (g *dupGuard) isBoundary(tag *flv.Tag) bool {
 	if len(g.buf) == 0 {
 		return false
 	}
@@ -78,7 +78,7 @@ func (g *DupGuard) isBoundary(tag *flv.Tag) bool {
 }
 
 // add 把 tag 折入当前块（只缓冲，不落盘）。
-func (g *DupGuard) add(tag *flv.Tag) {
+func (g *dupGuard) add(tag *flv.Tag) {
 	if len(g.buf) == 0 {
 		g.firstTs = tag.Timestamp
 	}
@@ -92,7 +92,7 @@ func (g *DupGuard) add(tag *flv.Tag) {
 // close 结束当前块并清空累积：返回应写入的标签（重复块与空块为
 // nil），以及连续重复是否已达断开上限。重复块同样计入指纹窗口，连续
 // 计数不因窗口登记而中断。
-func (g *DupGuard) close() (write []*flv.Tag, disconnect bool) {
+func (g *dupGuard) close() (write []*flv.Tag, disconnect bool) {
 	// 当前块为空时直接返回，不做任何处理。
 	if len(g.buf) == 0 {
 		return nil, false
@@ -123,19 +123,19 @@ func (g *DupGuard) close() (write []*flv.Tag, disconnect bool) {
 
 // takeAll 取走当前块的全部标签，不做重复裁决（流结束/中止时尽量保留
 // 已收到的数据）。
-func (g *DupGuard) takeAll() []*flv.Tag {
+func (g *dupGuard) takeAll() []*flv.Tag {
 	buf := g.buf
 	g.resetBlock()
 	return buf
 }
 
 // fingerprint 折叠块内全部内容指纹，再混入标签数以区分不同长度的块。
-func (g *DupGuard) fingerprint() uint64 {
+func (g *dupGuard) fingerprint() uint64 {
 	return g.sum ^ uint64(g.count)*0x9E3779B97F4A7C15
 }
 
 // seen 判断指纹是否命中滑动窗口。
-func (g *DupGuard) seen(fp uint64) bool {
+func (g *dupGuard) seen(fp uint64) bool {
 	for i := range min(g.histN, dupHistorySize) {
 		if g.hist[i] == fp {
 			return true
@@ -144,7 +144,7 @@ func (g *DupGuard) seen(fp uint64) bool {
 	return false
 }
 
-func (g *DupGuard) resetBlock() {
+func (g *dupGuard) resetBlock() {
 	g.buf = nil
 	g.bufBytes = 0
 	g.sum = 0

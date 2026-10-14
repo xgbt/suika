@@ -13,16 +13,16 @@ import (
 
 type statsStore struct {
 	mu    sync.Mutex // 保护 stats 映射
-	stats map[int64]*SessionStats
+	stats map[int64]*sessionStats
 }
 
-// SessionStats 是 biz.SessionStats 的内部实现，使用原子字段避免锁竞争。
+// sessionStats 是 biz.SessionStats 的内部实现，使用原子字段避免锁竞争。
 // 生命周期与所属 Session（录制会话：一次连续直播，定义见 CONTEXT.md）等
 // 长：跨该 Session 内因断流重连而产生的多次 PumpSession 调用（每次调用即
 // 一次连接尝试）持久，按房间 ID 索引，仅在 PrepareSession 开启新 Session 时重置
 // 一次；与生命周期仅限单次 PumpSession 调用的 speedTracker 相对。每个房间
-// 的录制守护进程在写入直播/录制状态时更新 SessionStats，然后通过 Stats() 读取快照。
-type SessionStats struct {
+// 的录制守护进程在写入直播/录制状态时更新 sessionStats，然后通过 Stats() 读取快照。
+type sessionStats struct {
 	file  atomic.Value // string，当前正在写入的分段文件名，可能为空
 	bytes atomic.Int64 // 当前分段已写入的字节数
 	speed atomic.Int64 // 当前下载速度（字节/秒）
@@ -30,29 +30,29 @@ type SessionStats struct {
 
 func newStatsStore() statsStore {
 	return statsStore{
-		stats: make(map[int64]*SessionStats),
+		stats: make(map[int64]*sessionStats),
 	}
 }
 
-func (s *SessionStats) reset() {
+func (s *sessionStats) reset() {
 	s.setBytesWritten(0)
 	s.setCurrentFile("")
 	s.setDownloadSpeed(0)
 }
 
-func (s *SessionStats) setCurrentFile(path string) {
+func (s *sessionStats) setCurrentFile(path string) {
 	s.file.Store(path)
 }
 
-func (s *SessionStats) setBytesWritten(n int64) {
+func (s *sessionStats) setBytesWritten(n int64) {
 	s.bytes.Store(n)
 }
 
-func (s *SessionStats) setDownloadSpeed(n int64) {
+func (s *sessionStats) setDownloadSpeed(n int64) {
 	s.speed.Store(n)
 }
 
-func (s *SessionStats) bytesWritten() int64 {
+func (s *sessionStats) bytesWritten() int64 {
 	return s.bytes.Load()
 }
 
@@ -74,13 +74,13 @@ func (store *statsStore) Stats(_ context.Context, roomID int64) (*biz.SessionSta
 }
 
 // getOrCreateStats 返回指定房间的 sessionStats，不存在时创建。
-func (store *statsStore) getOrCreateStats(roomID int64) *SessionStats {
+func (store *statsStore) getOrCreateStats(roomID int64) *sessionStats {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
 	stats, ok := store.stats[roomID]
 	if !ok {
-		stats = &SessionStats{}
+		stats = &sessionStats{}
 		store.stats[roomID] = stats
 	}
 	return stats
