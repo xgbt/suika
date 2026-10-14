@@ -156,7 +156,7 @@ func (g *dupGuard) resetBlock() {
 // digestTag 计算单个 tag 的内容指纹（FNV-1a 64-bit）。
 //
 // 指纹输入：len(data) + tag.Type + data 前缀采样。
-// 不混入 timestamp，避免 CDN 循环重放时“内容相同但时间戳被重写”导致
+// 不混入 timestamp，避免 CDN 循环重放时"内容相同但时间戳被重写"导致
 // 判重失效。
 func digestTag(tag *flv.Tag) uint64 {
 	const (
