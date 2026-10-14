@@ -55,15 +55,19 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 
 	health := time.NewTicker(repo.healthInterval)
 	defer health.Stop()
+
 	speedSampler := time.NewTicker(time.Second)
 	defer speedSampler.Stop()
 
 	for {
 		select {
-		case <-ctx.Done(): // 关闭录制开关、停机、房间被删除
+		// 上下文取消：录制开关关闭、停机或房间被删除
+		case <-ctx.Done():
 			state.stop()
 			return &state.result, ctx.Err()
-		case tr, ok := <-tagCh:
+
+		// 读取新的 FLV tag
+		case tagResult, ok := <-tagCh:
 			// 通道已关闭说明读取协程退出了，且没有投递终止结果——只可能是
 			// ctx 被取消（出错时终止结果会先投递，走下面的 tr.Err 分支）。
 			// 必须在这里收尾：关闭的通道会持续投递零值 TagResult，直接当
@@ -72,23 +76,33 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 				state.stop()
 				return &state.result, ctx.Err()
 			}
-			// 读取 tag 失败：EOF 表示流干净结束，其他瞬时错误则返回，让上层决定是否重连。
-			if tr.Err != nil {
+
+			// 读取 tag 失败
+			if tagResult.Err != nil {
 				state.stop()
-				if tr.Err == io.EOF {
+				// EOF 表示流干净结束
+				if tagResult.Err == io.EOF {
 					return &state.result, nil
 				}
-				return &state.result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tr.Err)
+				// 其他瞬时错误则返回，让上层决定是否重连
+				return &state.result, fmt.Errorf("%w: %v", biz.ErrStreamTransient, tagResult.Err)
 			}
-			if err := state.handleTag(tr.Tag); err != nil {
+
+			if err := state.handleTag(tagResult.Tag); err != nil {
 				return &state.result, err
 			}
-		case ev := <-events: // 弹幕/礼物等事件写入
+
+		// 弹幕/礼物等事件写入
+		case ev := <-events:
 			state.handleEvent(ev)
+
+		// 速度采样
 		case <-speedSampler.C:
 			if speed, ok := state.speed.sample(time.Now()); ok {
 				state.stats.setDownloadSpeed(speed)
 			}
+
+		// 健康检查
 		case <-health.C:
 			if err := state.health.check(state.result.BytesWritten, state.repo.healthFailRounds); err != nil {
 				state.closeSegment()
@@ -112,8 +126,9 @@ type pumpState struct {
 	guard     dupGuard            // CDN 循环吐流去重状态
 	writer    *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result    biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
-	health    healthMonitor       // 健康检查状态：连续无新数据落盘的轮数
-	speed     speedTracker        // 下载速度采样状态
+
+	speed  speedTracker  // 下载速度采样状态
+	health healthMonitor // 健康检查状态：连续无新数据落盘的轮数
 }
 
 func newPumpState(
