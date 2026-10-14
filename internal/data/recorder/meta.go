@@ -89,7 +89,7 @@ func saveMeta(path string, meta *sessionMeta) error {
 }
 
 // updateMeta 读改写 meta.json，失败只记日志。
-func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
+func (repo *RecorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	meta, err := loadMeta(metaPath)
 	if err != nil {
 		return
@@ -103,7 +103,7 @@ func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 }
 
 // appendSegmentMeta 追加一条分段记录到 meta.json。
-func (repo *recorderRepo) appendSegmentMeta(metaPath string, writer *segmentWriter) {
+func (repo *RecorderRepo) appendSegmentMeta(metaPath string, writer *SegmentWriter) {
 	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Segments = append(meta.Segments, segmentMeta{
 			Part:      writer.part,
@@ -115,7 +115,7 @@ func (repo *recorderRepo) appendSegmentMeta(metaPath string, writer *segmentWrit
 }
 
 // finishSegmentMeta 回填指定分段的收尾字段（结束时间、时间戳、字节数）。
-func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWriter) {
+func (repo *RecorderRepo) finishSegmentMeta(metaPath string, writer *SegmentWriter) {
 	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		for i := range meta.Segments {
 			s := &meta.Segments[i]
@@ -131,7 +131,7 @@ func (repo *recorderRepo) finishSegmentMeta(metaPath string, writer *segmentWrit
 }
 
 // appendMetaError 追加一条错误记录到 meta.json。
-func (repo *recorderRepo) appendMetaError(metaPath, stage string, err error) {
+func (repo *RecorderRepo) appendMetaError(metaPath, stage string, err error) {
 	repo.updateMeta(metaPath, func(meta *sessionMeta) {
 		meta.Errors = append(meta.Errors, errorMeta{
 			Ts:    time.Now().Unix(),

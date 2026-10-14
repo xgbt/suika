@@ -22,13 +22,13 @@ import (
 // --- 辅助函数 ---
 
 // newTestRepo 构建以全新临时目录为 record_root 的 recorderRepo。
-func newTestRepo(t *testing.T, c *conf.Recorder) *recorderRepo {
+func newTestRepo(t *testing.T, c *conf.Recorder) *RecorderRepo {
 	t.Helper()
 	if c == nil {
 		c = &conf.Recorder{}
 	}
 	c.RecordRoot = t.TempDir()
-	repo, ok := NewRecorderRepo(c).(*recorderRepo)
+	repo, ok := NewRecorderRepo(c).(*RecorderRepo)
 	if !ok {
 		t.Fatal("NewRecorderRepo did not return *recorderRepo")
 	}
@@ -271,7 +271,7 @@ func TestNextPartNumber(t *testing.T) {
 			} else {
 				dir = filepath.Join(dir, "does-not-exist")
 			}
-			if got := nextPartNumber(sessionLayout{dir: dir, base: base}); got != tc.want {
+			if got := nextPartNumber(SessionLayout{dir: dir, base: base}); got != tc.want {
 				t.Fatalf("nextPartNumber = %d, want %d", got, tc.want)
 			}
 		})
@@ -318,7 +318,7 @@ func TestShouldSplit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			seg := &segmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
+			seg := &SegmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
 			if got := ShouldSplit(seg, tc.tag, 0, tc.dur); got != tc.want {
 				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
 			}
@@ -355,7 +355,7 @@ func TestShouldSplitBySize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
-			seg := &segmentWriter{hasStart: tc.hasStart, bytesWritten: tc.bytes}
+			seg := &SegmentWriter{hasStart: tc.hasStart, bytesWritten: tc.bytes}
 			if got := ShouldSplit(seg, tc.tag, tc.maxBytes, 0); got != tc.want {
 				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
 			}
@@ -366,7 +366,7 @@ func TestShouldSplitBySize(t *testing.T) {
 // --- 构造函数 / 路径 ---
 
 func TestNewRecorderRepoConfigMapping(t *testing.T) {
-	r := NewRecorderRepo(nil).(*recorderRepo)
+	r := NewRecorderRepo(nil).(*RecorderRepo)
 	if r.recordRoot != defaultRecordRoot ||
 		r.maxSegmentMintes != defaultMaxSegmentMinutes*time.Minute ||
 		r.maxSegmentBytes != defaultMaxSegmentBytes ||
@@ -375,7 +375,7 @@ func TestNewRecorderRepoConfigMapping(t *testing.T) {
 		t.Fatalf("defaults not applied: %+v", r)
 	}
 
-	r = NewRecorderRepo(&conf.Recorder{RecordRoot: "/srv/recordings"}).(*recorderRepo)
+	r = NewRecorderRepo(&conf.Recorder{RecordRoot: "/srv/recordings"}).(*RecorderRepo)
 	if r.recordRoot != "/srv/recordings" {
 		t.Fatalf("recordRoot = %q, want %q", r.recordRoot, "/srv/recordings")
 	}
@@ -423,7 +423,7 @@ func TestPrepareSessionResumeKeepsSegments(t *testing.T) {
 	metaPath := lay.metaPath()
 
 	// 模拟崩溃/重启前已录好的一个分段
-	repo.appendSegmentMeta(metaPath, &segmentWriter{
+	repo.appendSegmentMeta(metaPath, &SegmentWriter{
 		part:        1,
 		videoPath:   lay.segmentVideoPath(1),
 		danmakuPath: lay.segmentDanmakuPath(1),
@@ -540,7 +540,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 }
 
 func TestPumpSessionProgressIncludesBufferedBlock(t *testing.T) {
-	stats := &sessionStats{}
+	stats := &SessionStats{}
 	loop := &pumpState{
 		stats:     stats,
 		baseBytes: 100,
@@ -566,7 +566,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
 	cache := &HeaderTags{metadata: metaTag, videoSeqHeader: videoSeq, audioSeqHeader: audioSeq}
 
-	seg, err := OpenSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, cache)
+	seg, err := OpenSegment(SessionLayout{dir: t.TempDir(), base: "base"}, header, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +594,7 @@ func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
 
 func TestSegmentWriteDanmakuEvents(t *testing.T) {
 	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	seg, err := OpenSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, &HeaderTags{})
+	seg, err := OpenSegment(SessionLayout{dir: t.TempDir(), base: "base"}, header, &HeaderTags{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1303,7 +1303,7 @@ func TestPumpSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
 // seedMergeSession 准备一个会话目录：meta.json + 每个 part 一个分段
 // （FLV 内容由参数给定；nil 表示磁盘上不落该文件，仅登记进 meta），
 // 返回会话布局与 meta.json 路径。
-func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (sessionLayout, string) {
+func seedMergeSession(t *testing.T, repo *RecorderRepo, parts ...[]byte) (SessionLayout, string) {
 	t.Helper()
 	ctx := context.Background()
 	session := testSession()
@@ -1327,7 +1327,7 @@ func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (sessio
 		if err := os.WriteFile(danmuPath, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		repo.appendSegmentMeta(metaPath, &segmentWriter{
+		repo.appendSegmentMeta(metaPath, &SegmentWriter{
 			part:        part,
 			videoPath:   videoPath,
 			danmakuPath: danmuPath,
@@ -1448,7 +1448,7 @@ func TestFinishedSessionCanAppendAfterRecordingIsReenabled(t *testing.T) {
 }
 
 func TestArchiveMergedSessionRollsBackVideoWhenDanmakuIsMissing(t *testing.T) {
-	lay := sessionLayout{dir: t.TempDir(), base: "session"}
+	lay := SessionLayout{dir: t.TempDir(), base: "session"}
 	videoName := lay.mergedVideoName()
 	videoPath := lay.mergedVideoPath()
 	content := []byte("merged video")

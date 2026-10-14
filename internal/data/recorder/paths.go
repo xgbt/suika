@@ -28,57 +28,57 @@ var (
 	partSuffixPattern = regexp.MustCompile(`_part(\d+)\.flv$`)
 )
 
-// sessionLayout 是一个录制会话在磁盘上的位置：会话目录 + 文件名前缀。
+// SessionLayout 是一个录制会话在磁盘上的位置：会话目录 + 文件名前缀。
 // 会话内所有文件名都由这两者派生，dir 与 base 因此不可能各说各话；会话
 // 身份只有这一个表达，不需要再从 meta.json 路径反推回来。
-type sessionLayout struct {
+type SessionLayout struct {
 	dir  string // 会话目录
 	base string // 文件名前缀，分段 / meta / 合并产物共享
 }
 
 // metaPath 返回会话 meta.json 的路径。
-func (l sessionLayout) metaPath() string {
+func (l SessionLayout) metaPath() string {
 	return filepath.Join(l.dir, l.base+metaExt)
 }
 
 // filePath 返回会话目录下 name 的完整路径。
-func (l sessionLayout) filePath(name string) string {
+func (l SessionLayout) filePath(name string) string {
 	return filepath.Join(l.dir, name)
 }
 
 // segmentVideoName / segmentDanmakuName 返回分段文件名（不含目录）。
-func (l sessionLayout) segmentVideoName(part int) string {
+func (l SessionLayout) segmentVideoName(part int) string {
 	return fmt.Sprintf("%s_part%d%s", l.base, part, videoExt)
 }
 
-func (l sessionLayout) segmentDanmakuName(part int) string {
+func (l SessionLayout) segmentDanmakuName(part int) string {
 	return fmt.Sprintf("%s_part%d%s", l.base, part, danmakuExt)
 }
 
 // segmentVideoPath / segmentDanmakuPath 返回分段文件的完整路径。
-func (l sessionLayout) segmentVideoPath(part int) string {
+func (l SessionLayout) segmentVideoPath(part int) string {
 	return l.filePath(l.segmentVideoName(part))
 }
 
-func (l sessionLayout) segmentDanmakuPath(part int) string {
+func (l SessionLayout) segmentDanmakuPath(part int) string {
 	return l.filePath(l.segmentDanmakuName(part))
 }
 
 // mergedVideoName / mergedDanmakuName 返回合并产物文件名（不含目录）。
-func (l sessionLayout) mergedVideoName() string {
+func (l SessionLayout) mergedVideoName() string {
 	return l.base + videoExt
 }
 
-func (l sessionLayout) mergedDanmakuName() string {
+func (l SessionLayout) mergedDanmakuName() string {
 	return l.base + danmakuExt
 }
 
 // mergedVideoPath / mergedDanmakuPath 返回合并产物的完整路径。
-func (l sessionLayout) mergedVideoPath() string {
+func (l SessionLayout) mergedVideoPath() string {
 	return l.filePath(l.mergedVideoName())
 }
 
-func (l sessionLayout) mergedDanmakuPath() string {
+func (l SessionLayout) mergedDanmakuPath() string {
 	return l.filePath(l.mergedDanmakuName())
 }
 
@@ -91,9 +91,9 @@ func (l sessionLayout) mergedDanmakuPath() string {
 //	        ├── 20240601_1504_直播标题.meta.json
 //	        ├── 20240601_1504_直播标题_part1.flv
 //	        └── 20240601_1504_直播标题_part1.danmu.jsonl
-func sessionPaths(recordRoot string, session *biz.RecordingSession) (sessionLayout, error) {
+func sessionPaths(recordRoot string, session *biz.RecordingSession) (SessionLayout, error) {
 	if session == nil || session.RoomID <= 0 {
-		return sessionLayout{}, biz.ErrRoomInternal
+		return SessionLayout{}, biz.ErrRoomInternal
 	}
 
 	start := session.LiveStartTime
@@ -102,7 +102,7 @@ func sessionPaths(recordRoot string, session *biz.RecordingSession) (sessionLayo
 	}
 
 	roomDir := fmt.Sprintf("%d_%s", session.RoomID, sanitizeSegment(session.StreamerName))
-	return sessionLayout{
+	return SessionLayout{
 		dir:  filepath.Join(recordRoot, roomDir, start.Format("2006-01-02")),
 		base: start.Format("20060102_1504") + "_" + sanitizeSegment(session.Title),
 	}, nil
@@ -110,8 +110,8 @@ func sessionPaths(recordRoot string, session *biz.RecordingSession) (sessionLayo
 
 // sessionLayoutFromMetaPath 从 meta.json 路径还原会话布局：RecoverPending
 // 手上只有扫描到的 meta.json 路径，这是进入会话的唯一入口。
-func sessionLayoutFromMetaPath(metaPath string) sessionLayout {
-	return sessionLayout{
+func sessionLayoutFromMetaPath(metaPath string) SessionLayout {
+	return SessionLayout{
 		dir:  filepath.Dir(metaPath),
 		base: strings.TrimSuffix(filepath.Base(metaPath), metaExt),
 	}
@@ -127,7 +127,7 @@ func sanitizeSegment(s string) string {
 }
 
 // nextPartNumber 扫描会话目录推导下一个分段编号, 同时覆盖重连和崩溃重启两种情况
-func nextPartNumber(lay sessionLayout) int {
+func nextPartNumber(lay SessionLayout) int {
 	entries, err := os.ReadDir(lay.dir)
 	if err != nil {
 		return 1 // 目录尚未创建，本次就是 part1

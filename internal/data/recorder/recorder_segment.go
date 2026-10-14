@@ -44,8 +44,8 @@ func (h *HeaderTags) observe(tag *flv.Tag) {
 	}
 }
 
-// segmentWriter 是一个已打开分段的句柄，持有文件与写入进度。
-type segmentWriter struct {
+// SegmentWriter 是一个已打开分段的句柄，持有文件与写入进度。
+type SegmentWriter struct {
 	part int // 分段编号，从 1 开始，同时用于生成文件名
 
 	// 视频文件
@@ -68,7 +68,7 @@ type segmentWriter struct {
 
 // close 刷新视频缓冲并关闭两个文件。任一步骤失败都不会跳过后续步骤，
 // 以保证文件句柄全部释放，所有错误合并返回。
-func (s *segmentWriter) close() error {
+func (s *SegmentWriter) close() error {
 	var errs []error
 
 	// 视频文件需先刷新缓冲再关闭，否则尾部数据丢失；弹幕文件无缓冲，直接关闭即可。
@@ -86,7 +86,7 @@ func (s *segmentWriter) close() error {
 }
 
 // OpenSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
-func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *HeaderTags) (writer *segmentWriter, err error) {
+func OpenSegment(lay SessionLayout, fileHeader *flv.FileHeader, cache *HeaderTags) (writer *SegmentWriter, err error) {
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
@@ -115,7 +115,7 @@ func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *HeaderTag
 		return nil, err
 	}
 
-	writer = &segmentWriter{
+	writer = &SegmentWriter{
 		part:        part,
 		videoPath:   videoPath,
 		videoFile:   videoFile,
@@ -134,7 +134,7 @@ func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *HeaderTag
 }
 
 // writeHeaderTags 写入 FLV 文件头及缓存的头标签。
-func (s *segmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *HeaderTags) error {
+func (s *SegmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *HeaderTags) error {
 	// 写入 FLV 文件头
 	if _, err := s.videoWriter.Write(fileHeader.Bytes()); err != nil {
 		return err
@@ -154,7 +154,7 @@ func (s *segmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *Heade
 }
 
 // writeRawTag 序列化 tag 并写入视频文件，只累计字节数，不推进时间戳。
-func (s *segmentWriter) writeRawTag(tag *flv.Tag) (int64, error) {
+func (s *SegmentWriter) writeRawTag(tag *flv.Tag) (int64, error) {
 	s.buf = tag.AppendTo(s.buf[:0])
 	n, err := s.videoWriter.Write(s.buf)
 	s.bytesWritten += int64(n)
@@ -162,7 +162,7 @@ func (s *segmentWriter) writeRawTag(tag *flv.Tag) (int64, error) {
 }
 
 // writeBodyTag 写入正文标签，仅在写入成功时推进起止时间戳。
-func (s *segmentWriter) writeBodyTag(tag *flv.Tag) (int64, error) {
+func (s *SegmentWriter) writeBodyTag(tag *flv.Tag) (int64, error) {
 	n, err := s.writeRawTag(tag)
 	if err != nil {
 		return n, err
@@ -197,7 +197,7 @@ type danmakuEventPO struct {
 }
 
 // writeDanmaku 将 DO 转换为 danmakuEventPO 后序列化为一行 JSON 写入弹幕文件。
-func (s *segmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
+func (s *SegmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
 	entry := danmakuEventPO{
 		Ts:       ev.TS.UnixMilli(),
 		SendTs:   ev.SendTS,

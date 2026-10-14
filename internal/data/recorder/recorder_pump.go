@@ -18,7 +18,7 @@ import (
 // 取消。一个 Session（录制会话：一次连续直播，定义见 CONTEXT.md）在断流重连
 // 时会多次调用本方法（biz.RecorderUsecase.runRecordingLoop 是唯一调用方）；写入
 // 进度（sessionStats，见 stats.go）跨这些调用持久，不随重连重置。
-func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.RecordingSession, stream *biz.LiveStream, events <-chan *biz.DanmakuEvent) (*biz.RecordingResult, error) {
+func (repo *RecorderRepo) PumpSession(ctx context.Context, session *biz.RecordingSession, stream *biz.LiveStream, events <-chan *biz.DanmakuEvent) (*biz.RecordingResult, error) {
 	// 检查直播流是否有效
 	if stream == nil || stream.Body == nil {
 		return nil, biz.ErrRoomInternal
@@ -116,22 +116,22 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 // 创建和销毁，串联段边界、去重、写入进度等每次拉流独有的可变状态，不
 // 与其他并发会话共享（跨会话共享状态仍在 recorderRepo 上）。
 type pumpState struct {
-	repo       *recorderRepo       // 所属仓储，读取切分/健康检查配置
+	repo       *RecorderRepo       // 所属仓储，读取切分/健康检查配置
 	roomID     int64               // 当前录制房间 ID
-	layout     sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
+	layout     SessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
 	fileHeader *flv.FileHeader     // 拉流解析出的 FLV 文件头
 	headerTags HeaderTags          // 头标签缓存，供新分段/强制切分段重注入
-	stats      *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
+	stats      *SessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
 	baseBytes  int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
-	guard      dupGuard            // CDN 循环吐流去重状态
-	writer     *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
+	guard      DupGuard            // CDN 循环吐流去重状态
+	writer     *SegmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result     biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘的正文 tag 字节，不含文件头与头标签
 
 	speed  speedTracker  // 下载速度采样状态
 	health healthMonitor // 健康检查状态：连续无新数据落盘的轮数
 }
 
-func newPumpState(repo *recorderRepo, roomID int64, layout sessionLayout, fileHeader *flv.FileHeader, stats *sessionStats) *pumpState {
+func newPumpState(repo *RecorderRepo, roomID int64, layout SessionLayout, fileHeader *flv.FileHeader, stats *SessionStats) *pumpState {
 	return &pumpState{
 		repo:       repo,
 		roomID:     roomID,
