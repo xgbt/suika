@@ -93,9 +93,12 @@ func (g *dupGuard) add(tag *flv.Tag) {
 // nil），以及连续重复是否已达断开上限。重复块同样计入指纹窗口，连续
 // 计数不因窗口登记而中断。
 func (g *dupGuard) close() (write []*flv.Tag, disconnect bool) {
+	// 当前块为空时直接返回，不做任何处理。
 	if len(g.buf) == 0 {
 		return nil, false
 	}
+
+	// 计算当前块的指纹，并判断是否在滑动窗口中出现过。
 	fp := g.fingerprint()
 	dup := g.seen(fp)
 	g.hist[g.histN%dupHistorySize] = fp
@@ -105,11 +108,16 @@ func (g *dupGuard) close() (write []*flv.Tag, disconnect bool) {
 	} else {
 		g.streak = 0
 	}
+
+	// 保存当前块内容
 	buf := g.buf
+
+	// 重置当前块的累积状态，为下一块做准备
 	g.resetBlock()
 	if dup {
 		return nil, g.streak >= dupDisconnectStreak
 	}
+
 	return buf, false
 }
 

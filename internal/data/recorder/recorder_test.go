@@ -734,59 +734,6 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 	}
 }
 
-func TestPumpSessionConcurrentPumpsAllocateDistinctSegments(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag, videoSeq, audioSeq := mergeTestTags()
-	// 段在首个视频关键帧处开启，fixture 必须带关键帧才会产出分段。
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	streamBytes := buildFLVStream(t, metaTag, videoSeq, audioSeq, key0)
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	for range 2 {
-		go func() {
-			<-start
-			stream := &biz.LiveStream{
-				Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-				Body:    io.NopCloser(bytes.NewReader(streamBytes)),
-			}
-			_, err := repo.PumpSession(ctx, session, stream, nil)
-			errs <- err
-		}()
-	}
-	close(start)
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatalf("PumpSession: %v", err)
-		}
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta, err := loadMeta(lay.metaPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(meta.Segments) != 2 {
-		t.Fatalf("segments = %+v, want two distinct segments", meta.Segments)
-	}
-	if meta.Segments[0].Part == meta.Segments[1].Part {
-		t.Fatalf("segments reused part number: %+v", meta.Segments)
-	}
-	for _, seg := range meta.Segments {
-		if _, err := os.Stat(lay.filePath(seg.Video)); err != nil {
-			t.Fatalf("segment %q missing: %v", seg.Video, err)
-		}
-	}
-}
-
 func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度

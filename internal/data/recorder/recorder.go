@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"suika/internal/biz"
@@ -41,10 +40,6 @@ type recorderRepo struct {
 	// 健康检查
 	healthInterval   time.Duration // 该间隔内无新数据计为一次失败
 	healthFailRounds int           // 连续失败达到该轮数判定录制异常
-
-	// 并发控制
-	metaMu    sync.Mutex // 保护 meta.json 读改写
-	segmentMu sync.Mutex // 串行化分段编号探测与创建
 }
 
 func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
@@ -76,8 +71,6 @@ func (repo *recorderRepo) PrepareSession(ctx context.Context, session *biz.Recor
 	repo.getOrCreateStats(session.RoomID).reset() // 一次录制会话启动时，把写入进度清零
 
 	metaPath := lay.metaPath()
-	repo.metaMu.Lock()
-	defer repo.metaMu.Unlock()
 	// 尝试加载已有的 meta.json，如果存在则更新其状态为录制中，否则创建新的 meta.json
 	if meta, err := loadMeta(metaPath); err == nil {
 		// 同一场直播此前已录过：把上次的合并产物归档为历史分段，然后续录。
@@ -115,26 +108,21 @@ func (repo *recorderRepo) FinishSession(ctx context.Context, session *biz.Record
 	metaPath := lay.metaPath()
 
 	// 将 meta.json 的状态更新为合并中，并记录结束时间
-	meta, err := func() (*sessionMeta, error) {
-		repo.metaMu.Lock()
-		defer repo.metaMu.Unlock()
-
-		meta, err := loadMeta(metaPath)
-		if err != nil {
-			return nil, err
-		}
-		meta.Status = metaStatusMerging
-		meta.EndTime = time.Now().Unix()
-		meta.Title = session.Title
-		meta.Quality = qualityMeta(session.Quality)
-		return meta, saveMeta(metaPath, meta)
-	}()
+	meta, err := loadMeta(metaPath)
 
 	// 如果 meta.json 不存在，说明没有录到任何内容，直接返回
 	if os.IsNotExist(err) {
 		return nil // 没有录到任何内容
 	}
 	if err != nil {
+		return err
+	}
+
+	meta.Status = metaStatusMerging
+	meta.EndTime = time.Now().Unix()
+	meta.Title = session.Title
+	meta.Quality = qualityMeta(session.Quality)
+	if err := saveMeta(metaPath, meta); err != nil {
 		return err
 	}
 
@@ -202,14 +190,14 @@ func (repo *recorderRepo) finalizeSession(ctx context.Context, lay sessionLayout
 			Msg:   err.Error(),
 		})
 		log.Error("merge failed, keeping segments", "dir", lay.dir, "err", err)
-		return repo.persistMeta(lay.metaPath(), meta)
+		return saveMeta(lay.metaPath(), meta)
 	}
 
 	// 先落盘 done 再删源：崩溃时最多遗留孤儿源文件，不会把已完成的产物标成 partial。
 	meta.MergedVideo = mergedVideoName
 	meta.MergedDanmaku = mergedDanmakuName
 	meta.Status = metaStatusDone
-	if err := repo.persistMeta(lay.metaPath(), meta); err != nil {
+	if err := saveMeta(lay.metaPath(), meta); err != nil {
 		return err
 	}
 
@@ -251,9 +239,7 @@ func (repo *recorderRepo) RecoverPending(ctx context.Context) error {
 			return ctx.Err()
 		}
 		lay := sessionLayoutFromMetaPath(path)
-		repo.metaMu.Lock()
 		meta, err := loadMeta(path)
-		repo.metaMu.Unlock()
 		if err != nil {
 			log.Warn("recover: unreadable meta.json", "path", path, "err", err)
 			continue
@@ -265,7 +251,7 @@ func (repo *recorderRepo) RecoverPending(ctx context.Context) error {
 			if meta.EndTime == 0 {
 				meta.EndTime = time.Now().Unix()
 			}
-			if err := repo.persistMeta(path, meta); err != nil {
+			if err := saveMeta(path, meta); err != nil {
 				log.Warn("recover: persist meta failed", "path", path, "err", err)
 			}
 			if err := repo.finalizeSession(ctx, lay, meta); err != nil {

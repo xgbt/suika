@@ -88,11 +88,8 @@ func saveMeta(path string, meta *sessionMeta) error {
 	})
 }
 
-// updateMeta 持锁读改写 meta.json，失败只记日志。
+// updateMeta 读改写 meta.json，失败只记日志。
 func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
-	repo.metaMu.Lock()
-	defer repo.metaMu.Unlock()
-
 	meta, err := loadMeta(metaPath)
 	if err != nil {
 		return
@@ -103,14 +100,6 @@ func (repo *recorderRepo) updateMeta(metaPath string, fn func(*sessionMeta)) {
 	if err := saveMeta(metaPath, meta); err != nil {
 		log.Error("save meta failed", "path", metaPath, "err", err)
 	}
-}
-
-// persistMeta 持锁用整份 meta 覆盖 meta.json，会盖掉 updateMeta 的写入；错误向上返回。
-func (repo *recorderRepo) persistMeta(metaPath string, meta *sessionMeta) error {
-	repo.metaMu.Lock()
-	defer repo.metaMu.Unlock()
-
-	return saveMeta(metaPath, meta)
 }
 
 // appendSegmentMeta 追加一条分段记录到 meta.json。

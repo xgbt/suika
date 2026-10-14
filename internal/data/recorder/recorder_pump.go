@@ -26,16 +26,16 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 	defer stream.Body.Close()
 
 	// 获取会话目录和文件名前缀
-	lay, err := sessionPaths(repo.recordRoot, session)
+	layout, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(lay.dir, 0o755); err != nil {
+	if err := os.MkdirAll(layout.dir, 0o755); err != nil {
 		return nil, err
 	}
 
 	// 读取直播流 FLV 文件头
-	header, err := flv.ParseHeader(stream.Body)
+	fileHeader, err := flv.ParseHeader(stream.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", biz.ErrStreamTransient, err)
 	}
@@ -45,12 +45,12 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 	stats.setCurrentFile("")
 
 	// 把 CDN 实际授予的清晰度记入 meta
-	repo.updateMeta(lay.metaPath(), func(meta *sessionMeta) {
+	repo.updateMeta(layout.metaPath(), func(meta *sessionMeta) {
 		meta.Quality = qualityMeta(stream.Quality)
 		meta.Title = session.Title
 	})
 
-	state := newPumpState(repo, session.RoomID, lay, header, stats)
+	state := newPumpState(repo, session.RoomID, layout, fileHeader, stats)
 	tagCh := flv.ReadTags(ctx, stream.Body)
 
 	health := time.NewTicker(repo.healthInterval)
@@ -116,30 +116,30 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 // 创建和销毁，串联段边界、去重、写入进度等每次拉流独有的可变状态，不
 // 与其他并发会话共享（跨会话共享状态仍在 recorderRepo 上）。
 type pumpState struct {
-	repo      *recorderRepo       // 所属仓储，读取切分/健康检查配置
-	roomID    int64               // 当前录制房间 ID
-	lay       sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
-	header    *flv.FileHeader     // 拉流解析出的 FLV 文件头
-	stats     *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
-	baseBytes int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
-	headers   headerCache         // 头标签缓存，供新分段/强制切分段重注入
-	guard     dupGuard            // CDN 循环吐流去重状态
-	writer    *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
-	result    biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
+	repo        *recorderRepo       // 所属仓储，读取切分/健康检查配置
+	roomID      int64               // 当前录制房间 ID
+	layout      sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
+	fileHeader  *flv.FileHeader     // 拉流解析出的 FLV 文件头
+	stats       *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
+	baseBytes   int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
+	headerCache headerCache         // 头标签缓存，供新分段/强制切分段重注入
+	guard       dupGuard            // CDN 循环吐流去重状态
+	writer      *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
+	result      biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘字节（落盘口径）
 
 	speed  speedTracker  // 下载速度采样状态
 	health healthMonitor // 健康检查状态：连续无新数据落盘的轮数
 }
 
-func newPumpState(repo *recorderRepo, roomID int64, lay sessionLayout, header *flv.FileHeader, stats *sessionStats) *pumpState {
+func newPumpState(repo *recorderRepo, roomID int64, layout sessionLayout, fileHeader *flv.FileHeader, stats *sessionStats) *pumpState {
 	return &pumpState{
-		repo:      repo,
-		roomID:    roomID,
-		lay:       lay,
-		header:    header,
-		stats:     stats,
-		baseBytes: stats.bytesWritten(),
-		speed:     newSpeedTracker(time.Now()),
+		repo:       repo,
+		roomID:     roomID,
+		layout:     layout,
+		fileHeader: fileHeader,
+		stats:      stats,
+		baseBytes:  stats.bytesWritten(),
+		speed:      newSpeedTracker(time.Now()),
 	}
 }
 
@@ -151,8 +151,8 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 
 	// 分段须从视频关键帧开始：尚未开段时丢弃首个关键帧之前的正文 tag
 	// 头标签仍需缓存，供开段时注入。
-	if s.writer == nil && s.header.HasVideo && !tag.IsAVCKeyframe() {
-		s.headers.remember(tag)
+	if s.writer == nil && s.fileHeader.HasVideo && !tag.IsAVCKeyframe() {
+		s.headerCache.remember(tag)
 		return nil
 	}
 
@@ -177,7 +177,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
-	case s.headers.sequenceHeaderChanged(tag):
+	case s.headerCache.sequenceHeaderChanged(tag):
 		log.Warn("sequence header changed, splitting segment", "room", s.roomID, "part", s.writer.part)
 		// 强制切段，确保新序列头写入新段。
 		if err := s.rotateSegment(); err != nil {
@@ -187,7 +187,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 
 	// 记录状态。头标签须在切段判定之后入缓存：序列头变化触发的切段会把新序列头
 	// 注入新段，若此时已入缓存，同一个 tag 还会作为正文再写一次，造成重复。
-	s.headers.remember(tag)
+	s.headerCache.remember(tag)
 	s.guard.add(tag)
 	// 进度计入去重缓冲中已接收但未落盘的字节（见 updateProgress），块落盘后
 	// 这部分转为已写字节，进度随之校正为实际落盘值。
@@ -206,14 +206,9 @@ func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
 }
 
 func (s *pumpState) openNewSegment() error {
-	// 编号探测和 O_TRUNC 创建必须串行，否则并发的录制泵会同时选中
-	// 同一个 part，并截断彼此刚写入的分段。
-	s.repo.segmentMu.Lock()
-	defer s.repo.segmentMu.Unlock()
-
-	writer, headerTagBytes, err := openSegment(s.lay, s.header, &s.headers)
+	writer, headerTagBytes, err := openSegment(s.layout, s.fileHeader, &s.headerCache)
 	if err != nil {
-		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
+		s.repo.appendMetaError(s.layout.metaPath(), "record", err)
 		return err
 	}
 
@@ -226,7 +221,7 @@ func (s *pumpState) openNewSegment() error {
 	// FLV 文件头本身不计，与既有口径一致。
 	s.addWrittenBytes(headerTagBytes)
 
-	s.repo.appendSegmentMeta(s.lay.metaPath(), writer)
+	s.repo.appendSegmentMeta(s.layout.metaPath(), writer)
 	log.Info("segment opened", "room", s.roomID, "part", writer.part, "file", writer.videoPath)
 	return nil
 }
@@ -238,7 +233,7 @@ func (s *pumpState) closeSegment() {
 	if err := s.writer.close(); err != nil {
 		log.Error("close segment failed", "room", s.roomID, "file", s.writer.videoPath, "err", err)
 	}
-	s.repo.finishSegmentMeta(s.lay.metaPath(), s.writer)
+	s.repo.finishSegmentMeta(s.layout.metaPath(), s.writer)
 	s.writer = nil
 }
 
@@ -287,11 +282,13 @@ func (s *pumpState) flushBlock() error {
 		log.Warn("duplicate stream block dropped", "room", s.roomID, "streak", s.guard.streak)
 		return nil
 	}
-	for _, bt := range buf {
-		if err := s.writeFLVTag(bt, true); err != nil {
+
+	for _, tag := range buf {
+		if err := s.writeFLVTag(tag, true); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -304,7 +301,7 @@ func (s *pumpState) writeFLVTag(tag *flv.Tag, persistError bool) error {
 	s.addWrittenBytes(n)
 
 	if err != nil && persistError {
-		s.repo.appendMetaError(s.lay.metaPath(), "record", err)
+		s.repo.appendMetaError(s.layout.metaPath(), "record", err)
 	}
 	return err
 }
