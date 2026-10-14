@@ -120,9 +120,9 @@ type pumpState struct {
 	roomID      int64               // 当前录制房间 ID
 	layout      sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
 	fileHeader  *flv.FileHeader     // 拉流解析出的 FLV 文件头
+	headerCache headerCache         // 头标签缓存，供新分段/强制切分段重注入
 	stats       *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
 	baseBytes   int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
-	headerCache headerCache         // 头标签缓存，供新分段/强制切分段重注入
 	guard       dupGuard            // CDN 循环吐流去重状态
 	writer      *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result      biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘的正文 tag 字节，不含文件头与头标签
@@ -206,7 +206,7 @@ func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
 }
 
 func (s *pumpState) openNewSegment() error {
-	writer, err := openSegment(s.layout, s.fileHeader, &s.headerCache)
+	writer, err := OpenSegment(s.layout, s.fileHeader, &s.headerCache)
 	if err != nil {
 		s.repo.appendMetaError(s.layout.metaPath(), "record", err)
 		return err

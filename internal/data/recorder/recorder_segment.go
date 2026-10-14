@@ -32,7 +32,7 @@ func (h *headerCache) sequenceHeaderChanged(tag *flv.Tag) bool {
 	return false
 }
 
-// remember 缓存头标签；非头标签不改变缓存。
+// remember 如果 tag 是头标签，则更新缓存；否则不做任何操作。
 func (h *headerCache) remember(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
@@ -85,8 +85,8 @@ func (s *segmentWriter) close() error {
 	return errors.Join(errs...)
 }
 
-// openSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
-func openSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *headerCache) (writer *segmentWriter, err error) {
+// OpenSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
+func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *headerCache) (writer *segmentWriter, err error) {
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
