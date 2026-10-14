@@ -7,8 +7,7 @@ import (
 )
 
 const (
-	defaultSegmentMinutes  = 120           // 分段时长默认值（分钟）
-	defaultMaxSegmentBytes = 2_684_354_560 //  分段大小上限（2.5 GiB
+
 
 	splitOverrun            = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 	sizeSplitOverrunDivisor = 10               // 大小切分等待关键帧的强切裕度分母

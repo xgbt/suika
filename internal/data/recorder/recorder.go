@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	defaultRecordRoot     = "./recordings"   // 默认录制目录
-	defaultHealthInterval = 10 * time.Second // 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
-	defaultHealthRounds   = 3                // 健康检查失败轮数，连续失败达到该轮数则判定为录制异常
+	defaultMaxSegmentMinutes = 120              // 分段时长默认值（分钟）
+	defaultMaxSegmentBytes   = 2_684_354_560    //  分段大小上限（2.5 GiB
+	defaultRecordRoot        = "./recordings"   // 默认录制目录
+	defaultHealthInterval    = 10 * time.Second // 健康检查间隔，录制守护进程在该间隔内未见新数据则计为一次失败
+	defaultHealthRounds      = 3                // 健康检查失败轮数，连续失败达到该轮数则判定为录制异常
 )
 
 // recorderRepo 实现 biz.RecorderRepo：录制目录布局、FLV 拉流写入、meta.json 簿记与收尾合并。
@@ -30,12 +32,12 @@ const (
 type recorderRepo struct {
 	statsStore
 
-	// 分段切分（<= 0 时对应维度不切分）
-	maxSegmentBytes int64
-	segmentDuration time.Duration
-
-	// 存储布局
+	// 存储根目录
 	recordRoot string
+
+	// 分段参数配置
+	maxSegmentBytes  int64         // 最大分段字节数
+	maxSegmentMintes time.Duration // 最大分段时长(分钟)
 
 	// 健康检查
 	healthInterval   time.Duration // 该间隔内无新数据计为一次失败
@@ -44,10 +46,10 @@ type recorderRepo struct {
 
 func NewRecorderRepo(c *conf.Recorder) biz.RecorderRepo {
 	r := &recorderRepo{
-		maxSegmentBytes:  defaultMaxSegmentBytes,
-		segmentDuration:  defaultSegmentMinutes * time.Minute,
 		statsStore:       newStatsStore(),
 		recordRoot:       defaultRecordRoot,
+		maxSegmentBytes:  defaultMaxSegmentBytes,
+		maxSegmentMintes: defaultMaxSegmentMinutes * time.Minute,
 		healthInterval:   defaultHealthInterval,
 		healthFailRounds: defaultHealthRounds,
 	}

@@ -368,7 +368,7 @@ func TestShouldSplitBySize(t *testing.T) {
 func TestNewRecorderRepoConfigMapping(t *testing.T) {
 	r := NewRecorderRepo(nil).(*recorderRepo)
 	if r.recordRoot != defaultRecordRoot ||
-		r.segmentDuration != defaultSegmentMinutes*time.Minute ||
+		r.maxSegmentMintes != defaultMaxSegmentMinutes*time.Minute ||
 		r.maxSegmentBytes != defaultMaxSegmentBytes ||
 		r.healthInterval != defaultHealthInterval ||
 		r.healthFailRounds != defaultHealthRounds {
@@ -736,7 +736,7 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 
 func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
+	repo.maxSegmentMintes = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -852,7 +852,7 @@ func TestPumpSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 // 重注入一次——开启 part2 的切分关键帧不在缓存中，所以那边也不会重复。
 func TestPumpSessionSplitHeadersWrittenOnce(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
+	repo.maxSegmentMintes = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1262,7 +1262,7 @@ func TestPumpSessionDisconnectsOnCDNLoop(t *testing.T) {
 // 且仍无关键帧）会先裁决缓冲块：在途数据不能因为关段而丢失。
 func TestPumpSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	repo.segmentDuration = 50 * time.Millisecond // 测试中使用亚分钟粒度
+	repo.maxSegmentMintes = 50 * time.Millisecond // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {

@@ -173,7 +173,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 切段判定：大小或时长超限时优先切段；否则检查序列头是否变化。
 	// 序列头变化时若继续写旧段，两种解码配置会混入同一文件，因此强制切段。
 	switch {
-	case ShouldSplit(s.writer, tag, s.repo.maxSegmentBytes, s.repo.segmentDuration):
+	case ShouldSplit(s.writer, tag, s.repo.maxSegmentBytes, s.repo.maxSegmentMintes):
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
