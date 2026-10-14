@@ -13,15 +13,15 @@ import (
 	"suika/internal/data/flv"
 )
 
-// HeaderTags 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
-type HeaderTags struct {
+// headerTags 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
+type headerTags struct {
 	metadata       *flv.Tag // 最近一次 onMetaData 脚本标签
 	videoSeqHeader *flv.Tag // 最近一次 AVC 序列头
 	audioSeqHeader *flv.Tag // 最近一次 AAC 序列头
 }
 
 // sequenceHeaderChanged 报告 tag 是否为与缓存不同的序列头（首次出现不算），变化时需切段。
-func (h *HeaderTags) sequenceHeaderChanged(tag *flv.Tag) bool {
+func (h *headerTags) sequenceHeaderChanged(tag *flv.Tag) bool {
 	switch {
 	case tag.IsAVCSequenceHeader():
 		return h.videoSeqHeader != nil && !bytes.Equal(h.videoSeqHeader.Data, tag.Data)
@@ -33,7 +33,7 @@ func (h *HeaderTags) sequenceHeaderChanged(tag *flv.Tag) bool {
 }
 
 // observe 如果 tag 是头标签，则更新缓存；否则不做任何操作。
-func (h *HeaderTags) observe(tag *flv.Tag) {
+func (h *headerTags) observe(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
 		h.metadata = tag
@@ -86,7 +86,7 @@ func (s *segmentWriter) close() error {
 }
 
 // OpenSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
-func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *HeaderTags) (writer *segmentWriter, err error) {
+func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *headerTags) (writer *segmentWriter, err error) {
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
@@ -134,7 +134,7 @@ func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *HeaderTag
 }
 
 // writeHeaderTags 写入 FLV 文件头及缓存的头标签。
-func (s *segmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *HeaderTags) error {
+func (s *segmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *headerTags) error {
 	// 写入 FLV 文件头
 	if _, err := s.videoWriter.Write(fileHeader.Bytes()); err != nil {
 		return err

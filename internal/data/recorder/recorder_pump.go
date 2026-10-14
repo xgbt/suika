@@ -120,7 +120,7 @@ type pumpState struct {
 	roomID     int64               // 当前录制房间 ID
 	layout     sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
 	fileHeader *flv.FileHeader     // 拉流解析出的 FLV 文件头
-	headerTags HeaderTags          // 头标签缓存，供新分段/强制切分段重注入
+	headerTags headerTags          // 头标签缓存，供新分段/强制切分段重注入
 	stats      *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
 	baseBytes  int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
 	guard      dupGuard            // CDN 循环吐流去重状态
