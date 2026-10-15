@@ -328,7 +328,7 @@ func TestShouldSplit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			seg := &segmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
 			setSplitLimits(t, 0, tc.dur)
-			if got := shouldSplit(seg, tc.tag); got != tc.want {
+			if got := seg.shouldSplit(tc.tag); got != tc.want {
 				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
 			}
 		})
@@ -366,7 +366,7 @@ func TestShouldSplitBySize(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
 			seg := &segmentWriter{hasStart: tc.hasStart, bytesWritten: tc.bytes}
 			setSplitLimits(t, tc.maxBytes, 0)
-			if got := shouldSplit(seg, tc.tag); got != tc.want {
+			if got := seg.shouldSplit(tc.tag); got != tc.want {
 				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
 			}
 		})

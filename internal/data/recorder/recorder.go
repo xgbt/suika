@@ -20,7 +20,7 @@ const defaultRecordRoot = "./recordings" // 默认录制目录
 // 具体职责按文件拆分：recorder.go 会话生命周期（Prepare/Finish/Recover）、
 // paths.go 会话布局与文件名派生、meta.go meta.json 的 schema 与读写、
 // recorder_pump.go 拉流写入循环、pump_monitor.go 下载速度采样与健康巡检、
-// segment.go 分段文件与初始化标签缓存、split.go 切分策略、
+// segment.go 分段文件、初始化标签缓存与切分策略、
 // dedup.go CDN 循环吐流去重、stats.go 写入进度统计、merge.go 收尾合并。
 // meta.json 与合并产物共用的原子替换不在本包，由 internal/utils.WriteFileAtomic 提供。
 type recorderRepo struct {

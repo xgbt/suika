@@ -180,7 +180,7 @@ declared in `biz` and implemented in `data`:
   (`recorder.go` session lifecycle + recovery, `paths.go` session layout
   and file naming, `meta.go` `meta.json` bookkeeping, `recorder_pump.go`
   the stream pump, `pump_monitor.go` speed sampling + health check,
-  `segment.go` segment files, `split.go` split policy, `dedup.go` CDN
+  `segment.go` segment files + split policy, `dedup.go` CDN
   loop dedup, `stats.go`
   write-progress stats); the atomic write-temp-then-rename shared by
   `meta.json` and the merge outputs lives in `internal/utils/file.go`

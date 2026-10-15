@@ -170,8 +170,8 @@ internal/data/
   recorder_pump.go       PumpSession 泵送循环（切段判定、健康巡检）
   pump_monitor.go        speedTracker 下载速度采样、healthMonitor 健康巡检
   segment.go             segmentWriter：FLV part + 弹幕 JSONL 文件对，初始化标签
-                         缓存与重注入，writeBodyTag / writeDanmaku / close
-  split.go               切分策略：按大小 / 按时长两个独立维度裁决
+                         缓存与重注入，writeBodyTag / writeDanmaku / close；
+                         切分策略 shouldSplit：按大小 / 按时长两个独立维度裁决
   dedup.go               CDN 循环吐流去重（dupGuard）
   stats.go               pumpStats（原子 file/bytes/speed）与 SessionStats 读取
   merge.go               纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
@@ -247,7 +247,7 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
-| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / PumpSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / pump_monitor.go / segment.go / split.go / dedup.go / stats.go / merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
+| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / PumpSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / pump_monitor.go / segment.go / dedup.go / stats.go / merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
 | 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤；UpdateRoom 仅供平台信息回写 |
 | 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站直播 HTTP API 与弹幕 WS 流量、风控 |
 | 凭据存储缝 | `CredentialRepo`（GetCredential / SaveCredential / DeleteCredential） | `credentialRepo`（`NewCredentialRepo(d *Data)` 返回接口；credentials 表单例行） | 登录凭据持久化；Save/Delete 落库后热替换内存 cookie |
@@ -823,8 +823,8 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 | 稳定录制预算重置阈值 | 5 分钟 | biz |
 | 监控重建（重拨）间隔 | 10s | biz |
 | FinishSession 脱离 grace | 30s | biz |
-| 分段时长 | 120 分钟 | data/recorder `segmentDurationLimit`（split.go，写死） |
-| 分段大小上限 / 强切裕度 | 2.5 GiB / 超出上限 1/10 | data/recorder `segmentSizeLimit`（split.go，写死） |
+| 分段时长 | 120 分钟 | data/recorder `segmentDurationLimit`（segment.go，写死） |
+| 分段大小上限 / 强切裕度 | 2.5 GiB / 超出上限 1/10 | data/recorder `segmentSizeLimit`（segment.go，写死） |
 | 健康检查间隔 / 失败轮数 | 10s / 3 轮 | data/recorder `healthCheckInterval` / `healthMaxFailRounds`（pump_monitor.go，写死） |
 | 请求清晰度 | 10000（原画；不足时平台自动降档） | data/bili（live） |
 | 切段关键帧等待上限 | 15s | data |
