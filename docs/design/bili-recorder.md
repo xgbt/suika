@@ -1,9 +1,10 @@
-| 合并失败（分段损坏/缺失） | 不删源分段，meta 记 merge 错误、置 partial，下次启动经 RecoverPending 重试 |# Bilibili 直播自动录播服务 — 技术文档
+# Bilibili 直播自动录播服务 — 技术文档
 
-基于当前实现代码（2026-08 快照）。suika 是一个 Kratos (go-kratos/v3)
-常驻进程，Bilibili 直播录播是其唯一业务域：Todo 样例资源已整体移除。
-仓库级的分层契约、命名约定与构建命令见根目录 CLAUDE.md，本文只描述
-录播服务本身"现在是什么、怎么跑"。
+基于当前实现代码（2026-10 快照）。suika 是一个 Kratos (go-kratos/v3)
+常驻进程，Bilibili 直播录播是其唯一业务域。仓库级的分层契约、命名约定
+与构建命令见根目录 CLAUDE.md，本文只描述录播服务本身"现在是什么、怎么跑"。
+术语遵循根目录 `CONTEXT.md`（Room / Session / Monitor / Fallback poll /
+Session policy / Reconcile）。
 
 ---
 
@@ -32,8 +33,7 @@ API 提供，见 §8）、历史查询 API（磁盘上的 meta.json 即历史）
 
 录播守护进程实现 Kratos 的 `transport.Server` 接口（`Start(ctx)/Stop(ctx)`），
 作为第三个 server 与 HTTP/gRPC 并列注册进 `kratos.Server(gs, hs, daemon)`，
-同生命周期启停（`internal/server/daemon.go` 的 `Daemon`，旧名
-RecorderJob）：
+同生命周期启停（`internal/server/daemon.go` 的 `Daemon`）：
 
 - `Start` 在 goroutine 里运行 `recorder.Run(rctx)` 并**立即返回**。
   `rctx` 派生自 `context.Background()` 而非传入的 ctx——Start 返回后
@@ -42,15 +42,15 @@ RecorderJob）：
   正常退出记 info。
 - `Stop` 取消 `rctx` 后三路等待：`done`（主循环退出）/ 传入 ctx 取消 /
   `stopWaitTimeout = 45s` 超时，后两者只记 warn 不报错，保证停机永不
-  卡死。45s 覆盖了 biz 层的 `finishGracePeriod = 30s`（见 §3.4）加余量。
+  卡死。45s 覆盖了 biz 层的 `finishGracePeriod = 30s`（见 §3.5）加余量。
 
 ### 2.2 代码布局（逐文件）
 
 ```
 api/room/v1/
   room.proto             DTO：RoomService 五个 CRUD RPC（全部 POST，见 §8）/
-                         Room（room_id / streamer_name / room_title / record_enabled
-                         + OUTPUT_ONLY 运行时字段）/ LiveStatus / RecordStatus /
+                         Room（room_id / record_enabled + OUTPUT_ONLY 运行时字段）/
+                         LiveStatus / RecordStatus /
                          ListRoomsRequest（分页 + 四个 optional 查询字段）
   error_reason.proto     ErrorReason 枚举（ERROR_REASON_INTERNAL /
                          ERROR_REASON_NOT_FOUND / ERROR_REASON_INVALID_ARGUMENT /
@@ -66,7 +66,7 @@ api/account/v1/
 internal/biz/
   room.go                DO：Room（RoomID / StreamerName / RoomTitle / RecordEnabled /
                          CreateTime / UpdateTime）/ LiveStatus / RecordStatus 枚举 /
-                         RoomRuntime（读模型：Room + 运行时字段）
+                         RoomRuntime（读模型：Room + 运行时字段）/ SessionStats
                          类型化错误：ErrRoomNotFound（404）/ ErrRoomInvalidArgument（400）/
                          ErrRoomAlreadyExists（409，errors.Conflict）
                          RoomRepo 接口（GetByRoomID / ListRooms / CreateRoom /
@@ -77,28 +77,38 @@ internal/biz/
                          合并 registry 运行时状态与 stats）
   room_registry.go       RoomRegistry：启动时从 RoomRepo 全量加载房间，
                          持有每个房间的 roomState（Room 快照 + liveStatus /
-                         recordStatus / quality 授予清晰度，mutex 保护，
-                         repo IO 在锁外）；
+                         recordStatus / quality 授予清晰度 / sessionStartedAt /
+                         lastError，单一 mutex 保护，repo IO 在锁外）；
                          daemon 写状态，room API 读快照；ApplyRoomInfo
                          更新房态、用平台非空值覆盖 streamer_name /
                          room_title，并经 RoomRepo.UpdateRoom 持久化写回
                          sqlite；SetStreamQuality 记录当前会话实际获得的
                          流清晰度（StartRecording / FinishRecording 清零）
   recorder.go            DO：RoomInfo / StreamQuality / LiveStream
-                         DanmakuEvent / RecordingSession / RecordingResult / SessionStats
-                         事件类型常量、默认值常量
+                         DanmakuEvent / RecordingSession / RecordingResult
+                         事件类型常量（EventDanmaku / EventGift / EventSuperChat /
+                         EventGuard / EventEntryEffect）、默认值常量
                          类型化错误：ErrRoomInternal（errors.InternalServer + reason 枚举）
                          哨兵错误：ErrStreamTransient / ErrRiskControl（供决策树分类）
-                         两条反向依赖缝（声明在 biz）：
-                           RecorderRepo —— 存储缝；LiveClient —— 外部平台缝
-                         DanmakuConn —— 常驻弹幕 WS 的 biz 侧抽象
+                         三条反向依赖缝（声明在 biz）：
+                           RecorderRepo（内嵌 SessionStatsRepo）—— 存储缝
+                           LiveClient —— 外部平台缝
+                           DanmakuConn —— 常驻弹幕 WS 的 biz 侧抽象
                          （Events / RoomStateUpdates 两个只读通道）
-                         ReconnectPolicy；RecorderUsecase：房间监控编排、场次生命周期、
-                         断流决策树（纯控制流，不做字节级 IO；无 proto、无存储 tag）
+                         ReconnectPolicy；RecorderUsecase 结构体 + 构造函数，
+                         以及 Run（监督循环）与 reconcile（监控集合调和）
+  recorder_monitor.go    monitorHandle（cancel / done / roomChange / lastRecordEnabled）
+                         launchMonitor、runMonitor（外层重拨循环）、
+                         runMonitorConnection（每房间监控的 select 主体）、
+                         nextPollDelay（带抖动的轮询间隔）
+  recorder_session.go    sessionHandle（cancel / done）、launchSession、runSession
+                         （场次生命周期）、runRecordingLoop（断流决策树）、
+                         probeLive（下播确认）、cdnBackoff
   recorder_session_policy.go  sessionPolicy：会话启停决策矩阵（电平触发，
                          ADR-0001/0002）——阶段 idle / running / finishing、
-                         record_enabled 门控与收尾后续录规则；watchRoom 只
-                         投递输入（房态到达 / 开关翻转 / 场次结束）并执行其
+                         record_enabled 门控与收尾后续录规则；输入为
+                         OnRoomInfo / OnRecordEnabled / OnSessionFinished，
+                         runMonitorConnection 只投递输入并执行其
                          Start / Stop / None 决策
   account.go             AccountUsecase + CredentialRepo / PassportClient 缝
                          声明（biz 持有接口，data 实现）：扫码登录（轮询确认
@@ -126,24 +136,24 @@ internal/data/
                          新登录无需重启即被录制器拾取
   bili/client.go         Client：与 B 站交互的共享长生命周期状态——
                          apiClient(15s 超时) / streamClient(无超时)、唯一登录态
-                         （Cookie/SetCookie 热替换）、WBI 签名器与 buvid 存储；
-                         injectAntiRisk / signURL / fetchJSON / refreshRisk
-                         是 riskGuard 依赖的传输能力（riskTransport）
+                         （Cookie/SetCookie 热替换）、WBI 签名器与 buvid 存储
   bili/http.go           所有 B 站请求共用的 HTTP 原语：browserRequest（浏览器
                          伪装头）/ getJSON（发送 JSON GET、状态码判定与
                          响应解码，直播侧与 passport 侧共用）
+  bili/risk.go           riskGuard：全部直播 API 流量的风控编排深模块——
+                         冷却闸门、412/403/429 与 -352 刷新重试、兜底调用、
+                         错误分类与每房间阶梯冷却；端点只声明端点形状
+                         （riskRequest）、解析响应、翻译业务码，构造合规请求
+                         由 fetch 统一完成
+  bili/risk_transport.go 风控共享契约 + *Client 对 riskTransport 的实现：
+                         错误哨兵、风控业务码、API 基础地址，以及注入 buvid、
+                         WBI 签名、请求发送与 HTTP 风控码映射、重试前刷新
   bili/live.go           liveClient 实现 biz.LiveClient：GetRoomInfo / OpenLiveStream /
                          DanmakuConn 构造；getRoomPlayInfo 候选排序与降档
-                         （pickFLVStream 纯函数）；风控编排统一委托 riskGuard；
-                         弹幕认证三要素 danmuInfo/danmuBuvid（token、接入节点、
-                         buvid3；主通道 getDanmuInfo 经 WBI 签名，旧版 getConf
-                         兜底，两套响应由 buildDanmuInfo 统一成形）
-  bili/risk.go           riskGuard：全部 B 站 API 流量的风控编排深模块——
-                         冷却闸门、412/-352 刷新重试、兜底调用、错误分类与
-                         每房间阶梯冷却；端点只声明端点形状（riskRequest）、
-                         解析响应、翻译业务码，构造合规请求由 fetch 统一完成
-  bili/wbi.go            WBI 签名（nav API 取密钥，1h 缓存，w_rid/wts）
-  bili/buvid.go          buvid3/buvid4 指纹（spi，24h 缓存，cookie 注入替换语义）
+                         （pickFLVStream / bestFLVStream 纯函数）；风控编排
+                         统一委托 riskGuard；弹幕认证三要素 danmuInfo/danmuBuvid
+                         （token、接入节点、buvid3；主通道 getDanmuInfo 经 WBI
+                         签名，旧版 getConf 兜底，两套响应由 buildDanmuInfo 统一成形）
   bili/danmaku.go        danmakuConn 实现 biz.DanmakuConn 的连接生命周期：
                          认证、30s 心跳、90s 读超时、断线指数退避重连、cmd 分发；
                          房态命令（LIVE/PREPARING/ROUND/ROOM_CHANGE）触发
@@ -152,32 +162,41 @@ internal/data/
                          16 字节包头打包/解包、protover3 brotli / protover2
                          zlib 嵌套解压、认证包构造与握手校验
   bili/danmaku_event.go  事件载荷解析：弹幕 / 礼物 / SC / 上舰 / 进场
+  bili/wbi.go            WBI 签名（nav API 取密钥，1h 缓存，w_rid/wts）
+  bili/buvid.go          buvid3/buvid4 指纹（spi，24h 缓存，cookie 注入替换语义）
   bili/passport.go       passportClient 实现 biz.PassportClient：QR 登录
                          二维码生成/轮询（确认时从 Set-Cookie 捕获登录
                          cookie）、nav 账号核验；刻意不走 riskGuard
                          （无 WBI 签名、无重试），自带无 cookie jar 的 HTTP
                          客户端，不依赖 Client
-  recorder.go            recorderRepo 实现 biz.RecorderRepo（NewRecorderRepo
-                         返回接口；NewSessionStatsRepo 把同一实例转发为
+  recorder/recorder.go   recorderRepo 实现 biz.RecorderRepo（NewRecorderRepo
+                         返回接口；内嵌 statsStore 使其同时满足
                          biz.SessionStatsRepo）：PrepareSession（重启续录
-                         复用 + 在途 stats 清零）、FinishSession /
-                         finalizeSession 收尾合并、RecoverPending 启动补跑
-  paths.go               sessionLayout（会话目录 + 文件名前缀）与全部会话内
-                         文件名的派生；nextPartNumber 扫描目录推导分段编号
-  meta.go                sessionMeta / segmentMeta / danmakuEventPO：meta.json
-                         读写、分段簿记（append/finishSegmentMeta）、
-                         errors 追加
-  recorder_pump.go       PumpSession 泵送循环（切段判定、健康巡检）
-  pump_monitor.go        speedTracker 下载速度采样、healthMonitor 健康巡检
-  segment.go             segmentWriter：FLV part + 弹幕 JSONL 文件对，初始化标签
-                         缓存与重注入，writeBodyTag / writeDanmaku / close；
-                         切分策略 shouldSplit：按大小 / 按时长两个独立维度裁决
-  dedup.go               CDN 循环吐流去重（dupGuard）
-  stats.go               pumpStats（原子 file/bytes/speed）与 SessionStats 读取
-  merge.go               纯 Go 收尾合并：分段 FLV → 单文件（跳 onMetaData、
-                         边界平移序列头时间戳）、弹幕 JSONL 拼接，验证后才删源
-  flv/                   FLV tag 解析子包：FileHeader / Tag 读写、关键帧与
+                         复用 + 在途 stats 清零 + 已合并场次重开归档）、
+                         FinishSession / finalizeSession 收尾合并、
+                         archiveMergedSession、RecoverPending 启动补跑
+  recorder/paths.go      sessionLayout（会话目录 + 文件名前缀）与全部会话内
+                         文件名的派生；sanitizeSegment 清洗；nextPartNumber
+                         扫描目录推导分段编号
+  recorder/meta.go       sessionMeta / segmentMeta / qualityMeta / errorMeta：
+                         meta.json 读写、分段簿记（appendSegmentMeta /
+                         finishSegmentMeta）、errors 追加
+  recorder/recorder_pump.go  PumpSession 泵送循环（tag 处理顺序、切段判定、
+                         健康巡检、去重块裁决）与 pumpState
+  recorder/pump_monitor.go   speedTracker 下载速度采样、healthMonitor 健康巡检
+  recorder/segment.go    segmentWriter：FLV part + 弹幕 JSONL 文件对、initTags
+                         初始化标签缓存与序列头变化检测、OpenSegment /
+                         writePreamble、切分策略 shouldSplit / splitBySize /
+                         splitByDuration；弹幕 PO danmakuEventPO
+  recorder/dedup.go      dedupGuard：CDN 循环吐流去重（分块缓冲 + FNV-1a 块指纹）
+  recorder/stats.go      statsStore / sessionStats：按房间的写入进度
+                         （当前文件 / 已写字节 / 下载速度），SessionStatsRepo 的实现
+  recorder/merge.go      MergeSessionFiles：纯 Go 收尾合并——分段 FLV → 单文件
+                         （跳文件头、跳 onMetaData、边界平移序列头时间戳）、
+                         弹幕 JSONL 拼接，验证后才删源
+  flv/flv.go             FLV tag 解析：FileHeader / Tag 读写、关键帧与
                          sequence header 识别（切段点的判定依据）
+  flv/reader.go          ReadTags：把文件流切成 tag 通道（缓冲 64）
 
 internal/service/
   room.go                RoomService：嵌入 v1.UnimplementedRoomServiceServer，
@@ -185,8 +204,8 @@ internal/service/
                          （page_token 解析、page_size 默认 20、
                          update_mask 仅限 record_enabled，读-改-写；
                          fieldbehavior 校验在 server/http.go 的
-                         validate 中间件里）；convertRoom（DTO→DO）/
-                         convertRoomReply（DO→DTO，含枚举映射与运行时字段
+                         validate 中间件里）；toRoomDO（DTO→DO）/
+                         toRoomDTO（DO→DTO，含枚举映射与运行时字段
                          （含 granted_qn / granted_qn_desc），五个 RPC 共用）；
                          只调 RoomUsecase
   account.go             AccountService：QR 登录创建/轮询、账号状态、登出四个
@@ -197,7 +216,7 @@ internal/server/
   http.go                NewHTTPServer：recovery + validate（field_behavior）中间件，
                          v1.RegisterRoomServiceHTTPServer +
                          accountv1.RegisterAccountServiceHTTPServer
-  grpc.go                NewGRPCServer：recovery 中间件，
+  grpc.go                NewGRPCServer：仅 recovery 中间件，
                          v1.RegisterRoomServiceServer +
                          accountv1.RegisterAccountServiceServer
   daemon.go              Daemon（transport.Server，见 §2.1）
@@ -223,7 +242,7 @@ cmd/suika/
 configs/
   config.yaml            data.database 指向 sqlite（./data/suika.db）；recorder 段
                          不含房间列表（房间在 sqlite 的 rooms 表，经 CRUD API 管理）；
-                         cookie 字段已废弃不再读取（§7.3）
+                         cookie / merge_enabled 均已废弃不再读取（§7.3、§7.4）
   credentials.example.yaml  说明性占位（进 git）：凭据不再经配置文件提供，
                          唯一来自 Web 扫码登录（写入 credentials 表）
 
@@ -231,27 +250,29 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
   src/api/rooms.ts       与 room.proto 对齐的类型 + fetch 封装（全部 POST）
   src/api/auth.ts        与 account.proto 对齐的类型 + fetch 封装
   src/components/RoomList.tsx  房间表格：分页、状态徽标（录制中徽标带授予
-                         清晰度 tooltip、下载速度 sparkline）、5s 自动刷新、
+                         清晰度 tooltip、下载速度 sparkline）、自动刷新、
                          添加弹窗、record_enabled 启停确认、删除确认
   src/components/AccountBar.tsx / QRLoginModal.tsx  顶栏登录态 + 扫码登录弹窗
   vite.config.ts         开发代理 /v1 → http://localhost:8000
 ```
 
-### 2.2.1 领域模型与架构图
-
 领域对象关系、分层与仓储/防腐层缝的图示见
-`docs/design/architecture-diagrams.md`（应用架构图与 ER 图）；
-本文只保留运行时与实现细节。
+`docs/design/architecture-diagrams.md`（应用架构图与 ER 图）。
 
 ### 2.3 五条缝与决策/IO 分工
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
-| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / PumpSession / FinishSession / RecoverPending）；窄接口 `SessionStatsRepo`（仅 SessionStats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / pump_monitor.go / segment.go / dedup.go / stats.go / merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`）；`SessionStatsRepo` 由同一个 `recorderRepo` 实例经转发 provider `NewSessionStatsRepo(repo biz.RecorderRepo)` 实现 | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
+| 文件存储缝 | `RecorderRepo`（daemon 用：PrepareSession / PumpSession / FinishSession / RecoverPending），**内嵌**窄接口 `SessionStatsRepo`（仅 Stats，room API 专用） | `recorderRepo`（`NewRecorderRepo(d *Data, c *conf.Recorder)` 返回接口，实现分布在 recorder.go / paths.go / meta.go / recorder_pump.go / pump_monitor.go / segment.go / dedup.go / stats.go / merge.go；meta.json 与合并产物的原子写走 `internal/utils/file.go`） | 文件布局、FLV 泵送、meta.json、JSONL、收尾合并 |
 | 房间存储缝 | `RoomRepo`（GetByRoomID / ListRooms(ListQuery) / CreateRoom / UpdateRoom / DeleteRoom） | `roomRepo`（`NewRoomRepo(d *Data)` 返回接口；gorm + mattn sqlite） | rooms 表 CRUD、ListQuery → SQL 等值过滤；UpdateRoom 仅供平台信息回写 |
-| 平台缝 | `LiveClient` | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站直播 HTTP API 与弹幕 WS 流量、风控 |
+| 平台缝 | `LiveClient`（GetRoomInfo / OpenLiveStream / DanmakuConn） | `liveClient`（`NewLiveClient(d *Data)` 返回接口） | 全部 B 站直播 HTTP API 与弹幕 WS 流量、风控 |
 | 凭据存储缝 | `CredentialRepo`（GetCredential / SaveCredential / DeleteCredential） | `credentialRepo`（`NewCredentialRepo(d *Data)` 返回接口；credentials 表单例行） | 登录凭据持久化；Save/Delete 落库后热替换内存 cookie |
 | 账号平台缝 | `PassportClient`（CreateQRLogin / PollQRLogin / AccountInfo） | `passportClient`（`NewPassportClient()` 返回接口，不依赖 `*Data`；实现在 bili/passport.go） | passport QR 登录与 nav 核验；刻意不走 riskGuard（无 WBI 签名、无重试） |
+
+`RecorderRepo` 内嵌 `SessionStatsRepo` 而不是另立一条平行的缝：写入进度与
+磁盘 IO 由同一个实现的同一份内存状态提供，内嵌让"一个对象同时满足两者"
+成为编译期事实，接线处不必再做运行时类型断言；房间管理只消费收窄后的
+那一半。
 
 控制流/IO 分工：**biz 只做决定**（何时开录、是否重连、何时收尾），
 **data 做全部 IO**（HTTP、WS、FLV 解析、文件）。
@@ -294,45 +315,58 @@ sqlite（§3.2）。`conf.Recorder` 注入 `NewData`、`NewRecorderRepo`、
 
 ### 3.1 goroutine 结构
 
+括号内为该函数所在文件；biz 的录制器逻辑分居四个文件，看代码时先按
+这张图定位。
+
 ```
 App.Run
- └─ Daemon.Start → goroutine: RecorderUsecase.Run(rctx)
+ └─ Daemon.Start → goroutine: RecorderUsecase.Run(rctx)          [recorder.go]
      ├─ repo.RecoverPending            启动补跑：补完上次遗留的合并
-     └─ 监督循环（订阅 registry 变更通知，reconcile 快照 ↔ 监控集合）
-         └─ registry 中每个房间（无论 record_enabled）→ monitorRoom goroutine
-             └─ watchRoom（持有一条 danmakuConn）
-                 ├─ danmakuConn.run goroutine（data 层，内部自动重连 WS）
-                 │    ├─ readLoop goroutine（解包、分发）
-                 │    └─ 30s 心跳 ticker
-                 ├─ 兜底轮询 timer（默认 600s ±10% 抖动）
-                 └─ 开播且 record_enabled 时 → launchSession goroutine（sessionHandle：cancel + done）
-                     ├─ registry.StartRecording + repo.PrepareSession
-                     ├─ recordLoop：OpenLiveStream → repo.PumpSession 泵送 → 断流决策树
-                     │    └─ PumpSession 内部：tag 读取 goroutine（chan 缓冲 512）
-                     └─ SetMerging → repo.FinishSession（30s grace，脱离运行 ctx）→ 合并
+     └─ 监督循环 reconcile（订阅 registry 变更通知，调和快照 ↔ 监控集合）
+         └─ registry 中每个房间（无论 record_enabled）→ launchMonitor
+             └─ runMonitor goroutine                              [recorder_monitor.go]
+                 │   外层重拨循环：runMonitorConnection 出错后等
+                 │   monitorRedialDelay = 10s 重建
+                 └─ runMonitorConnection（持有一条 danmakuConn）
+                     ├─ danmakuConn.run goroutine（data 层，内部自动重连 WS）
+                     │    ├─ readLoop goroutine（解包、分发）
+                     │    └─ 30s 心跳 ticker
+                     ├─ 兜底轮询 timer（默认 600s ±10% 抖动）
+                     ├─ roomChange 通道（record_enabled 翻转的重评估信号）
+                     └─ launchSession goroutine                       [recorder_session.go]
+                         └─ runSession（sessionHandle：cancel + done）
+                             ├─ registry.StartRecording + repo.PrepareSession
+                             ├─ runRecordingLoop：OpenLiveStream → repo.PumpSession
+                             │    泵送 → probeLive → 断流决策树
+                             │    └─ PumpSession 内部：tag 读取 goroutine（chan 缓冲 64）
+                             └─ SetMerging → repo.FinishSession（30s grace，脱离运行 ctx）→ 合并
 ```
 
 - `Run`：先 `RecoverPending`（失败只记日志），然后订阅 RoomRegistry 的
   变更通知，作为监督循环维护 roomID → monitor 协程的映射（reconcile）：
   新增房间无论是否配置录制立即启动监控，删除的房间立即取消监控（移入
-  retired 自行优雅收尾），record_enabled 翻转不增删协程、只投递重评估信号。
-  rooms 为空时记 warn 空转，但对后续变更保持响应。
-- `monitorRoom`：`watchRoom` 返回错误且 ctx 未取消时记错误、
-  `registry.NoteError`，等 `monitorReconnectDelay = 10s` 后重建弹幕连接
+  `stopping` 列表自行优雅收尾），record_enabled 翻转不增删协程、只投递
+  重评估信号。rooms 为空时记 warn 空转，但对后续变更保持响应。
+- `reconcile` 三步：回收 `stopping` 中已结束的句柄 → 取消已从 registry
+  消失的房间的 monitor → 为新增房间 `launchMonitor`、为 record_enabled
+  变化的房间 `notifyRoomChange`。
+- `runMonitor`：`runMonitorConnection` 返回错误且 ctx 未取消时记错误、
+  `registry.NoteError`，等 `monitorRedialDelay = 10s` 后重建弹幕连接
   （防御性循环；当前 `liveClient.DanmakuConn` 构造不会失败，重连都在
   conn 内部完成）。
-- `watchRoom` 的 select 六路：ctx 取消（cancel 活动场次并等 done）/
-  弹幕事件排空（无活动场次时丢弃；有活动场次时该分支是 nil channel，
-  事件由 PumpSession 直接消费）/ 场次结束（`active.done` → 清 active）/
-  `RoomStateUpdates` 房态事件 / 轮询定时器 / roomChanged 重评估信号。
-- 房态事件与轮询共用同一套动作：`registry.ApplyRoomInfo` 记录房态；
-  "在播、record_enabled 且无活动场次" → `launchSession`；"未在播但有活动场次" →
-  `active.cancel()`。轮询失败只 warn + NoteError（ctx 取消引起的失败
+- `runMonitorConnection` 的 select 六路：ctx 取消（cancel 活动场次并等
+  done）/ 弹幕事件排空（无活动场次时该分支有效，事件直接丢弃；有活动
+  场次时该分支置为 nil channel，事件由 PumpSession 直接消费）/ 场次结束
+  （`currSession.done` → `OnSessionFinished`）/ `RoomStateUpdates` 房态
+  事件 / 轮询定时器 / roomChange 重评估信号。
+- 房态事件与轮询共用同一套动作：`registry.ApplyRoomInfo` 记录房态后投递
+  `policy.OnRoomInfo`；决策为 Start 时 `launchSession`，Stop 时
+  `currSession.cancel()`。轮询失败只 warn + NoteError（ctx 取消引起的失败
   除外——属停机/删房间的正常路径），不重置定时器之外的任何状态。
-- roomChanged 重评估信号（监督循环在 record_enabled 翻转时投递）：重读注册表
-  最新开关，投递该房间 sessionPolicy 的 `RecordEnabledFlipped`——关闭录制
+- roomChange 重评估信号（监督循环在 record_enabled 翻转时投递）：重读注册表
+  最新开关，投递该房间 sessionPolicy 的 `OnRecordEnabled`——关闭录制
   且在录 → Stop（取消活跃会话）；开启录制且最新房态在播 → Start；其余 None。
-  场次结束事件同样经 `SessionFinished` 决策（收尾中仍在播 → 恢复录制）。
+  场次结束事件同样经 `OnSessionFinished` 决策（收尾中仍在播 → 恢复录制）。
   仅名称/标题变更不触发重评估。
 
 ### 3.2 房间状态
@@ -353,9 +387,9 @@ repo IO 必须在锁外）：
 | `room` | `Room` 快照 | 持久字段的内存副本（含平台刷新后的 streamer_name / room_title） |
 | `liveStatus` | `LiveStatusUnknown` / `LiveStatusPreparing` / `LiveStatusOnAir` | 平台侧开播状态（ApplyRoomInfo 只会写后两者） |
 | `recordStatus` | `RecordStatusIdle` / `RecordStatusRecording` / `RecordStatusMerging` / `RecordStatusError` | 录制器自身状态 |
-| `quality` | `StreamQuality` | 当前会话 B 站实际授予的流清晰度（recordLoop 拉流成功后经 `SetStreamQuality` 写入，StartRecording / FinishRecording 清零；是 room API `granted_qn` / `granted_qn_desc` 的数据源） |
+| `quality` | `StreamQuality` | 当前会话 B 站实际授予的流清晰度（runRecordingLoop 拉流成功后经 `SetStreamQuality` 写入，StartRecording / FinishRecording 清零；是 room API `granted_qn` / `granted_qn_desc` 的数据源） |
 | `sessionStartedAt` | time | 当前场次开始时刻（StartRecording 置 now，FinishRecording 清零） |
-| `lastError` | string | 最近一次错误（StartRecording 清零；NoteError/FailRecording 写入） |
+| `lastError` | string | 最近一次错误（StartRecording 清零；NoteError/FailRecording 写入；FinishRecording **不**清） |
 
 房态来源只有 `getInfoByRoom`：WS 房态命令（LIVE/PREPARING/ROUND/
 ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查结果经
@@ -366,7 +400,7 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
    房间不在 registry（如刚被删除）则整体忽略。
 2. 用平台非空值覆盖内存里的 `streamer_name` / `room_title`，随后在锁外
    调 `repo.UpdateRoom` 写回 sqlite。**覆盖语义**：平台数据优先于库里
-  已有值。覆盖后的值重启不丢。
+   已有值。覆盖后的值重启不丢。
 3. 写回失败只记 warn，内存快照仍然更新（降级不丢状态）。
 
 启动后创建的房间在落库成功后即由 `RoomUsecase` 登记进 registry，录制
@@ -376,38 +410,56 @@ ROOM_CHANGE）与兜底轮询都只是触发/执行一次房态复查。复查�
 ### 3.3 场次生命周期
 
 `runSession` 端到端拥有一个场次（由 `launchSession` 派生可取消 ctx 并
-起 goroutine，`sessionHandle{cancel, done}` 供 watchRoom 管理）：
+起 goroutine，`sessionHandle{cancel, done}` 供 `runMonitorConnection` 管理）：
 
 1. **组装 RecordingSession**：`registry.Room(roomID)` 取库存快照，
-   `RoomName = firstNonEmpty(库存 streamer_name, API 主播名, roomID)`，
+   `StreamerName = firstNonEmpty(库存 streamer_name, API 主播名, roomID)`，
    `Title`、`LiveStartTime` 取触发开播的房态快照（场次中途标题变化
    不改名；`LiveStartTime` 决定目录，重连续录落回同一场次）。
 2. **StartRecording**：置 `RecordStatusRecording`、清零授予清晰度、刷新
    sessionStartedAt、清 lastError。
 3. **PrepareSession**：创建（或重启后重定位）场次目录与 meta.json，
    并把该房间的在途 stats（当前文件/字节数）清零——否则新场次的字节
-   会累加到上一场的计数上。失败 → `FailRecording` 返回。
-4. **recordLoop**：见 §4.5。
+   会累加到上一场的计数上；若上一轮场次已合并完成，先归档其合并产物
+   （§4.6.1）。失败 → `FailRecording` 返回。
+4. **runRecordingLoop**：见 §4.5。
 5. **收尾**：先置 `RecordStatusMerging`，再用
    `context.WithoutCancel(ctx)` + `finishGracePeriod = 30s` 的脱离 ctx
-   执行 `FinishSession`，   未完成的合并由下次启动 `RecoverPending` 补跑。成功 →
+   执行 `FinishSession`，未完成的合并由下次启动 `RecoverPending` 补跑。成功 →
    `FinishRecording`（回 `RecordStatusIdle`、清 sessionStartedAt），失败 →
    `FailRecording`。
 
 录制中房间状态为 `RecordStatusRecording`；Get/List 只对该状态的房间追加
-`SessionStatsRepo.SessionStats`（当前 part 路径 + 累计字节，原子计数，零额外采集）。
-授予清晰度（`granted_qn` / `granted_qn_desc`）则始终来自 registry 快照，
-录制中为实际档位，非录制时为默认零值。
+`SessionStatsRepo.Stats`（当前 part 路径 + 累计字节 + 速度，原子计数，
+零额外采集）。授予清晰度（`granted_qn` / `granted_qn_desc`）则始终来自
+registry 快照，录制中为实际档位，非录制时为默认零值。
 
-### 3.4 优雅停机
+### 3.4 三种生命周期与状态归属
+
+录制器的状态按寿命分三层，判断一个字段该放哪里只有一条判据：
+**重连后仍然成立的状态上移，只对本次连接成立的留下**。
+
+| 生命周期 | 载体 | 活多久 |
+|---|---|---|
+| 进程 | `recorderRepo`（`recordRoot`、`statsStore`） | 从启动到停机 |
+| Session（一次连续直播） | `sessionStats` + 会话目录与 meta.json | `PrepareSession` → `FinishSession`，跨其内所有断流重连 |
+| 单次连接（一次 `PumpSession`） | `pumpState` + `speedTracker` | 随调用创建销毁 |
+
+- 断流重连会多次调用 `PumpSession`，所以凡是"重连后还得记得"的东西都
+  不能放进 `pumpState`。写入进度（`sessionStats`，按房间 ID 索引）挂在
+  repo 上，只在 `PrepareSession` 时重置一次——重连后进度条不能归零。
+- 段边界、去重窗口、速度采样、健康巡检计数则全是单次连接的，重连后从
+  零开始才是对的。
+
+### 3.5 优雅停机
 
 ```
 SIGTERM → kratos 触发各 server.Stop
   → Daemon.Stop 取消 rctx
-    → watchRoom：cancel 活动场次并等待 done
-      → recordLoop 因 ctx.Err() 返回（当前 part 已刷盘，FLV 至最后完整 tag 有效）
+    → runMonitorConnection：cancel 活动场次并等待 done
+      → runRecordingLoop 因 ctx.Err() 返回（当前 part 已刷盘，FLV 至最后完整 tag 有效）
       → FinishSession 用脱离 ctx（30s grace）标 merging 并尽量完成合并
-    → monitorRoom 退出，Run 返回
+    → runMonitor 退出，Run 返回
   → Stop 等待 done / 传入停机 ctx / 45s 三者先到，超时仅 warn 继续关停
 未完成的合并 → 下次启动 RecoverPending 补跑
 ```
@@ -447,12 +499,12 @@ SIGTERM → kratos 触发各 server.Stop
 - `getRoomPlayInfo`：`protocol=0,1 & format=0,1,2 & codec=0 & qn=10000
   & platform=web`（qn 固定请求原画；请求不到时平台自动授予次高档位；
   codec 只请求 0=avc，见 ADR-0004）。
-  候选展开 stream×format×codec×url_info，只保留 `avc` codec（tag 级的
-  关键帧/序列头判定按 AVC 布局实现，HEVC/enhanced-RTMP 会使其失效，
-  见 ADR-0004），再过滤 `base_url` 含 `.flv` 的候选（录制必须 FLV），
-  排除 `.mcdn.`（P2P CDN）主机——P2P 节点不适合长时间拉流录制；排除后
-  无候选则退回全部候选。取首个候选，
-  URL = `host + base_url + extra`，并记录该 codec 行的
+  候选展开 stream×format×codec×url_info，`bestFLVStream` 只保留 `avc`
+  codec（tag 级的关键帧/序列头判定按 AVC 布局实现，HEVC/enhanced-RTMP
+  会使其失效，见 ADR-0004），再过滤 `base_url` 含 `.flv` 的候选（录制
+  必须 FLV），排除 `.mcdn.`（P2P CDN）主机——P2P 节点不适合长时间拉流
+  录制；排除后无候选则 `pickFLVStream` 退回全量候选重挑一次。取首个
+  候选，URL = `host + base_url + extra`，并记录该 codec 行的
   `current_qn`（平台实际授予的档位）。
 - 授予档位优先取选中 codec 行的 `current_qn`，缺失退用 playurl 顶层
   `current_qn`；两者都拿不到则清晰度未知（desc 为空、不记降档日志）。
@@ -472,41 +524,71 @@ SIGTERM → kratos 触发各 server.Stop
 
 ```
 HTTP body（原始字节，LiveClient 打开）
-  → PumpSession 泵送（data/recorder.go）
+  → PumpSession 泵送（data/recorder/recorder_pump.go）
       ├─ flv.ParseHeader 读 9 字节文件头 + PreviousTagSize0
-      ├─ tag 读取 goroutine：flv.ReadTag 逐个送入 chan（缓冲 512）
+      ├─ flv.ReadTags goroutine：逐个 ReadTag 送入 chan（缓冲 64）
       ├─ 泵送开始时把实际清晰度写回 meta.json（quality 字段）
-      ├─ headerCache 缓存 onMetaData / AVC sequence header / AAC sequence header
+      ├─ initTags 缓存 onMetaData / AVC sequence header / AAC sequence header
       ├─ 分段在首个视频关键帧处开启（纯音频流豁免，ADR-0005）：
       │     关键帧之前的正文标签丢弃，初始化标签照常入缓存；
       │     part 号 = 目录扫描续号，
       │     新 part = FLV 文件头 + 缓存的三类头 tag + 后续 tag（可独立播放）
-      ├─ dupGuard 块去重（ADR-0006）：按视频关键帧分块（兜底边界：25s
+      ├─ dedupGuard 块去重（ADR-0006）：按视频关键帧分块（兜底边界：25s
       │     时间戳间隔 / 60s 块跨度 / 64MB 缓冲），整块缓冲后裁决落盘；
       │     内容指纹（FNV-1a，不含时间戳）命中最近 16 块窗口 → 整块丢弃，
       │     连续 10 块重复 → 判定 CDN 循环吐流，包装为 ErrStreamTransient
       │     中止，决策树换流地址重连（换 CDN 节点）；
       │     块裁决先于切段判定，强切/流结束先落盘缓冲块，不丢在途数据
-      ├─ 切段判定 ShouldSplit（两个独立触发，都优先等关键帧）：
-      │     1) 大小：已写字节达上限 2.5 GiB（代码常量，对齐 biliup 默认）
-      │        且当前 tag 是关键帧；超出上限 1/10 裕度仍无关键帧则强切；
-      │     2) 时长：段时长达 120 分钟（代码常量）且当前 tag 是关键帧；
-      │        或超出 splitOverrun = 15s 强制切
+      ├─ 切段判定 shouldSplit（两个独立触发，都优先等关键帧）：
+      │     1) 大小：已写字节达 maxSegmentSize = 2.5 GiB（代码 var，对齐
+      │        biliup 默认）且当前 tag 是关键帧；超出上限 1/10 裕度仍无
+      │        关键帧则强切；
+      │     2) 时长：段时长达 maxSegmentDuration = 120 分钟（代码 var）
+      │        且当前 tag 是关键帧；或超出 splitOverrun = 15s 强制切
       │     （时间戳保持流内原值，不重置；startTs = 该 part 首个正文 tag）
       ├─ 序列头变化强制切段：流中途 AVC/AAC 序列头与缓存字节不同
       │     （CDN 换源、主播改码率）→ 立即切段，避免两种解码配置拼进
       │     同一文件；重复出现的相同序列头不切（参照 biliup/BREC 做法）
-      ├─ 缓存时机：开/切段判定之后才更新缓存——触发新段的 tag 不会被
-      │     重复注入（否则 openSegment 注入一次、泵送又写一次）；序列头
-      │     变化触发的新段注入旧头，新序列头作为首个正文标签紧随其后
       ├─ 弹幕事件同步写当前 part 的 JSONL（无活动段时丢弃）
-      ├─ 健康巡检：每 10s 检查累计字节，
+      ├─ 健康巡检：每 10s 检查累计写入字节（正文标签口径），
       │     连续 3 轮无增长 → 中止本次连接
       │     （返回普通错误 → 走决策树普通重连分支）
-      └─ 统计：pumpStats（atomic 文件路径/字节数），字节数跨重连续泵累加
-          （baseBytes + 本次泵送量；PrepareSession 在新场次开始时清零；
-          仅统计正文标签字节，初始化标签与 FLV 文件头均不计）
+      └─ 统计：statsStore 按房间维护 sessionStats（atomic 文件路径/字节数/
+          速度），字节数跨重连续泵累加（baseBytes + 本次泵送量 +
+          去重缓冲中已接收未落盘的字节；PrepareSession 在新场次开始时清零）
 ```
+
+**两种字节口径**（容易混淆，落盘前务必分清）：
+
+| 口径 | 载体 | 含什么 | 用途 |
+|---|---|---|---|
+| 场次写入进度 | `result.BytesWritten` → `sessionStats` → API `bytes_written` | 只含正文标签（`writeBodyTag` 的返回值）；**FLV 文件头与注入的初始化标签都不计** | 进度展示、健康巡检 |
+| 分段体积 | `segmentWriter.bytesWritten` → `segmentMeta.Bytes` | 含 FLV 文件头与注入的初始化标签（`writePreamble` 计入） | 切段的大小判定、meta 记账 |
+
+下载速度另走一路：`speedTracker` 统计的是**网络接收**字节
+（`len(tag.Data) + TagOverhead`，去重丢弃的块也算），因为按落盘口径采样
+会在去重缓冲的脉冲间隙里大量采到 0。
+
+`handleTag` 的步骤顺序是刻意的，每一步都在防一个具体的错：
+
+1. **速度按接收字节计**，不按落盘字节。去重缓冲会把写盘集中成脉冲，
+   若按落盘口径采样，多数采样周期会得到 0。
+2. **未开段时丢弃首个视频关键帧之前的正文 tag**（ADR-0005）。初始化标签
+   仍照常入缓存，开段时注入，所以每个分段都从可解码处开始。纯音频流没有
+   关键帧可等，首个 tag 即开段；等待由健康巡检兜底（无字节增长约 30s 后中止）。
+3. **块边界处先落盘在途块**（`flushBlock`），再做切段判定。切分看的是
+   当前分段的真实字节数与时长，不能把还压在缓冲里的数据算漏。
+4. **切段判定**：大小或时长超限、或序列头变化（两种解码配置混进同一文件
+   会毁掉整段）。前两者优先在关键帧处切，等不到关键帧时超出裕度强切。
+5. **入缓存与入块放在切段之后**。序列头变化触发的切段会把新序列头注入
+   新分段；若此时该 tag 已入缓存，它还会再作为正文写一次，造成重复。
+6. **进度计入块内已接收但未落盘的字节**，块落盘后这部分转为已写字节，
+   进度自动校正为实际落盘值。
+
+延迟一个块带来的三条连带规则：强制切段与流结束路径必须先处理在途块
+（`rotateSegment` 先 `flushBlock`，`stop` 先 `drain`）；重复块被丢弃时
+要重置健康巡检的失败计数（字节没涨，但流是活的）；块边界除视频关键帧外
+还有 25s 时间戳间隔、60s 块跨度与 64MB 上限——纯音频流只有后三者。
 
 为什么用纯 Go 录制而不依赖外部工具：切段必须发生在 FLV tag 层（重启外部进程拿不到
 sequence header，新 part 不可播）；纯 Go 落盘还换来抗崩溃（FLV 无 moov
@@ -543,43 +625,44 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 读包循环；RoomStateUpdates 满时丢弃本次房态（下一个命令会再次触发复查）。
 弹幕文件与视频 part **一一对应**：切段时同步切换 JSONL 输出文件。
 
-### 4.5 断流决策树（biz.recordLoop）
+### 4.5 断流决策树（biz.runRecordingLoop）
 
 ```
 每轮开始：lc.OpenLiveStream（重取 URL，可能换 CDN 节点）
   ├─ 失败：
+  │   ├─ ctx 已取消 → 返回（停机路径）
   │   ├─ 非瞬时故障（风控拒绝等）→ 记 lastError，结束场次（不重试）
   │   └─ ErrStreamTransient → lc.GetRoomInfo 复查（probeLive，确认语义见下）
-  │       ├─ 失败 → 记错误，结束场次（失败由 ctx 取消引起则静默返回，
+  │       ├─ 失败 → 结束场次（失败由 ctx 取消引起则静默返回，
   │       │   不记错误：监控已因下播事件取消了本场次）
   │       ├─ 已下播 → 正常收尾（主播刚下播、流已被撤属正常结束，
   │       │   不记 lastError、不按错误展示）
-  │       └─ 仍在播 → 按 cdn_transient_budget（代码常量 5）指数退避重试；
+  │       └─ 仍在播 → 按 CDNTransientBudget（默认 5）指数退避重试；
   │           耗尽 → 保留已录内容收尾
   └─ 成功 → session.Quality = 实际档位 → registry.SetStreamQuality 登记
       → repo.PumpSession 泵送
 泵送返回（EOF / 读错误 / 巡检中止 / 写失败 / ctx 取消）
   ├─ ctx 已取消 → 返回（停机路径）
-  ├─ 稳定录制预算重置：本腿录制时长 ≥ 5 分钟且写入过内容 →
-  │   重连次数与 CDN 预算回到初始值（预算只保护"开局即坏"的房间，
-  │   不掐死持续产出内容的长直播）
+  ├─ 稳定录制预算重置：本腿录制时长 ≥ stableResetAfter（5 分钟）
+  │   且写入过内容 → 重连次数、CDN 预算与退避档位回到初始值
+  │   （预算只保护"开局即坏"的房间，不掐死持续产出内容的长直播）
   └─ lc.GetRoomInfo 复查（probeLive）
-      ├─ 失败 → 记错误，结束场次（失败由 ctx 取消引起则静默返回，不记错误）
-      ├─ 已下播 → ApplyRoomInfo 后正常收尾
+      ├─ 失败 或 已下播 → 结束场次（ctx 取消引起的失败静默返回，不记错误）
       └─ 仍在播：
           ├─ err 是 ErrStreamTransient（CDN 瞬态：打开失败/HTTP 非 2xx/
           │   FLV 头解析失败/读错误）
-          │   ├─ cdn_transient_budget（5）未耗尽 →
+          │   ├─ CDNTransientBudget 未耗尽 →
           │   │   指数退避 min(2s << attempt, 60s) → 下一轮
           │   └─ 耗尽 → 保留已录内容收尾（记成功，非失败）
-          ├─ auto_reconnect = false → 收尾（代码内恒为 true）
-          ├─ 重连次数 < max_reconnect（3）→ 等 reconnect_delay（10s）→ 下一轮
+          ├─ AutoReconnect = false → 收尾（ReconnectPolicy 恒为 true）
+          ├─ 重连次数 < MaxReconnect（3）→ 等 ReconnectDelay（10s）→ 下一轮
           └─ 配额耗尽 → 保留已录内容收尾
 ```
 
 `probeLive` 确认语义：单次探测说"在播"即成立（录制优先）；"未开播"
-需连续 3 次确认（间隔 3s），避免单次接口抖动或轮次切换瞬间把场次提前
-结束；探测失败不计入下播确认，累计 6 次仍无定论才记错误结束场次。
+需连续 `offlineConfirmRounds = 3` 次确认（间隔 `offlineConfirmDelay = 3s`），
+避免单次接口抖动或轮次切换瞬间把场次提前结束；探测失败不计入下播确认，
+累计 `probeMaxAttempts = 6` 次仍无定论才记错误结束场次。
 
 `ErrStreamTransient` 与 `ErrRiskControl` 是 biz 声明的哨兵错误，data 在
 错误源头包装（`fmt.Errorf("%w: ...")`），决策树用 `errors.Is` 分类。
@@ -607,8 +690,27 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
      后原子改名；改名成功后才删除源分段与源弹幕。
    - 合并失败（分段损坏/缺失等）：错误记入 meta（`stage = merge`）、
      源分段全部保留、`status = partial`，由下次启动补跑重试。
-3. 合并成功 → `status = done`，合并产物文件名记入 `merged_video` /
-   `merged_danmaku`。**绝不删除未验证文件。**
+3. 合并成功 → 先落 `status = done`，**然后**才删源分段与源弹幕；合并产物
+   文件名记入 `merged_video` / `merged_danmaku`。**绝不删除未验证文件。**
+
+### 4.6.1 已合并场次的重新开启（archiveMergedSession）
+
+同一场直播里关闭录制、随后又重新开启时，`PrepareSession` 会发现上一轮
+留下的 meta 已是 `done` 且带合并产物——若直接开新分段，产物名 `{base}.flv`
+会与新分段抢同一个前缀，最终被覆盖。`archiveMergedSession` 因此先把上一轮
+的合并产物**改回带编号的分段**：
+
+1. 取 `nextPartNumber` 作为归档编号，把 `{base}.flv` 改名为
+   `{base}_partN.flv`；有合并弹幕则同步改名为 `{base}_partN.danmu.jsonl`
+   （弹幕改名失败会把视频改回原名，保持两者一致）。
+2. 用归档后的分段重建 `meta.Segments`：`wall_*` 取原分段的最小/最大值，
+   `ts_*` 取最小/最大值，`bytes` 取改名后文件的实际大小。
+3. 清空 `merged_video` / `merged_danmaku` 与 `end_time`，由调用方
+   `PrepareSession` 把 `status` 改回 `recording` 并落盘。
+
+于是 meta.json 的状态机多了一条 `done → recording` 的边（见
+`architecture-diagrams.md` §4.3），续录表现为**追加**：新一轮的分段接着
+归档分段编号往后排，收尾时再一起合并成一个文件。
 
 ### 4.7 启动补跑（repo.RecoverPending）
 
@@ -620,7 +722,7 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 | `recording` / `merging` | 视为被中断的场次：补 end_time → finalizeSession |
 | `partial` | 仅当所有源分段仍在磁盘上时重跑 finalize |
 | `done` | 无需处理 |
-| 其他状态（旧版本遗留，如 `remuxing`） | 跳过 + 警告日志，原样保留（不兼容旧数据） |
+| 其他状态（旧版本遗留） | 跳过 + 警告日志，原样保留 |
 
 ---
 
@@ -628,7 +730,7 @@ unix 毫秒），缺失或非正数视为未知而省略。发送时刻比接收
 
 所有 B 站请求都经 `browserRequest` 带上伪装头（桌面 Chrome UA + Referer +
 Origin + cookie），由 `getJSON` 发送请求、判定状态码并解码（直播侧与
-passport 侧共用）；直播 API 再经 `Client.fetchJSON`
+passport 侧共用）；直播 API 再经 `Client.fetchEndpointJSON`
 发请求，把 HTTP 412/403/429 映射为 `errHTTPRiskControl`。
 
 **WBI 签名**（`bili/wbi.go`，移植 hikami-go）：`/x/web-interface/nav` 取
@@ -648,13 +750,13 @@ img_key/sub_key → 64 位置换表混出 32 字符 mixin_key（缓存 1h）；�
 注入 buvid 指纹与签名都由 guard 的 `fetch` 完成 —— 端点没有机会漏掉
 其中任何一步：
 
-1. 风控命中（-352 或 HTTP 412/403/429）→ `refreshRisk()`（强刷 WBI 密钥 +
+1. 风控命中（-352 或 HTTP 412/403/429）→ `refreshRiskState()`（强刷 WBI 密钥 +
    作废 buvid 缓存）→ 原请求重试一次。
 2. `getDanmuInfo` 二次仍 -352 → 降级旧接口 `getConf`（`riskCall` 的可选
    `fallback`，无 WBI）。
 3. 仍失败 → 该房间进**阶梯冷却** 5min → 10min → 20min（按连续失败次数
    进阶，封顶 20min）；冷却期内 guard 直接拒绝该房间的
-  GetRoomInfo/OpenLiveStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
+   GetRoomInfo/OpenLiveStream/getDanmuInfo 调用（返回 `ErrRiskControl`）。
 4. 任一 API 成功（业务码为 0）→ `noteSuccess` 清零该房间冷却；业务码非零
    且非风控的原样返回，由端点翻译。
 
@@ -670,7 +772,7 @@ cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并�
 
 ```
 <record_root>/                              默认 ./recordings，可配置
-  <room_id>_<主播名>/                        主播名清洗后 ≤32 rune
+  <room_id>_<主播名>/                        主播名经 sanitizeSegment 清洗
     <YYYY-MM-DD>/                           开播日期（live_start_time）
       <YYYYMMDD>_<HHMM>_<直播标题>_part1.flv
       <YYYYMMDD>_<HHMM>_<直播标题>_part1.danmu.jsonl
@@ -684,11 +786,13 @@ cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并�
 
 - `YYYYMMDD_HHMM` 与日期目录均取自 API 的 `live_start_time`（真实开播
   时间，非检测时间；API 未给时退化为本机当前时间）；进程重启续录落回
-  同一场次目录。标题清洗后为空则 `untitled`。
-- part 编号 = 目录扫描续号（正则 `_part(\d+)\.(flv|mp4)$`，取最大值 +1），
-  同时覆盖断流重连与崩溃重启两种来源。
-- 清洗规则（标题 ≤64 rune、主播名 ≤32 rune）：`\/:*?"<>|`、控制字符
-  （<0x20、0x7f）、连续空白 → 单个 `_`，连续 `_` 压缩、首尾 `_` 修剪。
+  同一场次目录。
+- part 编号 = 目录扫描续号（正则 `_part(\d+)\.flv$`，取最大值 +1），
+  同时覆盖断流重连与崩溃重启两种来源；**不填补空洞**——归档的合并产物
+  同样占用编号，复用会覆盖旧分段。
+- 清洗规则（`sanitizeSegment`）：控制字符（<0x20、0x7f）、
+  `\/:*?"<>|`、空白与 Unicode 分隔符的连续串 → 单个 `_`，首尾 `_` 修剪，
+  结果为空则 `untitled`。**没有长度上限**。
 
 ### 6.2 meta.json（每场次一个，文件系统即真相）
 
@@ -712,20 +816,21 @@ cookie 过期不是错误：表现为拉流拿不到原画 → 自动降档并�
       "wall_end": 1754919600,
       "ts_start": 12340,
       "ts_end": 7199840,
-      "bytes": 4831838208,
+      "bytes": 4831838208
     }
   ],
   "merged_video": "..._base.flv",
   "merged_danmaku": "..._base.danmu.jsonl",
-  "errors": [ { "time": 1754915000, "stage": "record", "msg": "..." } ],
+  "errors": [ { "ts": 1754915000, "stage": "record", "msg": "..." } ],
   "updated_at": 1754923260
 }
 ```
 
 - `wall_*`（墙上时钟 unix 秒）+ `ts_*`（流内时间戳毫秒；start = 该 part
   首个正文 tag，end = 末个 tag）双时间轴，是第二阶段切片对齐的依据。
-- 段在 opened 时入 meta（`pending`，含 wall_start），closed 时补
+- 段在 opened 时入 meta（含 wall_start），closed 时补
   wall_end/ts/bytes；所有 meta 写入经 tmp 文件 + rename 原子替换。
+- `status` 还有一条 `done → recording` 的重开边，见 §4.6.1。
 
 ### 6.3 弹幕 JSONL（每 part 一个）
 
@@ -779,7 +884,7 @@ message Recorder {
 }
 ```
 
-配置治理原则：**只保留随部署环境变化的项**（路径、端口；凭据与收尾合并
+配置治理原则：**只保留随部署环境变化的项**（端口、路径；凭据与收尾合并
 策略都已不是配置项，分别见 §7.3 与 §4.6）。行为调优不做配置，默认值写死在
 代码里（§7.2）；被移除的字段在 proto 中 `reserved` 其字段号与名称。
 `cookie` / `merge_enabled` 是仅有的两个例外：字段保留但标
@@ -796,8 +901,8 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 - 拒绝目录式输入（以 `/` 结尾、clean 后为 `.`/`/`、或已存在的目录）。
 
 父目录缺失时 `ensureSQLiteDir` 自动创建；db 文件本身由 sqlite 首次打开
-时创建。开库成功后 `NewData` 立即 AutoMigrate `rooms` 表。db 文件是
-运行期数据，不进 git（`/data/` 已加入 .gitignore）。
+时创建。开库成功后 `NewData` 立即 AutoMigrate `rooms` 与 `credentials`
+表。db 文件是运行期数据，不进 git（`/data/` 已加入 .gitignore）。
 
 ### 7.2 代码默认值与应用位置
 
@@ -812,36 +917,42 @@ SQLITE_BUSY。source 的路径校验规则（`sqliteFilePath`）：
 
 | 常量 | 值 | 所在层 |
 |---|---|---|
-| 兜底轮询间隔 | 600s（±10% 抖动） | biz |
+| 兜底轮询间隔 | 600s（±10% 抖动，`pollJitterFraction = 5`） | biz `recorder.go` |
 | 自动重连 | 恒开 | biz（ReconnectPolicy） |
-| 最大重连次数 | 3 | biz |
-| 重连延迟 | 10s | biz |
-| CDN 瞬时故障重试预算 | 5 | biz |
-| CDN 退避基数 / 封顶 | 2s / 60s | biz |
-| 下播确认次数 / 间隔 | 连续 3 次 / 3s | biz |
-| 下播确认探测上限（含失败） | 6 次 | biz |
-| 稳定录制预算重置阈值 | 5 分钟 | biz |
-| 监控重建（重拨）间隔 | 10s | biz |
-| FinishSession 脱离 grace | 30s | biz |
-| 分段时长 | 120 分钟 | data/recorder `segmentDurationLimit`（segment.go，写死） |
-| 分段大小上限 / 强切裕度 | 2.5 GiB / 超出上限 1/10 | data/recorder `segmentSizeLimit`（segment.go，写死） |
-| 健康检查间隔 / 失败轮数 | 10s / 3 轮 | data/recorder `healthCheckInterval` / `healthMaxFailRounds`（pump_monitor.go，写死） |
-| 请求清晰度 | 10000（原画；不足时平台自动降档） | data/bili（live） |
-| 切段关键帧等待上限 | 15s | data |
-| 去重指纹窗口 / 连续重复断开阈值 | 16 块 / 10 块 | data |
-| 去重块边界兜底（时间戳间隔 / 块跨度 / 缓冲上限） | 25s / 60s / 64MB | data |
-| 弹幕事件缓冲 / 房态更新缓冲 | 4096 / 16 | data |
-| WS 心跳 / 读超时 | 30s / 90s | data |
-| WS 重连退避 | 2s→30s | data |
-| apiClient 超时 | 15s | data |
+| 最大重连次数 `defaultMaxReconnect` | 3 | biz `recorder.go` |
+| 重连延迟 `defaultReconnectDelay` | 10s | biz `recorder.go` |
+| CDN 瞬时故障重试预算 `defaultCDNTransientBudget` | 5 | biz `recorder.go` |
+| CDN 退避基数 / 封顶 | 2s（`defaultCDNBackoffBase`）/ 60s（`defaultCDNBackoffMax`） | biz |
+| 下播确认轮数 / 间隔 | 3（`offlineConfirmRounds`）/ 3s（`defaultOfflineConfirmDelay`） | biz `recorder_session.go` |
+| 下播确认探测上限（含失败）`probeMaxAttempts` | 6 | biz `recorder_session.go` |
+| 稳定录制预算重置阈值 `defaultStableResetAfter` | 5 分钟 | biz `recorder.go` |
+| 监控重建（重拨）间隔 `monitorRedialDelay` | 10s | biz `recorder.go` |
+| FinishSession 脱离 grace `finishGracePeriod` | 30s | biz `recorder_session.go` |
+| 分段时长上限 `maxSegmentDuration` | 120 分钟 | data/recorder `segment.go`（`var`，仅供测试缩小） |
+| 分段大小上限 `maxSegmentSize` | 2.5 GiB（2_684_354_560） | data/recorder `segment.go`（`var`，仅供测试缩小） |
+| 大小强切裕度 `sizeSplitOverrunDivisor` | 上限的 1/10 | data/recorder `segment.go` |
+| 时长强切裕度 `splitOverrun` | 15s | data/recorder `segment.go` |
+| 健康检查间隔 / 失败轮数 | 10s（`healthCheckInterval`）/ 3 轮（`healthMaxFailRounds`） | data/recorder `pump_monitor.go` |
+| 去重指纹窗口 / 连续重复断开阈值 | 16 块（`dedupWindowSize`）/ 10 块（`dedupMaxStreak`） | data/recorder `dedup.go` |
+| 去重块边界兜底（时间戳间隔 / 块跨度 / 缓冲上限） | 25s / 60s / 64MB | data/recorder `dedup.go` |
+| 下载速度采样间隔 | 1s | data/recorder `recorder_pump.go` |
+| tag 读取通道缓冲 | 64 | data/flv `reader.go` |
+| 弹幕事件缓冲 / 房态更新缓冲 | 4096 / 16 | data/bili `danmaku.go` |
+| WS 心跳 / 读超时 | 30s / 90s | data/bili `danmaku.go` |
+| WS 重连退避 | 2s → 30s | data/bili `danmaku.go` |
+| 请求清晰度 `sourceQualityQN` | 10000（原画；不足时平台自动降档） | data/bili `live.go` |
+| apiClient 超时 | 15s | data/bili `client.go` |
+| 风控冷却阶梯 `riskCooldownLadder` | 5 / 10 / 20 分钟 | data/bili `risk.go` |
+| WBI 密钥缓存 / buvid 缓存 | 1h / 24h | data/bili `wbi.go` / `buvid.go` |
+| QR 登录有效期 | 180s | data/bili `passport.go` |
 
 另有 room repo 的 ListRooms 对 `Limit ≤ 0` 兜底 20、`Offset < 0` 报
 ErrRoomInvalidArgument。
 
 ### 7.3 凭据（扫码登录，ADR-0003）
 
-- 凭据不再来自配置文件：`recorder.cookie` 已废弃、不再被读取（配置里
-  填了值启动时只记 warn）；`configs/credentials.yaml` 退役，
+- 凭据不来自配置文件：`recorder.cookie` 已废弃、不再被读取（配置里
+  填了值启动时只记 warn）；`configs/credentials.yaml` 不再是配置项，
   `credentials.example.yaml` 只留说明性占位。
 - 唯一来源是 sqlite `credentials` 表的单例行，经 Web 管理页扫码登录获取
   （AccountService `/v1/account/qr-login/*`，调 B 站 passport 接口，
@@ -863,7 +974,7 @@ ErrRoomInvalidArgument。
   rooms 表里，经 CRUD API 管理；全新安装首次启动时 rooms 表为空，
   recorder 记 warn 空转但对后续加房保持响应，CreateRoom 加房后立即
   开始监控（§8.1）；
-- 不再列出 `merge_enabled`：字段已废弃且不再被读取（收尾总是合并分段），
+- 不列出 `merge_enabled`：字段已废弃且不再被读取（收尾总是合并分段），
   但键只要存在就会在启动时打一条 deprecation warn，因此默认配置里省略；
 - `cookie: ""` 废弃占位，不再被读取（凭据来自扫码登录，§7.3）。
 
@@ -883,20 +994,21 @@ ErrRoomInvalidArgument。
 | UpdateRoom | `POST /v1/rooms/update` | 通过 update_mask 更新 `record_enabled`；主播名和房间标题只读；不存在 → 404 |
 | DeleteRoom | `POST /v1/rooms/delete` | body 传 room_id，返回 `google.protobuf.Empty`；不存在 → 404 |
 
-- `Room` 消息 = 持久字段（room_id / streamer_name / room_title /
-  record_enabled / create_time / update_time；主播名与房间标题由 B 站信息
-  回填，接口侧为只读字段）
+- `Room` 消息 = 持久字段（room_id / record_enabled / create_time /
+  update_time；主播名与房间标题由 B 站信息回填，接口侧为 OUTPUT_ONLY）
   + 运行时字段（live_status / record_status / current_file /
   bytes_written / download_speed_bps / granted_qn / granted_qn_desc /
   session_started_at / last_error，全部标注
-  OUTPUT_ONLY）。其中 `bytes_written` 为落盘写入口径（writtenBytes），
-  `download_speed_bps` 为网络接收口径（receiveBytes）按秒采样。
+  OUTPUT_ONLY）。其中 `bytes_written` 为正文标签的写入进度（不含 FLV
+  文件头与注入的初始化标签，两种字节口径见 §4.3），
+  `download_speed_bps` 为网络接收口径按秒采样。
   **运行时字段只在 Get/List 响应中由 registry 合并返回；
   Create/Update 的响应里是默认值**（LIVE_STATUS_UNSPECIFIED /
   IDLE / 零值；Delete 返回 Empty），也不参与查询过滤。
-- 五个 RPC 同时注册 HTTP 与 gRPC；中间件沿用 recovery + validate
-  （Create/Update 的 `room` 字段与 update_mask、Get/Delete 的 `room_id` 声明为 REQUIRED）。根目录 `openapi.yaml` 由 `make api`
-  一并重新生成。
+- 五个 RPC 同时注册 HTTP 与 gRPC；HTTP 中间件为 recovery + validate
+  （Create/Update 的 `room` 字段与 update_mask、Get/Delete 的 `room_id`
+  声明为 REQUIRED），gRPC 只有 recovery。根目录 `openapi.yaml` 由
+  `make api` 一并重新生成。
 - 所有路由都是字面 POST 路径，不存在通配路由，注册顺序无歧义。
 
 **ListRooms 细则**：
@@ -933,7 +1045,7 @@ biz 层对应 `ErrRoomNotFound`（errors.NotFound）/
 主键约束兜底（mattn/go-sqlite3 的 ErrConstraint → AlreadyExists）。
 `ErrStreamTransient` / `ErrRiskControl` 仅作内部分类哨兵，不出 API。
 
-biz ↔ proto 枚举映射（`service.convertRoomReply`，五个 RPC 共用）：
+biz ↔ proto 枚举映射（`service.toRoomDTO`，五个 RPC 共用）：
 
 | biz | proto LiveStatus | biz | proto RecordStatus |
 |---|---|---|---|
@@ -942,20 +1054,21 @@ biz ↔ proto 枚举映射（`service.convertRoomReply`，五个 RPC 共用）�
 | LiveStatusOnAir | LIVE_STATUS_LIVE | RecordStatusMerging | RECORD_STATUS_MERGING |
 | | | RecordStatusError | RECORD_STATUS_ERROR |
 
-`RECORD_STATUS_REMUXING` 为历史遗留死值（旧转封装流程），新流程不再产生，保留仅为避免破坏性变更。
+`RECORD_STATUS_REMUXING = 3` 为历史遗留值（旧转封装流程），新流程不再产生，
+保留仅为避免破坏性变更；前端仍会映射它。
 
 数据源：持久字段来自 sqlite（repo）；运行时字段来自 `RoomRegistry`
 快照（mutex；授予清晰度 granted_qn / granted_qn_desc 由录制器经
 `SetStreamQuality` 写入，仅录制中非零）+ 仅录制中房间追加
-`SessionStatsRepo.SessionStats`
+`SessionStatsRepo.Stats`
 （泵送层原子计数，stats 出错静默跳过只丢进度）。时间戳字段为零值时
-不出现在响应里（convertRoomReply 逐个判零）。
+不出现在响应里（toRoomDTO 逐个判零）。
 
 **Web 管理界面**（`web/`）：React 19 + TypeScript + Ant Design 6 +
 Vite 的 SPA，是 HTTP API 目前唯一的图形化消费者。`RoomList` 组件提供
 房间表格（live/record 状态徽标——录制中徽标带授予清晰度
 （granted_qn / granted_qn_desc）tooltip、已写字节、下载速度
-sparkline、最近错误、房间 ID 直达 B 站直播间、5s 自动刷新）、
+sparkline、最近错误、房间 ID 直达 B 站直播间、自动刷新）、
 offset token 栈式翻页、添加弹窗
 （room_id / record_enabled）与删除确认
 （Popconfirm）。顶栏另有账号栏（`AccountBar`）：扫码登录弹窗
@@ -976,10 +1089,11 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
    记录，已录制的文件保留在磁盘上。
 3. **record_enabled 只决定是否录制**：关闭正在录制房间的录制立即优雅停止
    会话（正在合并的收尾不中断，跑完为止），监控保留；开启录制时若在播
-   则立即开录。录制开关翻转与会话收尾竞态时，收尾完成后仍在播即恢复录制。
+   则立即开录。录制开关翻转与会话收尾竞态时，收尾完成后仍在播即恢复录制
+   （§3.1、ADR-0002）。
 4. 平台刷新的主播名/房间标题会经 `ApplyRoomInfo` → `UpdateRoom` 覆盖
    写回 sqlite，重启不丢（写回失败只记 warn，内存仍更新，不影响录制）；
-  名称和标题以平台返回值为准，用户侧不提供手动编辑入口。
+   名称和标题以平台返回值为准，用户侧不提供手动编辑入口。
 
 启动后创建的房间 Get/List 照常可查，且立即被监控；反复启停房间只影响
 录制会话，不断开弹幕连接（监控协程不随 record_enabled 翻转重启）。
@@ -1000,18 +1114,19 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 | 文件/tag 停止增长 | 巡检连续 3 轮无增长 → 中止 → 决策树普通重连分支 |
 | 风控 -352/412/403/429 | 刷 WBI+buvid 重试一次 → getDanmuInfo 再降级 getConf → 失败则房间冷却 5/10/20min（§5） |
 | 进程崩溃/重启 | FLV 保留至最后完整 tag；重启后 WS 重连重查房态，在播则续录，part 目录扫描续号，meta 原子写无半更新；RecoverPending 补合并 |
-| 优雅停机（SIGTERM） | §3.4：FLV 已有效 → meta 标 merging（30s grace）→ 合并遗留下次补跑；Stop 等待上限 45s |
+| 优雅停机（SIGTERM） | §3.5：FLV 已有效 → meta 标 merging（30s grace）→ 合并遗留下次补跑；Stop 等待上限 45s |
 | 磁盘写失败 | 中止泵送，保留已写文件，meta 记 errors；重连大概率再失败，耗尽预算后房间状态 ERROR，下次开播自然恢复（无重试风暴） |
 | 合并失败（分段损坏/缺失） | 不删源分段，meta 记 merge 错误、置 partial，下次启动经 RecoverPending 重试 |
+| 同一场直播内关闭再开启录制 | PrepareSession 先把上一轮合并产物归档回带编号分段（§4.6.1），续录是追加而非覆盖 |
 | cookie 过期 | 拉流降档（qn 自动降档 + meta 记录 + warn 日志）；运维动作：Web 重新扫码登录（热替换即时生效，§7.3） |
 | WS 假死（半开连接） | 90s 读超时强制重连；兜底轮询（600s±10%）保底发现开播 |
-| 多主播同时开播 | 各房间录制会话直接并行运行，不受录制槽位限制 |
+| 多主播同时开播 | 各房间录制会话直接并行运行，无并发上限（`max_concurrent` 配置已移除） |
 | recorder 配置缺失/rooms 表为空 | NewData/NewRecorderRepo/NewRecorderUsecase 均容忍 nil recorder conf；rooms 表空 → Run 记 warn 空转但对后续变更保持响应；经 CRUD 加房后立即开始监控（§8.1） |
 | data.database.source 缺失或非法 | NewData 启动失败：source 非空且通过路径校验（§7.1）；sqlite 打不开同样启动失败 |
-| 录制中关闭房间的录制 | 优雅停止会话：关 FLV、刷弹幕、finalize meta、合并若开启则跑完（30s grace），监控保留；再开启录制时若在播立即恢复录制（§8.1） |
+| 录制中关闭房间的录制 | 优雅停止会话：关 FLV、刷弹幕、finalize meta、合并跑完（30s grace），监控保留；再开启录制时若在播立即恢复录制（§8.1） |
 | 录制中删除房间 | 先优雅停止会话，再停止监控、删除房间记录；已录制文件保留，迟到的注册表状态写入自动忽略 |
 | 无活动场次时弹幕到达 | Events 缓冲（4096）满即丢弃，不阻塞 WS 读循环 |
-| watchRoom 收到重复"在播" | 幂等：已有活动场次则忽略 |
+| runMonitorConnection 收到重复"在播" | 幂等：已有活动场次则忽略 |
 | 场次中途改标题/轮次 | 目录与文件名沿用开播快照，不重命名；ROUND/ROOM_CHANGE 仅刷新房态 |
 | 平台刷新覆盖已有身份 | ApplyRoomInfo 覆盖语义：平台非空值优先，经 UpdateRoom 写回（§8） |
 | 新场次字节计数 | PrepareSession 清零在途 stats，新场次进度不叠加旧场次（重启续录不受影响，stats 本是内存态） |
@@ -1021,27 +1136,37 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 190 个测试函数。运行：`go test -mod=mod ./...`（本仓库一律 `-mod=mod`）。
+共 27 个测试文件 / 225 个测试函数。运行：`go test -mod=mod ./...`
+（本仓库一律 `-mod=mod`）。全部离线可跑，不需要外网：只有
+`data/bili/passport_test.go` 用到 `httptest` 本地回环服务。
 
-| 层 | 文件 | fake 什么 / 测什么 |
+| 层 | 文件（用例数） | fake 什么 / 测什么 |
 |---|---|---|
-| biz | `recorder_test.go`（24） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、拉流瞬时失败复查已下播静默收尾（不记错误）/仍在播按预算重试/复查失败终止、复查因 ctx 取消失败静默收尾（不记错误）、ctx 取消即停、nil/覆盖配置、抖动区间；**下线多次确认（单次下播探测不结束场次、在播单次即成立、持续失败耗尽 6 次记错误）、稳定录制重置预算（腿时长 ≥ 阈值且写入内容）**；watchRoom 收到"未开播"房态更新取消活动场次；**record_enabled 门控（关闭录制只监控不录制、开启立即开录）、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile**；`cdnBackoffBase`/`monitorReconnectDelay`/`offlineConfirmDelay`/`stableResetAfter` 字段供测试压缩时延 |
-| biz | `room_test.go`（10） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；**registry Add/Update/Remove 实时同步与合并式变更通知（含退订）**、**RoomUsecase CRUD 落库后同步 registry（持久化失败不回写）**；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
-| biz | `recorder_session_policy_test.go`（4） | 决策矩阵逐行覆盖（`.scratch/session-policy/spec.md`）：RoomInfoArrived / RecordEnabledFlipped / SessionFinished 三种输入 × 阶段（idle / running / finishing）转移，收尾后续录（resumeOnFinish）语义（ADR-0001） |
+| biz | `recorder_test.go`（24） | repo + LiveClient 全脚本化 fake（队列式返回、末条粘滞）；决策树各分支：下播停录、在播重连、预算耗尽保内容、auto_reconnect=false、CDN 瞬态独立预算、OpenLiveStream/复查失败终止、拉流瞬时失败复查已下播静默收尾（不记错误）/仍在播按预算重试/复查失败终止、复查因 ctx 取消失败静默收尾（不记错误）、ctx 取消即停、nil/覆盖配置、抖动区间；下线多次确认（单次下播探测不结束场次、在播单次即成立、持续失败耗尽 6 次记错误）、稳定录制重置预算；监控集成（未开播取消活动场次、record_enabled 门控、兜底轮询、初始探测失败、停止中再开启录制收尾后续录、Run 监督循环对注册表增删的实时 reconcile）；`cdnBackoffBase`/`monitorReconnectDelay`/`offlineConfirmDelay`/`stableResetAfter` 字段供测试压缩时延 |
+| biz | `room_test.go`（10） | fakeRoomRepo 脚本化：NewRoomRegistry 全量加载（room_id 序）、nil repo 空 registry、加载失败即启动错误；registry Add/Update/Remove 实时同步与合并式变更通知（含退订）、RoomUsecase CRUD 落库后同步 registry（持久化失败不回写）；ApplyRoomInfo 覆盖主播名/标题并经 UpdateRoom 写回（二次上报再覆盖）、写回失败只降级内存仍更新；fakeStatsRepo；ListRoomRuntimes 合并状态与 stats；RoomUsecase 参数校验与 repo 错误透传 |
+| biz | `recorder_session_policy_test.go`（4） | 决策矩阵逐行覆盖（`.scratch/session-policy/spec.md`）：`OnRoomInfo` / `OnRecordEnabled` / `OnSessionFinished` 三种输入 × 阶段（idle / running / finishing）转移，以及 `TestSessionPolicyPreservedQuirks` 锁定的三条保留行为（收尾中开启录制即便流已死也恢复、恢复用最新的房态信息、收尾中关闭录制则抑制恢复）（ADR-0001/0002） |
 | biz | `account_test.go`（5） | fake PassportClient + CredentialRepo 脚本化：轮询确认才持久化凭据、未确认状态不落库、参数校验、账号状态（无凭据=已登出）、本地登出 |
-| service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`（MergeEnabled=false 关闭收尾合并），按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、坏 page_token）、**平台刷新回填 streamer_name**（重建第二套 env 模拟重启验证 registry 重载）；convertRoomReply 枚举映射 |
+| service | `room_test.go`（7） | 真 sqlite 端到端：`t.TempDir()` 临时 db 文件 + `data.NewData`，按 wireApp 同款链路搭 roomEnv；CRUD 全流程（建/取/删、时间戳回填、响应运行时字段默认值）、分页翻页、optional 查询字段、运行时状态合并、校验（0/负 room_id、重复创建 409、坏 page_token、拒绝 streamer_name 的 update_mask）、平台刷新回填 streamer_name（重建第二套 env 模拟重启验证 registry 重载）；toRoomDTO 枚举映射 |
 | service | `account_test.go`（5） | 真 sqlite 端到端：QR 登录创建/轮询全流程、凭据跨重启持久化、空 qrcode_key 校验、过期凭据的状态行为、平台错误传播（503） |
-| data | `recorder_test.go`（39） | `t.TempDir()` 真文件系统：meta 往返/缺失/损坏 JSON、标题清洗、part 续号、切段判定（时长 + **大小双触发：阈值/关键帧/裕度强切各分支**）、配置映射、路径推导、重启续录保段/更新标题变体、**场次间 stats 清零**、新段头注入且不重复写（单段/切段各一）、**序列头变化强制切段（视频/音频各一次变头共三段；重复相同序列头不切）**、**大小上限端到端切分（段体积与关键帧切点断言）**、**新段等待首个视频关键帧（关键帧前正文丢弃、初始化标签注入、音频流豁免，ADR-0005）**、**CDN 循环吐流去重（重复块丢弃/连续上限断流/强切先落盘缓冲块，ADR-0006）**、弹幕事件落盘、nil 流拒绝、单段/切段全流程、收尾合并（无 meta noop / 禁用合并保分段 / 单段产物与源删除 / 多段边界时间戳平移与单调 / 失败保留源与临时文件清理 / 缺源标 partial）、**合并产物后再开录的回滚追加（含弹幕缺失回滚）**、RecoverPending（中断补跑 / 旧状态跳过 / partial 源齐重试与源缺保留） |
-| data | `recorder_dedup_test.go`（5） | dupGuard 单元：重复块丢弃与连续计数、块边界（关键帧/初始化标签/时间戳间隔）、空块裁决、连续上限断开、takeAll 不计指纹 |
+| data/recorder | `recorder_pump_test.go`（19） | 泵送全流程：进度计入缓冲块、nil 流/坏文件头拒绝、流被截断、单段、重连、取消时刷盘与弹幕归位、关键帧切段、初始化标签只写一次、序列头变化切段、大小上限切分、纯音频流、去重、CDN 循环断开、强切裕度 |
+| data/recorder | `recorder_test.go`（17） | recorderRepo 配置映射、PrepareSession（建 meta / 续录 / 拒绝非法）、FinishSession（无 meta noop / 补 end_time / 关闭后再开启的归档与回滚）、RecoverPending 各状态分支 |
+| data/recorder | `segment_test.go`（12） | segmentWriter：初始化标签缓存与重注入、按大小/时长两路切分判定、part 续号、失败清理、起止时间戳区间、close 错误、弹幕写入 |
+| data/recorder | `merge_test.go`（8） | 收尾合并：边界时间戳平移重置、无弹幕源、弹幕失败时删视频、ctx 取消、单段/多段、失败保留源分段、缺源标 partial |
+| data/recorder | `meta_test.go`（6） | meta.json 往返、缺失/损坏 JSON、不可读 meta 跳过、分段簿记、errors 追加 |
+| data/recorder | `dedup_test.go`（5） | dedupGuard 单元：重复块丢弃与连续计数、块边界（关键帧/初始化标签/时间戳间隔）、空块裁决、连续上限断开、drain 不计指纹 |
+| data/recorder | `paths_test.go`（5） | `sanitizeSegment`、nextPartNumber 续号（与生成名一致）、会话目录推导、sessionLayout 文件名 |
+| data/recorder | `stats_test.go`（4） | sessionStats：未知房间、快照与重置、并发访问、场次间清零 |
+| data/recorder | `pump_monitor_test.go`（3） | speedTracker 采样、healthMonitor 巡检、失败计数重置 |
+| data/recorder | `helpers_test.go`（0） | 仅共享测试助手（newTestRepo / setSplitLimits / buildFLVStream / waitUntil 等） |
 | data | `data_test.go`（4） | sqlite source 路径校验（file: 前缀容忍/查询参数拒绝）、父目录自动创建、既有 db 文件上 AutoMigrate rooms 表 |
 | data | `credential_test.go`（5） | 空库读取、单例行 upsert、Save/Delete 热替换 `Data.Cookie`、删除幂等、并发读 Cookie 安全 |
-| data/bili | `live_test.go`（11） | pickFLVStream 纯函数：**仅接受 avc（hevc/av1 候选被跳过、无 avc 则无候选报错，ADR-0004）** / 多个 avc 行取首个 / 过滤非 FLV 与空 URL、**排除 `.mcdn.` P2P 主机（普通 CDN 优先；候选全为 P2P 时退回全量）**、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |
+| data/bili | `risk_test.go`（20） | riskGuard：成功清冷却、冷却闸门拦截、HTTP 风控与 -352 刷新重试一次/耗尽、fallback 成功/失败/非零码/兜底 done 报错、非零码不记账、阶梯冷却升级、并发安全；请求构造（假 `riskTransport` 断言路径与查询参数编码、`sign` 开关、注入的指纹快照、`done` 钩子时机） |
 | data/bili | `danmaku_test.go`（15） | 包编解码往返、zlib/brotli 嵌套解包、认证包 uid 跟随 cookie（登录/匿名） |
-| data/bili | `danmaku_event_test.go`（10） | 事件解析（弹幕/礼物/SC/上舰/进场）、**弹幕发送时刻 `send_ts`（载荷 `info[0][4]`；缺失/非数字/非正数保持未知、字符串数字可解析）** |
-| data/bili | `risk_test.go`（20） | riskGuard：成功清冷却、冷却闸门拦截、HTTP 风控与 -352 刷新重试一次/耗尽、fallback 成功/失败/非零码/兜底 done 报错、非零码不记账、阶梯冷却升级、并发安全；**请求构造（假 `riskTransport` 断言路径与查询参数编码、`sign` 开关、注入的指纹快照、`done` 钩子时机）** |
+| data/bili | `live_test.go`（11） | pickFLVStream / bestFLVStream 纯函数：仅接受 avc（hevc/av1 候选被跳过、无 avc 则无候选报错，ADR-0004）/ 多个 avc 行取首个 / 过滤非 FLV 与空 URL、排除 `.mcdn.` P2P 主机（普通 CDN 优先；候选全为 P2P 时退回全量）、授予清晰度三级来源（选中 codec `current_qn` → playurl `current_qn` → 未知）、g_qn_desc 描述、接受降档 |
+| data/bili | `danmaku_event_test.go`（10） | 事件解析（弹幕/礼物/SC/上舰/进场）、弹幕发送时刻 `send_ts`（载荷 `info[0][4]`；缺失/非数字/非正数保持未知、字符串数字可解析） |
+| data/bili | `passport_test.go`（7） | assembleLoginCookie 拼装、轮询状态码映射、QR 创建（成功/平台错误）、轮询确认捕获 Set-Cookie / 各 pending 态、账号信息核验；经 `httptest` 本地回环 |
 | data/bili | `wbi_test.go`（5） | mixin_key 已知向量/短输入/32 截断、签名值 sanitize、URL 提取密钥 |
 | data/bili | `buvid_test.go`（5） | 注入替换语义（替换已有/空串追加/跳过空值/修剪空白）、cookie 取值 |
-| data/bili | `passport_test.go`（7） | assembleLoginCookie 拼装、轮询状态码映射、QR 创建（成功/平台错误）、轮询确认捕获 Set-Cookie / 各 pending 态、账号信息核验 |
 | data/flv | `flv_test.go`（4） | 构造字节流 fixture：头往返、坏签名、tag 流（含扩展字节时间戳）、截断 |
 | utils | `file_test.go`（5） | WriteFileAtomic：替换既有文件、创建缺失文件、超出缓冲区的写入、写入失败保留目标原状、上报字节数不符即拒绝 |
 
@@ -1109,9 +1234,9 @@ curl -X POST localhost:8000/v1/rooms/create \
 | buvid 指纹 | hikami-go | `internal/biliutil/buvid.go` | Go 直接移植（data/bili/buvid.go） |
 | 开播检查/拉流/URL 拼装/候选排序 | hikami-go | `internal/live_record/bilibili.go` | Go 移植（data/bili/live.go） |
 | 弹幕 WS 协议（包头/认证/心跳/brotli） | hikami-go | `internal/live_record/danmaku.go` | 移植 + 扩展事件类型（data/bili/danmaku.go、danmaku_event.go） |
-| 断流决策树/预算/巡检 | hikami-go | `internal/live_record/manager.go` | 参考重写，决策移入 biz（biz/recorder.go） |
+| 断流决策树/预算/巡检 | hikami-go | `internal/live_record/manager.go` | 参考重写，决策移入 biz（biz/recorder_session.go） |
 | 风控阶梯冷却 | hikami-go | `internal/live_record/manager.go` | 参考重写：冷却与刷新重试收进 riskGuard（data/bili/risk.go） |
-| FLV tag 切段/头注入 | blrec | `blrec/flv/*`、`blrec/core/operators/*` | Go 重写（data/flv、data/recorder*.go） |
+| FLV tag 切段/头注入 | blrec | `blrec/flv/*`、`blrec/core/operators/*` | Go 重写（data/flv、data/recorder/*） |
 | LIVE/PREPARING 事件驱动检测 | blrec | `blrec/bili/live_monitor.py` | Go 重写（biz + data/bili/danmaku.go） |
 
 hikami-go：Go 单机服务，录直播音频+弹幕 → ASR → AI 总结（刻意不保存

@@ -1,6 +1,6 @@
 # Suika 架构图集
 
-基于当前代码（2026-08 快照）绘制。Suika 是一个 Kratos（go-kratos/v3）单体服务，负责 B 站直播间管理与直播录制。术语遵循仓库根目录 `CONTEXT.md`（Monitor = 每房间监控协程；Reconcile 仅指监督循环的监控集合调和；会话启停决策属于 sessionPolicy）。
+基于当前代码（2026-10 快照）绘制。Suika 是一个 Kratos（go-kratos/v3）单体服务，负责 B 站直播间管理与直播录制。术语遵循仓库根目录 `CONTEXT.md`（Monitor = 每房间监控协程；Reconcile 仅指监督循环的监控集合调和；会话启停决策属于 sessionPolicy）。
 
 | 分类 | 图表 | 核心作用 / 解决什么问题 |
 |---|---|---|
@@ -23,13 +23,13 @@ Suika 是**单进程、单机部署**：一个 `kratos.App` 内并行运行三�
 ```mermaid
 flowchart TB
     subgraph CLIENT["客户端"]
-        WEB["浏览器 · React SPA（web/）<br/>vite dev 代理 /v1 → localhost:8000<br/>5s 自动刷新"]
+        WEB["浏览器 · React SPA（web/）<br/>vite dev 代理 /v1 → localhost:8000<br/>自动刷新"]
         GRPCCLI["gRPC 客户端（可选，当前无消费方）"]
     end
 
     subgraph SUIKA["suika 进程 · kratos.App（go run ./cmd/suika -conf ./configs）"]
         HS["HTTP Server :8000<br/>中间件：recovery + validate（field_behavior REQUIRED）"]
-        GS["gRPC Server :9000"]
+        GS["gRPC Server :9000<br/>中间件：仅 recovery"]
         DM["录制守护进程 Daemon<br/>监督循环 + 每房间 Monitor"]
         HS -.- GS
         HS -.- DM
@@ -57,7 +57,7 @@ flowchart TB
 
 要点：
 
-- **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份契约（`api/room/v1/room.proto` + `api/account/v1/account.proto`）。
+- **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份契约（`api/room/v1/room.proto` + `api/account/v1/account.proto`）。两者的中间件并不对称：HTTP 挂 `recovery` + AIP `validate`（按 proto 的 `field_behavior` 校验 REQUIRED 字段），gRPC 只挂 `recovery` —— 必填校验只在 HTTP 入口生效。
 - 直播侧 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`（含弹幕鉴权 `danmuInfo`）、`danmaku.go`（连接生命周期 + 二进制包协议）、`danmaku_event.go`、`client.go`、`http.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：构造合规请求（注入 buvid 指纹、WBI 签名）、冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。端点只声明端点形状（`riskRequest`：路径、查询参数、是否签名、响应落点、可选 `done` 钩子），不自己构造请求。唯一例外是 passport 流量（扫码登录 / 账号核验，`passport.go` 的 `PassportClient`），刻意不走 riskGuard（无 WBI 签名、无重试），自带无 cookie jar 的 HTTP 客户端、不依赖 `Client`；登录凭据经 `CredentialRepo` 持久化在 `credentials` 表单例行，落库后热替换内存 cookie（ADR-0003）。
 - 录制产物是**文件系统**而非数据库；`meta.json` 是录制历史的唯一事实源，重启后由 `RecoverPending` 扫描恢复。
 
@@ -76,33 +76,32 @@ flowchart TB
     end
 
     subgraph SERVER["internal/server —— 只做传输，无业务逻辑"]
-        SHTTP["NewHTTPServer"]
-        SGRPC["NewGRPCServer"]
+        SHTTP["NewHTTPServer<br/>recovery + validate"]
+        SGRPC["NewGRPCServer<br/>recovery"]
         SDMN["Daemon<br/>Start: 派生 context.Background 跑 Run<br/>Stop: cancel + 45s 上限等待"]
     end
 
     subgraph SERVICE["internal/service —— DTO ↔ DO"]
-        RS["RoomService<br/>convertRoom / convertRoomReply<br/>AIP pagination + fieldmask"]
+        RS["RoomService<br/>toRoomDO / toRoomDTO<br/>AIP pagination + fieldmask"]
         AS["AccountService<br/>QR 登录 / 状态 / 登出"]
     end
 
     subgraph BIZ["internal/biz —— DO 与决策，不碰存储客户端"]
         RU["RoomUsecase<br/>房间 CRUD + 运行时合并"]
         AU["AccountUsecase<br/>扫码登录 / 账号状态 / 登出"]
-        RECU["RecorderUsecase<br/>监督循环 / Monitor / 断流决策树<br/>只做决策，不做字节级 IO"]
+        RECU["RecorderUsecase<br/>recorder.go：Run + reconcile<br/>recorder_monitor.go：runMonitor / runMonitorConnection<br/>recorder_session.go：runSession / runRecordingLoop / probeLive<br/>只做决策，不做字节级 IO"]
         REG["RoomRegistry<br/>房间配置 + 运行时状态的唯一事实源"]
-        POL["sessionPolicy（ADR-0001）<br/>会话启停决策：Start / Stop / None"]
+        POL["sessionPolicy（ADR-0001/0002）<br/>会话启停决策：Start / Stop / None"]
         IF1[/"RoomRepo 接口"/]
-        IF2[/"RecorderRepo 接口"/]
+        IF2[/"RecorderRepo 接口<br/>（内嵌 SessionStatsRepo）"/]
         IF3[/"LiveClient 接口"/]
-        IF4[/"SessionStatsRepo 接口"/]
-        IF5[/"CredentialRepo 接口"/]
-        IF6[/"PassportClient 接口"/]
+        IF4[/"CredentialRepo 接口"/]
+        IF5[/"PassportClient 接口"/]
     end
 
     subgraph DATA["internal/data —— PO 与全部 IO"]
         RR["roomRepo · roomPO → rooms 表<br/>toRoomPO / toRoomDO"]
-        RREPO["recorderRepo<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · 收尾合并"]
+        RREPO["recorderRepo（内嵌 statsStore）<br/>会话目录 · FLV 解析写入（flv/）<br/>弹幕 JSONL · meta.json · 收尾合并"]
         LC["liveClient<br/>bili/ 子包：live · danmaku_* · client · wbi · buvid · http · risk<br/>（riskGuard 经 riskTransport 缝驱动 *Client）"]
         CR["credentialRepo<br/>credentials 表单例行 + cookie 热替换"]
         PC["passportClient<br/>QR 登录 · nav 核验（不走 riskGuard）"]
@@ -119,15 +118,14 @@ flowchart TB
     RU --> REG
     RECU --> REG
     RECU --> POL
-    RU --> IF1 & IF4
+    RU --> IF1 & IF2
     RECU --> IF2 & IF3
-    AU --> IF5 & IF6
+    AU --> IF4 & IF5
     IF1 -. 实现 .-> RR
-    IF4 -. 实现（同一 recorderRepo） .-> RREPO
-    IF2 -. 实现 .-> RREPO
+    IF2 -. 实现（同一 recorderRepo，<br/>房间管理只消费其内嵌的 SessionStatsRepo 那一半） .-> RREPO
     IF3 -. 实现 .-> LC
-    IF5 -. 实现 .-> CR
-    IF6 -. 实现 .-> PC
+    IF4 -. 实现 .-> CR
+    IF5 -. 实现 .-> PC
     RR --> SQLITE[("SQLite / GORM")]
     CR --> SQLITE
     RREPO --> FS[("recordings/ 文件目录")]
@@ -144,7 +142,7 @@ flowchart TB
 | data | PO、`toXxxPO/toXxxDO` | DO ↔ PO | DTO |
 | server | 传输装配 | — | 转换与业务逻辑 |
 
-倒置缝都在 `biz` 声明、`data` 实现：`LiveClient`（直播平台 IO）、`RecorderRepo`（磁盘 IO）、`RoomRepo`（房间持久化）、`CredentialRepo`（凭据持久化 + cookie 热替换）与 `PassportClient`（账号平台，刻意不走风控）。`RoomRegistry` 是被两侧共享的运行时状态中枢：房间 CRUD 落库后同步 `Add/Update/Remove`，录制守护进程经 `Subscribe` 的合并式信号实时调和监控集合，无需重启。
+倒置缝都在 `biz` 声明、`data` 实现，共**五条**：`LiveClient`（直播平台 IO）、`RecorderRepo`（磁盘 IO）、`RoomRepo`（房间持久化）、`CredentialRepo`（凭据持久化 + cookie 热替换）与 `PassportClient`（账号平台，刻意不走风控）。`RecorderRepo` **内嵌** `SessionStatsRepo`，不是一个并列的第六条缝：写入进度与磁盘 IO 由同一个实现的同一份内存状态提供，内嵌让"一个对象同时满足两者"成为编译期事实，接线处不必再做运行时类型断言，房间管理只消费收窄后的那一半。`RoomRegistry` 是被两侧共享的运行时状态中枢：房间 CRUD 落库后同步 `Add/Update/Remove`，录制守护进程经 `Subscribe` 的合并式信号实时调和监控集合，无需重启。
 
 ---
 
@@ -183,7 +181,7 @@ sequenceDiagram
         R-->>-U: *Room（含 create_time / update_time）
         U->>G: Add(room)
         G--)D: 合并式唤醒信号（异步通道，最多积压一个）
-        Note over D: reconcile：为该房间启动 Monitor<br/>（无论 record_enabled，监控立即开始）
+        Note over D: reconcile：为该房间 launchMonitor<br/>（无论 record_enabled，监控立即开始）
         U-->>-S: *RoomRuntime
         Note over S: toRoomDTO：DO → DTO
         S-->>-H: CreateRoomResponse{room}
@@ -194,17 +192,17 @@ sequenceDiagram
 同构变体：
 
 - **UpdateRoom**：service 仅接受 `record_enabled` 的 `update_mask`，落库后经
-    `registry.Update` 通知 Monitor 重新评估录制策略；主播名和房间标题由平台维护。
+  `registry.Update` 通知 Monitor 重新评估录制策略；主播名和房间标题由平台维护。
 - **DeleteRoom**：落库 → `registry.Remove` → reconcile 立即取消该房间 Monitor（活跃会话优雅停止，已录文件保留），返回 `DeleteRoomResponse{empty}`。
 
 ### 3.2 开播检测与会话启动（异步事件驱动）
 
-Monitor（`watchRoom`）的 select 分支只投递输入，启停裁决全部来自 `sessionPolicy`：Start(info) / Stop / None。
+Monitor（`runMonitorConnection`）的 select 分支只投递输入，启停裁决全部来自 `sessionPolicy`：`OnRoomInfo` / `OnRecordEnabled` / `OnSessionFinished` → Start(info) / Stop / None。
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant M as Monitor（watchRoom）
+    participant M as Monitor（runMonitorConnection）
     participant LC as LiveClient
     participant DC as DanmakuConn（弹幕 WS）
     participant P as sessionPolicy
@@ -215,31 +213,35 @@ sequenceDiagram
     M->>LC: DanmakuConn(ctx, roomID)
     LC->>DC: 取 token（getDanmuInfo，降级 getConf）→ 拨号 + 认证
     LC-->>M: DanmakuConn
-    Note over M: 启动兜底轮询定时器（默认 600s ± 抖动）
+    Note over M: 启动兜底轮询定时器（默认 600s ± 抖动）<br/>首次探测房态（probeRoomInfo）
 
     par 主通道：弹幕 WS 房间状态事件
         DC--)M: RoomStateUpdates：RoomInfo{Live:true, Title, StreamerName}
         M->>G: ApplyRoomInfo(roomID, info)
         G->>R: repo.UpdateRoom 回写（失败仅 warn，内存保留新值）
-        M->>P: RoomInfoArrived(info)
+        M->>P: OnRoomInfo(info)
         P-->>M: Start(info)　（record_enabled 且 status=idle 时）
         M->>Sess: launchSession：启动会话协程
     and 兜底通道：轮询定时器到期
         M->>LC: GetRoomInfo(roomID)
         LC-->>M: RoomInfo
         M->>G: ApplyRoomInfo(roomID, info)
-        M->>P: RoomInfoArrived(info)
+        M->>P: OnRoomInfo(info)
         P-->>M: Start / Stop / None
     and 重评估信号：record_enabled 翻转
-        Note over M: 监督循环 reconcile 投递 roomChanged
-        M->>P: RecordEnabledFlipped(record_enabled)
+        Note over M: 监督循环 reconcile 投递 roomChange
+        M->>P: OnRecordEnabled(record_enabled)
         P-->>M: 开启录制且在播 → Start；关闭录制且在录 → Stop；其余 None
+    and 会话结束
+        Sess--)M: currSession.done 关闭
+        M->>P: OnSessionFinished()
+        P-->>M: 收尾中且世界仍说录制 → Start；否则 None
     end
 ```
 
 ### 3.3 录制会话：拉流、断流决策树、收尾
 
-会话协程独占完整生命周期：槽位 → 准备 → 录制循环 → 收尾/合并。录制状态写入 `RoomRegistry`（RECORDING → MERGING → IDLE/ERROR，见 §4.1）。
+会话协程独占完整生命周期：准备 → 录制循环 → 收尾/合并。录制状态写入 `RoomRegistry`（RECORDING → MERGING → IDLE/ERROR，见 §4.1）。
 
 ```mermaid
 sequenceDiagram
@@ -253,17 +255,17 @@ sequenceDiagram
 
     Sess->>G: StartRecording(roomID)
     Sess->>RR: PrepareSession(session)
-    RR->>FS: mkdir 会话目录；写 meta.json（status=recording）
+    RR->>FS: mkdir 会话目录；写 meta.json（status=recording）<br/>（上一轮已合并则先归档其产物，见 bili-recorder.md §4.6.1）
 
-    loop recordLoop 断流决策树（每轮一路新分段）
+    loop runRecordingLoop 断流决策树（每轮一路新分段）
         Sess->>LC: OpenLiveStream(roomID)
         LC->>CDN: getRoomPlayInfo 选流 → GET FLV 长连接
         LC-->>Sess: LiveStream{URL, Quality, Body}
         Sess->>G: SetStreamQuality(roomID, Quality)
         Sess->>RR: PumpSession(session, stream, events)
-        RR->>FS: 开分段写 FLV（按关键帧切分，默认 120min / 2.5GiB）<br/>弹幕事件写 JSONL；健康检查（10s × 3 轮无新数据即失败）<br/>速度采样（1s）更新 pumpStats
+        RR->>FS: 开分段写 FLV（按关键帧切分，120min / 2.5GiB）<br/>弹幕事件写 JSONL；健康检查（10s × 3 轮无新数据即失败）<br/>速度采样（1s）更新 statsStore
         RR-->>Sess: RecordingResult{BytesWritten, Parts}, err
-        Sess->>LC: GetRoomInfo(roomID)　探测是否仍在播
+        Sess->>LC: GetRoomInfo(roomID)　探测是否仍在播（probeLive）
         LC-->>Sess: RoomInfo
         alt 未在播 / 探测失败 / ctx 取消
             Note over Sess: 退出循环，进入收尾
@@ -272,6 +274,7 @@ sequenceDiagram
         else 仍在播 且其他错误
             Note over Sess: 次数<3：等 10s 重连<br/>否则带已录内容收尾
         end
+        Note over Sess: 本腿稳定录制 ≥5 分钟且写入过内容 → 预算重置
     end
 
     Sess->>G: SetMerging(roomID)
@@ -294,7 +297,7 @@ sequenceDiagram
     participant U as RoomUsecase
     participant R as RoomRepo（SQLite）
     participant G as RoomRegistry
-    participant RR as RecorderRepo（pumpStats 原子计数）
+    participant RR as RecorderRepo（statsStore 原子计数）
 
     C->>+S: ListRoomsRequest{page_size, page_token,<br/>可选 room_id / streamer_name / room_title / record_enabled}
     Note over S: 解析 AIP 分页；组装 biz.ListQuery<br/>（可选字段等值 AND，缺省不筛选）
@@ -304,7 +307,7 @@ sequenceDiagram
     loop 每个房间
         U->>G: runtime(roomID)：live/record 状态 + 授予清晰度快照
         opt record_status == RECORDING
-            U->>RR: SessionStats(roomID)
+            U->>RR: Stats(roomID)
             RR-->>U: {current_file, bytes_written, download_speed_bps}
         end
     end
@@ -325,7 +328,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE : 房间登记进注册表
-    IDLE --> RECORDING : StartRecording（会话协程取得槽位后）
+    IDLE --> RECORDING : StartRecording（会话协程启动后）
     RECORDING --> MERGING : SetMerging（录制循环结束）
     MERGING --> IDLE : FinishRecording（FinishSession 成功）
     RECORDING --> ERROR : FailRecording（PrepareSession 失败）
@@ -335,18 +338,21 @@ stateDiagram-v2
 
 伴生的直播状态 `LiveStatus`：`UNSPECIFIED → PREPARING / LIVE`，由 `ApplyRoomInfo` 依据平台 `RoomInfo.Live` 双向切换。
 
-### 4.2 会话策略状态 sessionPolicy.status（ADR-0001）
+### 4.2 会话策略状态 sessionPolicy.status（ADR-0001/0002）
 
-每个 Monitor 独享一个策略实例；状态 + `record_enabled` 门控 + 最新房间信息共同裁决。"收尾中重新开启录制"由 `resumeOnFinish` 标志承接。
+每个 Monitor 独享一个策略实例；状态 + `record_enabled` 门控 + 最新房间信息共同裁决。**电平触发**：每个输入都重算同一个判据 `shouldRecord = record_enabled && latest.Live`，再对照当前状态出决策——没有 resume 标志，"收尾完成后是否恢复录制"由场次从哪个状态结束自然决定。
 
 ```mermaid
 stateDiagram-v2
     [*] --> idle : newSessionPolicy(record_enabled)
-    idle --> running : RoomInfoArrived(在播) 且 record_enabled；或 RecordEnabledFlipped(true) 且最新信息在播
-    running --> finishing : RoomInfoArrived(停播)；或 RecordEnabledFlipped(false)
-    finishing --> running : SessionFinished 且 resumeOnFinish 且仍在播（恢复录制）
-    finishing --> idle : SessionFinished（无恢复标志）
+    idle --> running : shouldRecord 为真（OnRoomInfo 在播 / OnRecordEnabled 开启）
+    running --> finishing : shouldRecord 转假（OnRoomInfo 停播 / OnRecordEnabled 关闭）
+    finishing --> running : OnSessionFinished 且 shouldRecord 仍为真（恢复录制）
+    finishing --> idle : OnSessionFinished 且 shouldRecord 为假
+    running --> idle : OnSessionFinished（自然结束，不重启）
 ```
+
+三条被测试锁定的保留行为（`TestSessionPolicyPreservedQuirks`）：收尾中开启录制即便流已死也恢复；恢复用最新的房态信息；收尾中关闭录制则抑制恢复。
 
 ### 4.3 录制会话状态（meta.json 的 `status` 字段）
 
@@ -359,9 +365,10 @@ stateDiagram-v2
     merging --> done : 分段合并成功（验证后删源）
     merging --> partial : 合并失败（保留源分段）
     partial --> done : RecoverPending 重试（源分段齐全时）
+    done --> recording : PrepareSession 重开同一场次<br/>（archiveMergedSession 先把合并产物归档为带编号分段）
 ```
 
-分段源文件是否还在磁盘上以文件系统为准，不在 meta.json 里另记一份；合并产物记在会话级 `merged_video` / `merged_danmaku`。旧版本的 `remuxing` 等未知状态在恢复时跳过（不兼容旧数据）。
+分段源文件是否还在磁盘上以文件系统为准，不在 meta.json 里另记一份；合并产物记在会话级 `merged_video` / `merged_danmaku`。`done → recording` 这条边对应"同一场直播里关闭录制又重新开启"：归档后 `merged_*` 清空、`end_time` 归零，续录表现为追加（细节见 `bili-recorder.md` §4.6.1）。旧版本的未知状态在恢复时跳过（不兼容旧数据）。
 
 ---
 
@@ -374,7 +381,7 @@ Web 扫码登录，ADR-0003；两表无关联）。均为 GORM AutoMigrate、SQL
 
 ```
 recordings/<room_id>_<主播名>/<开播日期>/<日期_时间_标题>.meta.json
-                                            .<日期_时间_标题>_partN.flv|.mp4
+                                            .<日期_时间_标题>_partN.flv
                                             .<日期_时间_标题>_partN.danmu.jsonl
 ```
 
@@ -403,8 +410,8 @@ erDiagram
 
     SESSION {
         int64 room_id "所属房间"
-        string room_name "主播名（上限 32 字符）"
-        string title "直播标题（上限 64 字符）"
+        string room_name "主播名（JSON tag，对应 biz 的 RecordingSession.StreamerName）"
+        string title "直播标题"
         int64 live_start_time "开播时间，决定目录与文件名前缀"
         int64 end_time "收尾时间"
         int32 quality_qn "实际授予的清晰度档位"
@@ -425,8 +432,9 @@ erDiagram
     }
 
     DANMAKU {
-        int64 ts "事件时间（unix）"
-        string type "danmaku / gift / superchat / guard / entry_effect / interact_word"
+        int64 ts "接收时刻（unix 毫秒）"
+        int64 send_ts "平台发送时刻（unix 毫秒，仅 danmaku 携带）"
+        string type "danmaku / gift / superchat / guard / entry_effect"
         int64 uid "用户 ID"
         string text "弹幕 / SC / 进场文本"
         json raw "原始 JSON 载荷"
@@ -436,5 +444,6 @@ erDiagram
 说明：
 
 - `SESSION` / `SEGMENT` / `DANMAKU` 三个实体对应 `meta.json` 的 `sessionMeta` / `segmentMeta` 结构与弹幕 JSONL 行（`danmakuEventPO`），由 `data` 层独占读写，**没有外键约束**——关联键是目录路径与文件名约定，而非数据库引用。
+- 弹幕只落五类事件；`INTERACT_WORD`（进场词）与点赞类在 `danmakuConn.dispatch` 处直接忽略，从不落盘，因此不在 `type` 取值里。
 - `rooms` 表的 `streamer_name` / `room_title` 会被录制守护进程经 `RoomRegistry.ApplyRoomInfo` 用平台非空值覆盖回写；回写失败只记 warn，不影响内存快照。
-- 运行时的写入进度（`current_file` / `bytes_written` / `download_speed_bps`）不在任何持久层，来自 `recorderRepo` 内存中的 `pumpStats` 原子计数，仅在 `record_status=RECORDING` 时 best-effort 提供给查询；其中 `bytes_written` 是落盘写入口径（writtenBytes），`download_speed_bps` 是网络接收口径（receiveBytes）按秒采样。授予清晰度（`granted_qn` / `granted_qn_desc`）同样不落库：由录制器拉流成功后经 `SetStreamQuality` 写入 `RoomRegistry`，会话开始/结束时清零。
+- 运行时的写入进度（`current_file` / `bytes_written` / `download_speed_bps`）不在任何持久层，来自 `recorderRepo` 内嵌 `statsStore` 中按房间的 `sessionStats` 原子计数，仅在 `record_status=RECORDING` 时 best-effort 提供给查询；其中 `bytes_written` 是落盘写入口径（含已接收但尚在去重缓冲中的字节，块落盘后校正），`download_speed_bps` 是网络接收口径按秒采样。授予清晰度（`granted_qn` / `granted_qn_desc`）同样不落库：由录制器拉流成功后经 `SetStreamQuality` 写入 `RoomRegistry`，会话开始/结束时清零。
