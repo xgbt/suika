@@ -140,12 +140,13 @@ func archiveMergedSession(lay sessionLayout, meta *sessionMeta) error {
 	}
 
 	var wallStart, wallEnd, tsStart, tsEnd int64
-	for _, seg := range meta.Segments {
+	for i, seg := range meta.Segments {
 		if wallStart == 0 || seg.WallStart != 0 && seg.WallStart < wallStart {
 			wallStart = seg.WallStart
 		}
 		wallEnd = max(wallEnd, seg.WallEnd)
-		if tsStart == 0 || seg.TsStart < tsStart {
+		// 流内时间戳 0 是合法起点，不能当作"尚未赋值"。
+		if i == 0 || seg.TsStart < tsStart {
 			tsStart = seg.TsStart
 		}
 		tsEnd = max(tsEnd, seg.TsEnd)

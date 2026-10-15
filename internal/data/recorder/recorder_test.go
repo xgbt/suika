@@ -3,13 +3,11 @@ package recorder
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,366 +17,20 @@ import (
 	"suika/internal/data/flv"
 )
 
-// --- 辅助函数 ---
-
-// newTestRepo 构建以全新临时目录为 record_root 的 recorderRepo。
-func newTestRepo(t *testing.T, c *conf.Recorder) *recorderRepo {
-	t.Helper()
-	if c == nil {
-		c = &conf.Recorder{}
-	}
-	c.RecordRoot = t.TempDir()
-	repo, ok := NewRecorderRepo(c).(*recorderRepo)
-	if !ok {
-		t.Fatal("NewRecorderRepo did not return *recorderRepo")
-	}
-	return repo
-}
-
-// setSplitLimits 临时改写分段上限，测试结束后还原；依赖测试不并行。
-func setSplitLimits(t *testing.T, size int64, dur time.Duration) {
-	t.Helper()
-	oldSize, oldDur := maxSegmentSize, maxSegmentDuration
-	maxSegmentSize, maxSegmentDuration = size, dur
-	t.Cleanup(func() { maxSegmentSize, maxSegmentDuration = oldSize, oldDur })
-}
-
-func testSession() *biz.RecordingSession {
-	return &biz.RecordingSession{
-		RoomID:        42,
-		StreamerName:  "tester",
-		Title:         "stream title",
-		LiveStartTime: time.Date(2026, 8, 11, 20, 0, 0, 0, time.UTC),
-		Quality:       biz.StreamQuality{Qn: 10000, Desc: "source"},
-	}
-}
-
-func touchFiles(t *testing.T, dir string, names ...string) {
-	t.Helper()
-	for _, name := range names {
-		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func buildFLVStream(t *testing.T, tags ...*flv.Tag) []byte {
-	t.Helper()
-	return buildFLVStreamWithHeader(t, &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}, tags...)
-}
-
-// buildFLVStreamWithHeader 用给定的文件头构造字节流（纯音频等场景需要
-// 自定义头标志）。
-func buildFLVStreamWithHeader(t *testing.T, header *flv.FileHeader, tags ...*flv.Tag) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	buf.Write(header.Bytes())
-	for _, tag := range tags {
-		buf.Write(tag.AppendTo(nil))
-	}
-	return buf.Bytes()
-}
-
-func readSegmentTags(t *testing.T, path string) (*flv.FileHeader, []*flv.Tag) {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	header, err := flv.ParseHeader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var tags []*flv.Tag
-	for {
-		tag, err := flv.ReadTag(f)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		tags = append(tags, tag)
-	}
-	return header, tags
-}
-
-func assertTagsEqual(t *testing.T, got, want []*flv.Tag) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("tag count = %d, want %d (got %+v)", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i].Type != want[i].Type || got[i].Timestamp != want[i].Timestamp || !bytes.Equal(got[i].Data, want[i].Data) {
-			t.Fatalf("tag %d = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-}
-
-// countMatchingTags 统计 got 中与 want 相等（类型、时间戳、数据）的
-// tag 数量。
-func countMatchingTags(got []*flv.Tag, want *flv.Tag) int {
-	n := 0
-	for _, tag := range got {
-		if tag.Type == want.Type && tag.Timestamp == want.Timestamp && bytes.Equal(tag.Data, want.Data) {
-			n++
-		}
-	}
-	return n
-}
-
-// --- meta.json ---
-
-func TestMetaJSONRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sess.meta.json")
-	in := &sessionMeta{
-		RoomID:        42,
-		RoomName:      "房间名",
-		Title:         "直播标题",
-		LiveStartTime: 1_700_000_000,
-		EndTime:       1_700_003_600,
-		Quality:       qualityMeta{Qn: 10000, Desc: "原画"},
-		Status:        metaStatusDone,
-		Segments: []segmentMeta{
-			{
-				Part: 1, Video: "base_part1.flv", Danmaku: "base_part1.danmu.jsonl",
-				WallStart: 1_700_000_000, WallEnd: 1_700_003_600,
-				TsStart: 0, TsEnd: 7_200_000, Bytes: 123456,
-			},
-			{
-				Part: 2, Video: "base_part2.flv", Danmaku: "base_part2.danmu.jsonl",
-			},
-		},
-		MergedVideo:   "base.flv",
-		MergedDanmaku: "base.danmu.jsonl",
-		Errors:        []errorMeta{{Ts: 55, Stage: "record", Msg: "write failed"}},
-	}
-
-	before := time.Now().Unix()
-	if err := saveMeta(path, in); err != nil {
-		t.Fatalf("saveMeta: %v", err)
-	}
-	// saveMeta 会写入 UpdatedAt，并通过临时文件原子落盘。
-	if in.UpdatedAt < before {
-		t.Errorf("UpdatedAt = %d, want >= %d (saveMeta must stamp it)", in.UpdatedAt, before)
-	}
-	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("temp file left behind after saveMeta (stat err = %v)", err)
-	}
-
-	got, err := loadMeta(path)
-	if err != nil {
-		t.Fatalf("loadMeta: %v", err)
-	}
-	in.UpdatedAt, got.UpdatedAt = 0, 0 // 上面已校验过；这里单独比较
-	if !reflect.DeepEqual(got, in) {
-		t.Fatalf("roundtrip mismatch:\n got %+v\nwant %+v", got, in)
-	}
-}
-
-func TestLoadMetaMissingFile(t *testing.T) {
-	_, err := loadMeta(filepath.Join(t.TempDir(), "nope.meta.json"))
-	if err == nil {
-		t.Fatal("want error for missing meta file")
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("err = %v, want fs.ErrNotExist", err)
-	}
-}
-
-func TestLoadMetaCorruptJSON(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "bad.meta.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadMeta(path); err == nil {
-		t.Fatal("want error for corrupt meta file")
-	}
-}
-
-// --- sanitizeSegment ---
-
-func TestSanitizeSegment(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"slashes", `a/b\\c`, "a_b_c"},
-		{"all unsafe chars collapse", `\\/:*?"<>|`, "untitled"},
-		{"whitespace runs collapse", "a  b\tc", "a_b_c"},
-		{"chinese survives", "主播的 直播间", "主播的_直播间"},
-		{"control chars", "a\x01b\x7fc", "a_b_c"},
-		{"pure dots survive", "...", "..."},
-		{"empty falls back", "", "untitled"},
-		{"only whitespace falls back", "   ", "untitled"},
-		{"edge underscores trimmed", "_a b_", "a_b"},
-		{"long title no truncate", strings.Repeat("a", 70), strings.Repeat("a", 70)},
-		{"long chinese no truncate", strings.Repeat("字", 40), strings.Repeat("字", 40)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeSegment(tc.in)
-			if got != tc.want {
-				t.Fatalf("sanitizeSegment(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-			if strings.ContainsAny(got, `/\`) {
-				t.Errorf("result %q contains a path separator", got)
-			}
-			if again := sanitizeSegment(got); again != got {
-				t.Errorf("result not stable: second pass = %q", again)
-			}
-		})
-	}
-}
-
-// --- nextPartNumber ---
-
-func TestNextPartNumber(t *testing.T) {
-	const base = "20260811_2000_title"
-	cases := []struct {
-		name  string
-		files []string
-		dirOK bool // false => 指向不存在的目录
-		want  int
-	}{
-		{"empty directory", nil, true, 1},
-		{"missing directory", nil, false, 1},
-		{
-			name:  "two existing parts",
-			files: []string{base + "_part1.flv", base + "_part2.flv"},
-			dirOK: true,
-			want:  3,
-		},
-		{
-			name: "unrelated files ignored, padded, non-flv not counted",
-			files: []string{
-				base + "_part001.flv",       // 前导零编号：Atoi 能处理
-				base + "_part002.mp4",       // 分段只认 .flv：mp4 不计入编号
-				"other_part99.flv",          // 基座前缀不同
-				base + "_partX.flv",         // 编号非数字
-				base + "_part3.danmu.jsonl", // 扩展符不符
-				"random.txt",
-			},
-			dirOK: true,
-			want:  2, // max(1) + 1
-		},
-		{
-			name:  "high part number",
-			files: []string{base + "_part999.flv"},
-			dirOK: true,
-			want:  1000,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if tc.dirOK {
-				touchFiles(t, dir, tc.files...)
-			} else {
-				dir = filepath.Join(dir, "does-not-exist")
-			}
-			if got := nextPartNumber(sessionLayout{dir: dir, base: base}); got != tc.want {
-				t.Fatalf("nextPartNumber = %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
-// --- shouldSplit ---
-
-func TestShouldSplit(t *testing.T) {
-	key := []byte{0x17, 0x01, 0, 0, 0}   // 关键帧 NALU
-	inter := []byte{0x27, 0x01, 0, 0, 0} // 帧间 NALU
-	audio := []byte{0xAF, 0x01, 0x09}
-	script := []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}
-
-	const ms = int64(1) // 时间戳单位
-	minute := int64(time.Minute / time.Millisecond)
-	overrun := int64(splitOverrun / time.Millisecond)
-
-	video := func(ts int64, data []byte) *flv.Tag {
-		return &flv.Tag{Type: flv.TagVideo, Timestamp: ts, Data: data}
-	}
-	cases := []struct {
-		name     string
-		dur      time.Duration
-		hasStart bool
-		startTs  int64
-		tag      *flv.Tag
-		want     bool
-	}{
-		{"splitting disabled", 0, true, 0, video(minute, key), false},
-		{"segment has no start yet", time.Minute, false, 0, video(minute*2, key), false},
-		{"under duration keyframe", time.Minute, true, 1000 * ms, video(60_999*ms, key), false},
-		{"at duration keyframe splits", time.Minute, true, 1000 * ms, video(61_000*ms, key), true},
-		{"past duration inter within overrun waits", time.Minute, true, 0, video((minute+overrun-1)*ms, inter), false},
-		{"overrun exhausted forces split", time.Minute, true, 0, video((minute+overrun)*ms, inter), true},
-		{
-			"overrun forces on audio too", time.Minute, true, 0,
-			&flv.Tag{Type: flv.TagAudio, Timestamp: (minute + overrun + 1) * ms, Data: audio}, true,
-		},
-		{
-			"overrun forces on metadata too", time.Minute, true, 0,
-			&flv.Tag{Type: flv.TagScript, Timestamp: (minute + overrun) * ms, Data: script}, true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			seg := &segmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
-			setSplitLimits(t, 0, tc.dur)
-			if got := seg.shouldSplit(tc.tag); got != tc.want {
-				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestShouldSplitBySize(t *testing.T) {
-	key := []byte{0x17, 0x01, 0, 0, 0}   // 关键帧 NALU
-	inter := []byte{0x27, 0x01, 0, 0, 0} // 帧间 NALU
-
-	const limit = int64(1000)
-	overrun := limit / sizeSplitOverrunDivisor
-
-	video := func(data []byte) *flv.Tag {
-		return &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: data}
-	}
-	cases := []struct {
-		name     string
-		maxBytes int64
-		bytes    int64
-		hasStart bool
-		tag      *flv.Tag
-		want     bool
-	}{
-		{"size splitting disabled", 0, limit * 10, true, video(key), false},
-		{"segment has no start yet", limit, limit, false, video(key), false},
-		{"under limit keyframe", limit, limit - 1, true, video(key), false},
-		{"at limit keyframe splits", limit, limit, true, video(key), true},
-		{"past limit inter within overrun waits", limit, limit + overrun - 1, true, video(inter), false},
-		{"overrun exhausted forces split on inter", limit, limit + overrun, true, video(inter), true},
-		{"past limit keyframe splits even mid-overrun", limit, limit + overrun/2, true, video(key), true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			// segmentDuration 置 0：只验证大小触发一路。
-			seg := &segmentWriter{hasStart: tc.hasStart, bytesWritten: tc.bytes}
-			setSplitLimits(t, tc.maxBytes, 0)
-			if got := seg.shouldSplit(tc.tag); got != tc.want {
-				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// --- 构造函数 / 路径 ---
+// 本文件覆盖 recorder.go：会话生命周期（Prepare / Finish / Recover）。
+// 其余按源文件拆分：meta / paths / segment / recorder_pump / merge /
+// stats / pump_monitor / dedup，共用辅助见 helpers_test.go。
 
 func TestNewRecorderRepoConfigMapping(t *testing.T) {
 	r := NewRecorderRepo(nil).(*recorderRepo)
 	if r.recordRoot != defaultRecordRoot {
 		t.Fatalf("defaults not applied: %+v", r)
+	}
+
+	// 空配置与空 record_root 同样回落到默认值。
+	r = NewRecorderRepo(&conf.Recorder{}).(*recorderRepo)
+	if r.recordRoot != defaultRecordRoot {
+		t.Fatalf("empty record_root = %q, want default %q", r.recordRoot, defaultRecordRoot)
 	}
 
 	r = NewRecorderRepo(&conf.Recorder{RecordRoot: "/srv/recordings"}).(*recorderRepo)
@@ -387,29 +39,38 @@ func TestNewRecorderRepoConfigMapping(t *testing.T) {
 	}
 }
 
-func TestSessionPaths(t *testing.T) {
+func TestPrepareSessionCreatesMeta(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	lay, err := sessionPaths(repo.recordRoot, testSession())
+	session := testSession()
+	if err := repo.PrepareSession(context.Background(), session); err != nil {
+		t.Fatalf("PrepareSession: %v", err)
+	}
+
+	lay, err := sessionPaths(repo.recordRoot, session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDir := filepath.Join(repo.recordRoot, "42_tester", "2026-08-11")
-	if lay.dir != wantDir {
-		t.Fatalf("dir = %q, want %q", lay.dir, wantDir)
+	meta, err := loadMeta(lay.metaPath())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if want := "20260811_2000_stream_title"; lay.base != want {
-		t.Fatalf("base = %q, want %q", lay.base, want)
+	if meta.RoomID != session.RoomID || meta.RoomName != session.StreamerName || meta.Title != session.Title {
+		t.Fatalf("identity fields = %+v", meta)
 	}
-	// 会话身份只有一个表达：从 meta.json 路径还原出的布局必须与原布局一致，
-	// 否则 RecoverPending 与录制路径会指向不同场次。
-	if got := sessionLayoutFromMetaPath(lay.metaPath()); got != lay {
-		t.Fatalf("layout round-trip = %+v, want %+v", got, lay)
+	if meta.LiveStartTime != session.LiveStartTime.Unix() {
+		t.Fatalf("LiveStartTime = %d, want %d", meta.LiveStartTime, session.LiveStartTime.Unix())
 	}
+	if meta.Status != metaStatusRecording || meta.EndTime != 0 || len(meta.Segments) != 0 {
+		t.Fatalf("fresh meta = %+v, want recording with no segments", meta)
+	}
+}
 
-	if _, err := sessionPaths(repo.recordRoot, nil); !errors.Is(err, biz.ErrRoomInternal) {
+func TestPrepareSessionRejectsInvalidSession(t *testing.T) {
+	repo := newTestRepo(t, nil)
+	if err := repo.PrepareSession(context.Background(), nil); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("nil session err = %v, want ErrRoomInternal", err)
 	}
-	if _, err := sessionPaths(repo.recordRoot, &biz.RecordingSession{RoomID: 0}); !errors.Is(err, biz.ErrRoomInternal) {
+	if err := repo.PrepareSession(context.Background(), &biz.RecordingSession{}); !errors.Is(err, biz.ErrRoomInternal) {
 		t.Fatalf("zero room err = %v, want ErrRoomInternal", err)
 	}
 }
@@ -489,868 +150,6 @@ func TestPrepareSessionResumeUpdatesTitleVariants(t *testing.T) {
 	}
 }
 
-func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40}
-	var wantBytes int64
-	for _, tag := range []*flv.Tag{key0, inter40} { // 初始化标签不计入
-		wantBytes += int64(len(tag.AppendTo(nil)))
-	}
-	pump := func(session *biz.RecordingSession) {
-		t.Helper()
-		stream := &biz.LiveStream{
-			Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-			Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-		}
-		if _, err := repo.PumpSession(ctx, session, stream, nil); err != nil {
-			t.Fatalf("PumpSession: %v", err)
-		}
-	}
-
-	first := testSession()
-	if err := repo.PrepareSession(ctx, first); err != nil {
-		t.Fatal(err)
-	}
-	pump(first)
-	stats, err := repo.Stats(ctx, first.RoomID)
-	if err != nil || stats == nil || stats.BytesWritten != wantBytes {
-		t.Fatalf("stats after first session = %+v, %v; want %d bytes", stats, err, wantBytes)
-	}
-
-	// 同一房间的下一场开播：PrepareSession 必须清零写入进度，
-	// bytes_written 不得跨会话累加。
-	second := testSession()
-	second.LiveStartTime = first.LiveStartTime.Add(2 * time.Hour)
-	if err := repo.PrepareSession(ctx, second); err != nil {
-		t.Fatal(err)
-	}
-	stats, err = repo.Stats(ctx, second.RoomID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats == nil || stats.BytesWritten != 0 || stats.CurrentFile != "" {
-		t.Fatalf("stats at second session start = %+v, want zeroed", stats)
-	}
-	pump(second)
-	stats, err = repo.Stats(ctx, second.RoomID)
-	if err != nil || stats == nil || stats.BytesWritten != wantBytes {
-		t.Fatalf("stats after second session = %+v, %v; want %d bytes (no cross-session accumulation)", stats, err, wantBytes)
-	}
-}
-
-func TestPumpSessionProgressIncludesBufferedBlock(t *testing.T) {
-	stats := &sessionStats{}
-	loop := &pumpState{
-		stats:     stats,
-		baseBytes: 100,
-		result:    biz.RecordingResult{BytesWritten: 200},
-	}
-	tag := &flv.Tag{Type: flv.TagVideo, Timestamp: 1000, Data: []byte{0x27, 0x01, 0xAA}}
-	loop.guard.add(tag)
-	loop.updateProgress()
-
-	want := int64(100 + 200 + len(tag.Data) + flv.TagOverhead)
-	got := stats.bytesWritten()
-	if got != want {
-		t.Fatalf("progress = %d, want %d", got, want)
-	}
-}
-
-// --- 分段文件 ---
-
-func TestOpenSegmentReinjectsCachedHeaders(t *testing.T) {
-	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	cache := &initTags{metadata: metaTag, videoSeqHeader: videoSeq, audioSeqHeader: audioSeq}
-
-	seg, err := OpenSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, cache)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := seg.close(); err != nil {
-		t.Fatal(err)
-	}
-
-	gotHeader, tags := readSegmentTags(t, seg.videoPath)
-	if *gotHeader != *header {
-		t.Fatalf("header = %+v, want %+v", gotHeader, header)
-	}
-	assertTagsEqual(t, tags, []*flv.Tag{metaTag, videoSeq, audioSeq})
-
-	fi, err := os.Stat(seg.videoPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if seg.bytesWritten != fi.Size() {
-		t.Fatalf("seg.bytesWritten = %d, file size = %d", seg.bytesWritten, fi.Size())
-	}
-	if fi2, err := os.Stat(seg.danmakuPath); err != nil || fi2.Size() != 0 {
-		t.Fatalf("danmu file = %+v, %v; want empty existing file", fi2, err)
-	}
-}
-
-func TestSegmentWriteDanmakuEvents(t *testing.T) {
-	header := &flv.FileHeader{Version: 1, HasAudio: true, HasVideo: true}
-	seg, err := OpenSegment(sessionLayout{dir: t.TempDir(), base: "base"}, header, &initTags{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	danmaku := &biz.DanmakuEvent{
-		TS: time.Unix(123, 0), SendTS: 1755633600123, Type: biz.EventDanmaku,
-		UID: 7, Uname: "user", Text: "你好", Color: 16777215, Mode: 1,
-		Raw: []byte(`{"info":"x"}`),
-	}
-	gift := &biz.DanmakuEvent{
-		TS: time.Unix(124, 0), Type: biz.EventGift,
-		UID: 7, Uname: "user", GiftName: "火箭", Num: 2, Price: 1000, CoinType: "gold",
-	}
-	if err := seg.writeDanmaku(danmaku); err != nil {
-		t.Fatal(err)
-	}
-	if err := seg.writeDanmaku(gift); err != nil {
-		t.Fatal(err)
-	}
-	if err := seg.close(); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(seg.danmakuPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("lines = %d, want 2: %q", len(lines), data)
-	}
-	var first, second danmakuEventPO
-	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
-		t.Fatal(err)
-	}
-	if first.Ts != 123_000 || first.SendTs != 1755633600123 || first.Type != biz.EventDanmaku ||
-		first.UID != 7 || first.Text != "你好" || first.Color != 16777215 || first.Mode != 1 {
-		t.Fatalf("danmaku line = %+v", first)
-	}
-	if string(first.Raw) != `{"info":"x"}` {
-		t.Fatalf("raw = %s", first.Raw)
-	}
-	if second.Type != biz.EventGift || second.GiftName != "火箭" || second.Num != 2 ||
-		second.Price != 1000 || second.CoinType != "gold" || second.SendTs != 0 {
-		t.Fatalf("gift line = %+v", second)
-	}
-}
-
-// --- PumpSession ---
-
-func TestPumpSessionRejectsNilStream(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	if _, err := repo.PumpSession(context.Background(), testSession(), nil, nil); !errors.Is(err, biz.ErrRoomInternal) {
-		t.Fatalf("err = %v, want ErrRoomInternal", err)
-	}
-	if _, err := repo.PumpSession(context.Background(), testSession(), &biz.LiveStream{}, nil); !errors.Is(err, biz.ErrRoomInternal) {
-		t.Fatalf("err = %v, want ErrRoomInternal", err)
-	}
-}
-
-func TestPumpSessionSingleSegment(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40}
-
-	var wantBytes int64
-	for _, tag := range []*flv.Tag{key0, inter40} { // 初始化标签不计入
-		wantBytes += int64(len(tag.AppendTo(nil)))
-	}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	// events 传 nil：永远不就绪，不会有弹幕事件插入。
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 1 || result.BytesWritten != wantBytes {
-		t.Fatalf("result = %+v, want 1 part / %d bytes", result, wantBytes)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// part1 在首个视频关键帧处开启，初始化标签取自缓存注入，
-	// 流内容原样写入：任何初始化标签都不会出现两次。
-	videoPath := lay.segmentVideoPath(1)
-	header, gotTags := readSegmentTags(t, videoPath)
-	if !header.HasAudio || !header.HasVideo {
-		t.Fatalf("header flags = %+v", header)
-	}
-	assertTagsEqual(t, gotTags, []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40})
-
-	metaPath := lay.metaPath()
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Quality.Qn != 10000 || meta.Quality.Desc != "source" {
-		t.Fatalf("quality = %+v", meta.Quality)
-	}
-	if len(meta.Segments) != 1 {
-		t.Fatalf("segments = %+v, want 1", meta.Segments)
-	}
-	seg := meta.Segments[0]
-	if seg.Part != 1 || seg.Video != lay.segmentVideoName(1) || seg.Danmaku != lay.segmentDanmakuName(1) {
-		t.Fatalf("segment = %+v", seg)
-	}
-	if seg.TsStart != 0 || seg.TsEnd != 40 {
-		t.Fatalf("segment bookkeeping = %+v", seg)
-	}
-	if fi, err := os.Stat(videoPath); err != nil || seg.Bytes != fi.Size() {
-		t.Fatalf("segment bytes = %d, file size/+err = %d/%v", seg.Bytes, fi.Size(), err)
-	}
-
-	stats, err := repo.Stats(ctx, session.RoomID)
-	if err != nil || stats == nil {
-		t.Fatalf("Stats = %+v, %v", stats, err)
-	}
-	if stats.BytesWritten != wantBytes || stats.CurrentFile != videoPath {
-		t.Fatalf("stats = %+v, want %d bytes at %s", stats, wantBytes, videoPath)
-	}
-}
-
-func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	setSplitLimits(t, maxSegmentSize, 50*time.Millisecond) // 测试中使用亚分钟粒度
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	key100 := &flv.Tag{Type: flv.TagVideo, Timestamp: 100, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
-	inter120 := &flv.Tag{Type: flv.TagVideo, Timestamp: 120, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40, key100, inter120}
-
-	var wantBytes int64
-	for _, tag := range []*flv.Tag{key0, inter40, key100, inter120} { // 初始化标签不计入
-		wantBytes += int64(len(tag.AppendTo(nil)))
-	}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 2 || result.BytesWritten != wantBytes {
-		t.Fatalf("result = %+v, want 2 parts / %d bytes", result, wantBytes)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, part1 := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, part1, []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40})
-
-	// part2 以完整重注入的头缓存开始，随后是触发切分的关键帧。
-	_, part2 := readSegmentTags(t, lay.segmentVideoPath(2))
-	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeq, audioSeq, key100, inter120})
-
-	meta, err := loadMeta(lay.metaPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(meta.Segments) != 2 {
-		t.Fatalf("segments = %+v, want 2", meta.Segments)
-	}
-	if meta.Segments[0].TsEnd != 40 {
-		t.Fatalf("part1 TsEnd = %d, want 40", meta.Segments[0].TsEnd)
-	}
-	if meta.Segments[1].TsStart != 100 || meta.Segments[1].TsEnd != 120 {
-		t.Fatalf("part2 ts = %d..%d, want 100..120", meta.Segments[1].TsStart, meta.Segments[1].TsEnd)
-	}
-}
-
-// 回归：触发新分段的那个 tag 必须恰好写入一次。此前拉流写入会在开启
-// part1 前先缓存首个初始化标签，openSegment 重注入（此时已非空的）缓存，
-// 拉流写入又把同一个标签写了一遍——part1 里的 onMetaData 因此重复。
-func TestPumpSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	audio20 := &flv.Tag{Type: flv.TagAudio, Timestamp: 20, Data: []byte{0xAF, 0x01, 0x09}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, audio20, inter40}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 1 {
-		t.Fatalf("parts = %d, want 1", result.Parts)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, got := readSegmentTags(t, lay.segmentVideoPath(1))
-	if n := countMatchingTags(got, metaTag); n != 1 {
-		t.Errorf("onMetaData appears %d times in part1, want exactly 1", n)
-	}
-	if n := countMatchingTags(got, videoSeq); n != 1 {
-		t.Errorf("AVC sequence header appears %d times in part1, want exactly 1", n)
-	}
-	if n := countMatchingTags(got, audioSeq); n != 1 {
-		t.Errorf("AAC sequence header appears %d times in part1, want exactly 1", n)
-	}
-	// part1 以空缓存开启：流内容原样写入。
-	assertTagsEqual(t, got, tags)
-}
-
-// 回归（切分的一半）：part2 必须把缓存的 metadata / AVC / AAC 头各恰好
-// 重注入一次——开启 part2 的切分关键帧不在缓存中，所以那边也不会重复。
-func TestPumpSessionSplitHeadersWrittenOnce(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	setSplitLimits(t, maxSegmentSize, 50*time.Millisecond) // 测试中使用亚分钟粒度
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	key100 := &flv.Tag{Type: flv.TagVideo, Timestamp: 100, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
-	audio110 := &flv.Tag{Type: flv.TagAudio, Timestamp: 110, Data: []byte{0xAF, 0x01, 0x09}}
-	inter120 := &flv.Tag{Type: flv.TagVideo, Timestamp: 120, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40, key100, audio110, inter120}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 2 {
-		t.Fatalf("parts = %d, want 2", result.Parts)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, part1 := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, part1, []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40})
-
-	_, part2 := readSegmentTags(t, lay.segmentVideoPath(2))
-	if n := countMatchingTags(part2, metaTag); n != 1 {
-		t.Errorf("onMetaData appears %d times in part2, want exactly 1", n)
-	}
-	if n := countMatchingTags(part2, videoSeq); n != 1 {
-		t.Errorf("AVC sequence header appears %d times in part2, want exactly 1", n)
-	}
-	if n := countMatchingTags(part2, audioSeq); n != 1 {
-		t.Errorf("AAC sequence header appears %d times in part2, want exactly 1", n)
-	}
-	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeq, audioSeq, key100, audio110, inter120})
-}
-
-// TestPumpSessionSplitsOnSeqHeaderChange 验证流中途序列头变化（CDN 换
-// 源、主播改码率）触发强制切段：视频与音频序列头各变化一次，产生三段；
-// 每段从缓存注入当时的旧初始化标签，新序列头作为首个正文标签写入。
-func TestPumpSessionSplitsOnSeqHeaderChange(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeqA := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeqA := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	videoSeqB := &flv.Tag{Type: flv.TagVideo, Timestamp: 50, Data: []byte{0x17, 0x00, 0, 0, 0, 9, 9, 9}}
-	key60 := &flv.Tag{Type: flv.TagVideo, Timestamp: 60, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
-	inter80 := &flv.Tag{Type: flv.TagVideo, Timestamp: 80, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
-	audioSeqB := &flv.Tag{Type: flv.TagAudio, Timestamp: 90, Data: []byte{0xAF, 0x00, 0x11, 0x90}}
-	key100 := &flv.Tag{Type: flv.TagVideo, Timestamp: 100, Data: []byte{0x17, 0x01, 0, 0, 0, 0xEE}}
-	tags := []*flv.Tag{metaTag, videoSeqA, audioSeqA, key0, inter40, videoSeqB, key60, inter80, audioSeqB, key100}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 3 {
-		t.Fatalf("parts = %d, want 3 (split on video and audio seq header changes)", result.Parts)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, part1 := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, part1, []*flv.Tag{metaTag, videoSeqA, audioSeqA, key0, inter40})
-
-	// part2 由视频序列头变化触发：注入变化前的缓存头，新序列头为首个正文标签。
-	_, part2 := readSegmentTags(t, lay.segmentVideoPath(2))
-	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeqA, audioSeqA, videoSeqB, key60, inter80})
-
-	// part3 由音频序列头变化触发：此时缓存的视频序列头已是 B。
-	_, part3 := readSegmentTags(t, lay.segmentVideoPath(3))
-	assertTagsEqual(t, part3, []*flv.Tag{metaTag, videoSeqB, audioSeqA, audioSeqB, key100})
-}
-
-// TestPumpSessionRepeatedSeqHeaderDoesNotSplit 验证重复出现的相同序列头
-// （字节一致）不触发切段：只有解码配置真正变化才值得切。
-func TestPumpSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	videoSeqRepeat := &flv.Tag{Type: flv.TagVideo, Timestamp: 20, Data: videoSeq.Data}
-	audioSeqRepeat := &flv.Tag{Type: flv.TagAudio, Timestamp: 30, Data: audioSeq.Data}
-	key40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xBB}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, videoSeqRepeat, audioSeqRepeat, key40}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 1 {
-		t.Fatalf("parts = %d, want 1 (identical seq headers must not split)", result.Parts)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, part1 := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, part1, tags)
-}
-
-// TestPumpSessionSplitsAtSizeLimit 验证大小切分的端到端行为：阈值设为
-// 250 字节，正文 tag 每个 20 字节、每 5 个一个关键帧。每个分段写到约
-// 282 字节（82 字节的头 + 10 个正文 tag）后越过阈值，在下一个关键帧处
-// 切分，共产出 4 段；每段（含最后一段）都 ≥ 阈值，且切分点都是关键帧。
-func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	setSplitLimits(t, 250, maxSegmentDuration) // 测试中使用小阈值
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq}
-	for i := range 40 {
-		data := []byte{0x27, 0x01, 0, 0, 0, byte(i)} // 帧间 NALU
-		if i%5 == 0 {
-			data[0] = 0x17 // 每 5 个 tag 一个关键帧
-		}
-		tags = append(tags, &flv.Tag{Type: flv.TagVideo, Timestamp: int64((i + 1) * 10), Data: data})
-	}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 4 {
-		t.Fatalf("parts = %d, want 4", result.Parts)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta, err := loadMeta(lay.metaPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, seg := range meta.Segments {
-		if seg.Bytes < 250 {
-			t.Fatalf("segment %d bytes = %d, want >= 250", seg.Part, seg.Bytes)
-		}
-		// part2 起：注入的三个初始化标签之后首个正文标签必须是关键帧（切分点）。
-		if i == 0 {
-			continue
-		}
-		_, segTags := readSegmentTags(t, lay.filePath(seg.Video))
-		if len(segTags) < 4 || !segTags[3].IsAVCKeyframe() {
-			t.Fatalf("segment %d first body tag after injected headers is not a keyframe", seg.Part)
-		}
-	}
-}
-
-// TestPumpSessionWaitsForFirstKeyframe 验证新场次的首个分段只在第一个视
-// 频关键帧处开启：关键帧之前的正文标签被丢弃（流内重连后的新段同理），
-// 初始化标签照常入缓存并在开段时注入，保证段首即关键帧、独立可解码。
-func TestPumpSessionWaitsForFirstKeyframe(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	earlyInter1 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x27, 0x01, 0, 0, 0, 0x01}}
-	earlyInter2 := &flv.Tag{Type: flv.TagVideo, Timestamp: 20, Data: []byte{0x27, 0x01, 0, 0, 0, 0x02}}
-	key40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter60 := &flv.Tag{Type: flv.TagVideo, Timestamp: 60, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body: io.NopCloser(bytes.NewReader(buildFLVStream(t,
-			metaTag, videoSeq, audioSeq, earlyInter1, earlyInter2, key40, inter60))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 1 {
-		t.Fatalf("parts = %d, want 1", result.Parts)
-	}
-
-	want := []*flv.Tag{metaTag, videoSeq, audioSeq, key40, inter60}
-	var wantBytes int64
-	for _, tag := range []*flv.Tag{key40, inter60} {
-		wantBytes += int64(len(tag.AppendTo(nil)))
-	}
-	if result.BytesWritten != wantBytes {
-		t.Fatalf("bytes = %d, want %d (pre-keyframe tags must not count)", result.BytesWritten, wantBytes)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, got := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, got, want)
-}
-
-// TestPumpSessionAudioOnlyOpensWithoutKeyframe 验证纯音频流的豁免：文件
-// 头无视频轨时没有关键帧可等，首个标签即开段。
-func TestPumpSessionAudioOnlyOpensWithoutKeyframe(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	audio20 := &flv.Tag{Type: flv.TagAudio, Timestamp: 20, Data: []byte{0xAF, 0x01, 0x09}}
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body: io.NopCloser(bytes.NewReader(buildFLVStreamWithHeader(t,
-			&flv.FileHeader{Version: 1, HasAudio: true, HasVideo: false},
-			audioSeq, audio20))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 1 {
-		t.Fatalf("parts = %d, want 1", result.Parts)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, got := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, got, []*flv.Tag{audioSeq, audio20})
-}
-
-// TestPumpSessionDropsDuplicateBlocks 验证 CDN 循环吐流的去重：内容指纹
-// （类型+载荷）重复的块整块丢弃不落盘，唯一块正常写入；未达断开上限时
-// 会话正常收尾。
-func TestPumpSessionDropsDuplicateBlocks(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	blockA := []*flv.Tag{
-		{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}},
-		{Type: flv.TagVideo, Timestamp: 20, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}},
-	}
-	blockB := []*flv.Tag{
-		{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}},
-		{Type: flv.TagVideo, Timestamp: 60, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}},
-	}
-	// 循环重放：类型与载荷和 blockA/B 一致，时间戳继续前进。
-	replayA := []*flv.Tag{
-		{Type: flv.TagVideo, Timestamp: 80, Data: blockA[0].Data},
-		{Type: flv.TagVideo, Timestamp: 100, Data: blockA[1].Data},
-	}
-	replayB := []*flv.Tag{
-		{Type: flv.TagVideo, Timestamp: 120, Data: blockB[0].Data},
-		{Type: flv.TagVideo, Timestamp: 140, Data: blockB[1].Data},
-	}
-	// 尾部唯一块：给重放块一个边界裁决点（EOF 的排水不做去重裁决）。
-	tail := []*flv.Tag{
-		{Type: flv.TagVideo, Timestamp: 160, Data: []byte{0x17, 0x01, 0, 0, 0, 0xEE}},
-		{Type: flv.TagVideo, Timestamp: 180, Data: []byte{0x27, 0x01, 0, 0, 0, 0xFF}},
-	}
-
-	tags := append([]*flv.Tag{metaTag, videoSeq, audioSeq},
-		append(append(append(append(
-			blockA, blockB...,
-		), replayA...), replayB...), tail...)...)
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v (streak 2 must stay below disconnect threshold)", err)
-	}
-	if result.Parts != 1 {
-		t.Fatalf("parts = %d, want 1", result.Parts)
-	}
-
-	want := append([]*flv.Tag{metaTag, videoSeq, audioSeq},
-		append(append(blockA, blockB...), tail...)...)
-	var wantBytes int64
-	for _, tag := range want[3:] { // 跳过初始化标签
-		wantBytes += int64(len(tag.AppendTo(nil)))
-	}
-	if result.BytesWritten != wantBytes {
-		t.Fatalf("bytes = %d, want %d (dropped blocks must not count)", result.BytesWritten, wantBytes)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, got := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, got, want)
-}
-
-// TestPumpSessionDisconnectsOnCDNLoop 验证连续重复块达到上限时泵送以
-// ErrStreamTransient 中止，交由断流决策树换流地址重连（换 CDN 节点）。
-func TestPumpSessionDisconnectsOnCDNLoop(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	// 同一内容反复重放：首次出现正常落盘，之后每块都是重复。
-	loopKey := []byte{0x17, 0x01, 0, 0, 0, 0xAA}
-	loopInter := []byte{0x27, 0x01, 0, 0, 0, 0xBB}
-
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq}
-	for i := range dupDisconnectStreak + 2 {
-		base := int64(i) * 100
-		tags = append(
-			tags,
-			&flv.Tag{Type: flv.TagVideo, Timestamp: base, Data: loopKey},
-			&flv.Tag{Type: flv.TagVideo, Timestamp: base + 20, Data: loopInter},
-		)
-	}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if !errors.Is(err, biz.ErrStreamTransient) {
-		t.Fatalf("err = %v, want ErrStreamTransient on CDN loop disconnect", err)
-	}
-	if result.Parts != 1 {
-		t.Fatalf("parts = %d, want 1", result.Parts)
-	}
-
-	want := []*flv.Tag{
-		metaTag, videoSeq, audioSeq,
-		{Type: flv.TagVideo, Timestamp: 0, Data: loopKey},
-		{Type: flv.TagVideo, Timestamp: 20, Data: loopInter},
-	}
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, got := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, got, want)
-}
-
-// TestPumpSessionSplitOverrunFlushesPendingBlock 验证强制切分（时长超限
-// 且仍无关键帧）会先裁决缓冲块：在途数据不能因为关段而丢失。
-func TestPumpSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
-	repo := newTestRepo(t, nil)
-	setSplitLimits(t, maxSegmentSize, 50*time.Millisecond) // 测试中使用亚分钟粒度
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-
-	metaTag := &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq := &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	key40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x17, 0x01, 0, 0, 0, 0xBB}}
-	// ts=20050 距开播 20.05s，超过 50ms+15s 的强切线，且不是关键帧。
-	overrun := &flv.Tag{Type: flv.TagVideo, Timestamp: 20_050, Data: []byte{0x27, 0x01, 0, 0, 0, 0xCC}}
-	keyAfter := &flv.Tag{Type: flv.TagVideo, Timestamp: 20_090, Data: []byte{0x17, 0x01, 0, 0, 0, 0xDD}}
-	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, key40, overrun, keyAfter}
-
-	stream := &biz.LiveStream{
-		Quality: biz.StreamQuality{Qn: 10000, Desc: "source"},
-		Body:    io.NopCloser(bytes.NewReader(buildFLVStream(t, tags...))),
-	}
-	result, err := repo.PumpSession(ctx, session, stream, nil)
-	if err != nil {
-		t.Fatalf("PumpSession: %v", err)
-	}
-	if result.Parts != 2 {
-		t.Fatalf("parts = %d, want 2 (overrun force split)", result.Parts)
-	}
-
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// part1 必须含强切前缓冲的 key40，不能丢。
-	_, part1 := readSegmentTags(t, lay.segmentVideoPath(1))
-	assertTagsEqual(t, part1, []*flv.Tag{metaTag, videoSeq, audioSeq, key0, key40})
-	_, part2 := readSegmentTags(t, lay.segmentVideoPath(2))
-	assertTagsEqual(t, part2, []*flv.Tag{metaTag, videoSeq, audioSeq, overrun, keyAfter})
-}
-
-// --- FinishSession / 收尾合并 ---
-
-// seedMergeSession 准备一个会话目录：meta.json + 每个 part 一个分段
-// （FLV 内容由参数给定；nil 表示磁盘上不落该文件，仅登记进 meta），
-// 返回会话布局与 meta.json 路径。
-func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (sessionLayout, string) {
-	t.Helper()
-	ctx := context.Background()
-	session := testSession()
-	if err := repo.PrepareSession(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-	lay, err := sessionPaths(repo.recordRoot, session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metaPath := lay.metaPath()
-	for i, content := range parts {
-		part := i + 1
-		videoPath := lay.segmentVideoPath(part)
-		danmuPath := lay.segmentDanmakuPath(part)
-		if content != nil {
-			if err := os.WriteFile(videoPath, content, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := os.WriteFile(danmuPath, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		appendSegmentMeta(metaPath, &segmentWriter{
-			part:        part,
-			videoPath:   videoPath,
-			danmakuPath: danmuPath,
-			wallStart:   session.LiveStartTime,
-		})
-	}
-	return lay, metaPath
-}
-
-// mergeTestTags 返回合并测试共用的初始化标签。
-func mergeTestTags() (metaTag, videoSeq, audioSeq *flv.Tag) {
-	metaTag = &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
-	videoSeq = &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}
-	audioSeq = &flv.Tag{Type: flv.TagAudio, Timestamp: 0, Data: []byte{0xAF, 0x00, 0x12, 0x10}}
-	return
-}
-
 func TestFinishSessionWithoutMetaIsNoop(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
@@ -1358,51 +157,26 @@ func TestFinishSessionWithoutMetaIsNoop(t *testing.T) {
 	}
 }
 
-// 单段场次同样走完整合并路径：产物是 {base}.flv，onMetaData 被跳过，
-// 源分段验证后删除。
-func TestFinishSessionMergeSingleSegment(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
+func TestFinishSessionStampsEndTime(t *testing.T) {
+	metaTag, videoSeq, audioSeq := testInitTags()
 	repo := newTestRepo(t, nil)
-	lay, metaPath := seedMergeSession(t, repo, buildFLVStream(t, metaTag, videoSeq, audioSeq, key0, inter40))
-	danmu := `{"ts":1,"type":"danmaku","text":"hi"}` + "\n"
-	if err := os.WriteFile(lay.segmentDanmakuPath(1), []byte(danmu), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	_, metaPath := seedMergeSession(t, repo, buildFLVStream(t, metaTag, videoSeq, audioSeq))
 
+	before := time.Now().Unix()
 	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
 		t.Fatalf("FinishSession: %v", err)
 	}
-
 	meta, err := loadMeta(metaPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Status != metaStatusDone {
-		t.Fatalf("status = %q, want %q", meta.Status, metaStatusDone)
-	}
-	if meta.MergedVideo != lay.mergedVideoName() || meta.MergedDanmaku != lay.mergedDanmakuName() {
-		t.Fatalf("merge bookkeeping = %+v", meta)
-	}
-
-	// 合并产物 = 头 + 除 onMetaData 外的全部标签。
-	_, tags := readSegmentTags(t, lay.mergedVideoPath())
-	assertTagsEqual(t, tags, []*flv.Tag{videoSeq, audioSeq, key0, inter40})
-
-	// 源分段与源弹幕验证后删除；弹幕内容完整保留。
-	for _, src := range []string{lay.segmentVideoPath(1), lay.segmentDanmakuPath(1)} {
-		if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("%s must be removed after a verified merge (stat err = %v)", src, err)
-		}
-	}
-	if got, err := os.ReadFile(lay.mergedDanmakuPath()); err != nil || string(got) != danmu {
-		t.Fatalf("merged danmaku = %q, %v", got, err)
+	if meta.EndTime < before {
+		t.Fatalf("EndTime = %d, want >= %d", meta.EndTime, before)
 	}
 }
 
 func TestFinishedSessionCanAppendAfterRecordingIsReenabled(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
+	metaTag, videoSeq, audioSeq := testInitTags()
 	firstKey := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
 	firstEnd := &flv.Tag{Type: flv.TagVideo, Timestamp: 10_000, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
 	secondKey := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
@@ -1477,131 +251,61 @@ func TestArchiveMergedSessionRollsBackVideoWhenDanmakuIsMissing(t *testing.T) {
 	}
 }
 
-// 多段合并：第 2 段重新注入的序列头时间戳平移到合并边界，全片时间戳
-// 单调不回跳；两段的弹幕按 part 顺序拼接。
-func TestFinishSessionMergeMultiSegmentRebasesBoundaryHeaders(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
-	key0 := &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x01, 0, 0, 0, 0xAA}}
-	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
-	// 2 小时分段边界后的内容标签：绝对时间戳延续。
-	const boundary = 7_200_000
-	keyB := &flv.Tag{Type: flv.TagVideo, Timestamp: boundary, Data: []byte{0x17, 0x01, 0, 0, 0, 0xCC}}
-	interB := &flv.Tag{Type: flv.TagVideo, Timestamp: boundary + 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xDD}}
-
-	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq, key0, inter40)
-	// part2 模拟切段后的重注入：序列头保留近零时间戳，内容标签延续。
-	part2 := buildFLVStream(t, metaTag, videoSeq, audioSeq, keyB, interB)
-	repo := newTestRepo(t, nil)
-	lay, metaPath := seedMergeSession(t, repo, part1, part2)
-	if err := os.WriteFile(lay.segmentDanmakuPath(1), []byte("line1\n"), 0o644); err != nil {
+// 归档把合并产物还原成一个历史分段：编号接续、范围取原分段的并集、
+// 合并字段与结束时间清零，等待续录后重新合并。
+func TestArchiveMergedSessionRestoresSingleSegment(t *testing.T) {
+	lay := sessionLayout{dir: t.TempDir(), base: "session"}
+	if err := os.WriteFile(lay.mergedVideoPath(), []byte("merged video"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(lay.segmentDanmakuPath(2), []byte("line2\n"), 0o644); err != nil {
+	if err := os.WriteFile(lay.mergedDanmakuPath(), []byte("danmaku"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	meta := &sessionMeta{
+		Status:        metaStatusDone,
+		EndTime:       999,
+		MergedVideo:   lay.mergedVideoName(),
+		MergedDanmaku: lay.mergedDanmakuName(),
+		Segments: []segmentMeta{
+			{Part: 1, WallStart: 1000, WallEnd: 2000, TsStart: 0, TsEnd: 500},
+			{Part: 2, WallStart: 2000, WallEnd: 3000, TsStart: 500, TsEnd: 900},
+		},
+	}
 
-	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
-		t.Fatalf("FinishSession: %v", err)
+	if err := archiveMergedSession(lay, meta); err != nil {
+		t.Fatalf("archiveMergedSession: %v", err)
 	}
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		t.Fatal(err)
+
+	if len(meta.Segments) != 1 {
+		t.Fatalf("segments = %+v, want the merged output as one segment", meta.Segments)
 	}
-	if meta.Status != metaStatusDone {
-		t.Fatalf("status = %q, want %q", meta.Status, metaStatusDone)
+	seg := meta.Segments[0]
+	want := segmentMeta{
+		Part: 1, Video: lay.segmentVideoName(1), Danmaku: lay.segmentDanmakuName(1),
+		WallStart: 1000, WallEnd: 3000, TsStart: 0, TsEnd: 900, Bytes: int64(len("merged video")),
 	}
-	for _, part := range []int{1, 2} {
-		if _, err := os.Stat(lay.segmentVideoPath(part)); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("segment %d source must be removed after a verified merge (stat err = %v)", part, err)
+	if seg != want {
+		t.Fatalf("segment = %+v, want %+v", seg, want)
+	}
+	if meta.MergedVideo != "" || meta.MergedDanmaku != "" || meta.EndTime != 0 {
+		t.Fatalf("merge fields not cleared: %+v", meta)
+	}
+
+	// 文件已改名为分段，原合并产物名不复存在。
+	for _, gone := range []string{lay.mergedVideoPath(), lay.mergedDanmakuPath()} {
+		if _, err := os.Stat(gone); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s must be renamed away (stat err = %v)", gone, err)
 		}
 	}
-
-	_, tags := readSegmentTags(t, lay.mergedVideoPath())
-	// 边界处的序列头被平移到 part1 的最后时间戳（40）。
-	wantVideoSeq2 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: videoSeq.Data}
-	wantAudioSeq2 := &flv.Tag{Type: flv.TagAudio, Timestamp: 40, Data: audioSeq.Data}
-	assertTagsEqual(t, tags, []*flv.Tag{videoSeq, audioSeq, key0, inter40, wantVideoSeq2, wantAudioSeq2, keyB, interB})
-	for i := 1; i < len(tags); i++ {
-		if tags[i].Timestamp < tags[i-1].Timestamp {
-			t.Fatalf("timestamps not monotonic at tag %d: %d < %d", i, tags[i].Timestamp, tags[i-1].Timestamp)
-		}
-	}
-	if n := countMatchingTags(tags, metaTag); n != 0 {
-		t.Errorf("onMetaData appears %d times in merged file, want 0", n)
-	}
-
-	if got, err := os.ReadFile(lay.mergedDanmakuPath()); err != nil || string(got) != "line1\nline2\n" {
-		t.Fatalf("merged danmaku = %q, %v", got, err)
-	}
-}
-
-// 合并失败（分段损坏）：记录错误、状态 partial、源文件全部保留、
-// 不留临时文件。
-func TestFinishSessionMergeFailureKeepsSegments(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
-	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, nil)
-	lay, metaPath := seedMergeSession(t, repo, part1, []byte("not an flv"))
-
-	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
-		t.Fatalf("FinishSession records merge failure in meta, got %v", err)
-	}
-
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Status != metaStatusPartial {
-		t.Fatalf("status = %q, want %q", meta.Status, metaStatusPartial)
-	}
-	if meta.MergedVideo != "" {
-		t.Fatalf("merge bookkeeping = %+v, want empty after failed merge", meta)
-	}
-	var sawMergeErr bool
-	for _, e := range meta.Errors {
-		if e.Stage == "merge" {
-			sawMergeErr = true
-		}
-	}
-	if !sawMergeErr {
-		t.Fatalf("errors = %+v, want a merge-stage error", meta.Errors)
-	}
-	// 源分段原样保留，无合并产物与临时文件残留。
-	for part := 1; part <= 2; part++ {
-		if _, err := os.Stat(lay.segmentVideoPath(part)); err != nil {
-			t.Fatalf("segment %d source must survive a failed merge: %v", part, err)
-		}
-	}
-	for _, path := range []string{lay.mergedVideoPath(), lay.mergedVideoPath() + ".tmp"} {
-		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("%s must not exist after a failed merge (stat err = %v)", path, err)
+	for _, kept := range []string{lay.segmentVideoPath(1), lay.segmentDanmakuPath(1)} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("archived segment file missing: %v", err)
 		}
 	}
 }
-
-// 分段源文件缺失：合并失败，状态 partial。
-func TestFinishSessionMergeMissingSegmentMarksPartial(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
-	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
-	repo := newTestRepo(t, nil)
-	_, metaPath := seedMergeSession(t, repo, part1, nil) // part2 未落盘
-
-	if err := repo.FinishSession(context.Background(), testSession()); err != nil {
-		t.Fatalf("FinishSession: %v", err)
-	}
-	meta, err := loadMeta(metaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Status != metaStatusPartial {
-		t.Fatalf("status = %q, want %q", meta.Status, metaStatusPartial)
-	}
-}
-
-// --- RecoverPending ---
 
 func TestRecoverPendingFinishesInterruptedSessions(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
+	metaTag, videoSeq, audioSeq := testInitTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1)
@@ -1623,9 +327,33 @@ func TestRecoverPendingFinishesInterruptedSessions(t *testing.T) {
 	}
 }
 
+// 录制中崩溃是最常见的中断：状态仍是 recording、没有结束时间。恢复时
+// 补上结束时间并完成合并。
+func TestRecoverPendingFinishesRecordingSessions(t *testing.T) {
+	metaTag, videoSeq, audioSeq := testInitTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, nil)
+	lay, metaPath := seedMergeSession(t, repo, part1) // PrepareSession 后状态即 recording
+
+	before := time.Now().Unix()
+	if err := repo.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("RecoverPending: %v", err)
+	}
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != metaStatusDone || meta.MergedVideo != lay.mergedVideoName() {
+		t.Fatalf("meta = %+v, want done with merged output", meta)
+	}
+	if meta.EndTime < before {
+		t.Fatalf("EndTime = %d, want stamped at recovery (>= %d)", meta.EndTime, before)
+	}
+}
+
 // 旧版本遗留的未知状态（如 "remuxing"）：跳过并原样保留。
 func TestRecoverPendingSkipsUnknownStatus(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
+	metaTag, videoSeq, audioSeq := testInitTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1)
@@ -1651,7 +379,7 @@ func TestRecoverPendingSkipsUnknownStatus(t *testing.T) {
 
 // partial 且源分段齐全：重试合并。
 func TestRecoverPendingRetriesPartialWithSources(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
+	metaTag, videoSeq, audioSeq := testInitTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1)
@@ -1671,7 +399,7 @@ func TestRecoverPendingRetriesPartialWithSources(t *testing.T) {
 
 // partial 但源分段缺失（如旧版本的转封装产物）：原样保留，不反复报错。
 func TestRecoverPendingLeavesPartialWithoutSources(t *testing.T) {
-	metaTag, videoSeq, audioSeq := mergeTestTags()
+	metaTag, videoSeq, audioSeq := testInitTags()
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1, nil) // part2 未落盘
@@ -1689,5 +417,58 @@ func TestRecoverPendingLeavesPartialWithoutSources(t *testing.T) {
 	}
 	if _, err := os.Stat(lay.mergedVideoPath()); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("no merged file must be produced (stat err = %v)", err)
+	}
+}
+
+// 一个损坏的 meta.json 不能挡住其他会话的恢复。
+func TestRecoverPendingSkipsUnreadableMeta(t *testing.T) {
+	metaTag, videoSeq, audioSeq := testInitTags()
+	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
+	repo := newTestRepo(t, nil)
+	lay, metaPath := seedMergeSession(t, repo, part1)
+
+	badDir := filepath.Join(repo.recordRoot, "1_broken", "2026-08-11")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	badMeta := filepath.Join(badDir, "20260811_2000_x"+metaExt)
+	if err := os.WriteFile(badMeta, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("RecoverPending: %v", err)
+	}
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != metaStatusDone || meta.MergedVideo != lay.mergedVideoName() {
+		t.Fatalf("healthy session not recovered: %+v", meta)
+	}
+	if got, err := os.ReadFile(badMeta); err != nil || string(got) != "{not json" {
+		t.Fatalf("corrupt meta must be left untouched: %q, %v", got, err)
+	}
+}
+
+func TestRecoverPendingStopsOnCanceledContext(t *testing.T) {
+	metaTag, videoSeq, audioSeq := testInitTags()
+	repo := newTestRepo(t, nil)
+	lay, metaPath := seedMergeSession(t, repo, buildFLVStream(t, metaTag, videoSeq, audioSeq))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := repo.RecoverPending(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	meta, err := loadMeta(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != metaStatusRecording {
+		t.Fatalf("status = %q, want session untouched after cancel", meta.Status)
+	}
+	if _, err := os.Stat(lay.mergedVideoPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no merge may run after cancel (stat err = %v)", err)
 	}
 }
