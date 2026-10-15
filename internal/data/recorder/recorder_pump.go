@@ -45,15 +45,15 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 	stats.setCurrentFile("")
 
 	// 把 CDN 实际授予的清晰度记入 meta
-	repo.updateMeta(layout.metaPath(), func(meta *sessionMeta) {
+	updateMeta(layout.metaPath(), func(meta *sessionMeta) {
 		meta.Quality = qualityMeta(stream.Quality)
 		meta.Title = session.Title
 	})
 
-	state := newPumpState(repo, session.RoomID, layout, fileHeader, stats)
+	state := newPumpState(session.RoomID, layout, fileHeader, stats)
 	tagCh := flv.ReadTags(ctx, stream.Body)
 
-	health := time.NewTicker(repo.healthInterval)
+	health := time.NewTicker(healthCheckInterval)
 	defer health.Stop()
 
 	speedSampler := time.NewTicker(time.Second)
@@ -104,7 +104,7 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 
 		// 健康检查
 		case <-health.C:
-			if err := state.health.check(state.result.BytesWritten, state.repo.healthFailRounds); err != nil {
+			if err := state.health.check(state.result.BytesWritten, healthMaxFailRounds); err != nil {
 				state.closeSegment()
 				return &state.result, err
 			}
@@ -116,7 +116,6 @@ func (repo *recorderRepo) PumpSession(ctx context.Context, session *biz.Recordin
 // 创建和销毁，串联段边界、去重、写入进度等每次拉流独有的可变状态，不
 // 与其他并发会话共享（跨会话共享状态仍在 recorderRepo 上）。
 type pumpState struct {
-	repo       *recorderRepo       // 所属仓储，读取切分/健康检查配置
 	roomID     int64               // 当前录制房间 ID
 	layout     sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
 	fileHeader *flv.FileHeader     // 拉流解析出的 FLV 文件头
@@ -131,9 +130,8 @@ type pumpState struct {
 	health healthMonitor // 健康检查状态：连续无新数据落盘的轮数
 }
 
-func newPumpState(repo *recorderRepo, roomID int64, layout sessionLayout, fileHeader *flv.FileHeader, stats *sessionStats) *pumpState {
+func newPumpState(roomID int64, layout sessionLayout, fileHeader *flv.FileHeader, stats *sessionStats) *pumpState {
 	return &pumpState{
-		repo:       repo,
 		roomID:     roomID,
 		layout:     layout,
 		fileHeader: fileHeader,
@@ -173,7 +171,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 切段判定：大小或时长超限时优先切段；否则检查序列头是否变化。
 	// 序列头变化时若继续写旧段，两种解码配置会混入同一文件，因此强制切段。
 	switch {
-	case ShouldSplit(s.writer, tag, s.repo.maxSegmentBytes, s.repo.maxSegmentMintes):
+	case shouldSplit(s.writer, tag):
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
@@ -208,7 +206,7 @@ func (s *pumpState) handleEvent(ev *biz.DanmakuEvent) {
 func (s *pumpState) openNewSegment() error {
 	writer, err := OpenSegment(s.layout, s.fileHeader, &s.initTags)
 	if err != nil {
-		s.repo.appendMetaError(s.layout.metaPath(), "record", err)
+		appendMetaError(s.layout.metaPath(), "record", err)
 		return err
 	}
 
@@ -216,7 +214,7 @@ func (s *pumpState) openNewSegment() error {
 	s.result.Parts++
 	s.stats.setCurrentFile(writer.videoPath)
 
-	s.repo.appendSegmentMeta(s.layout.metaPath(), writer)
+	appendSegmentMeta(s.layout.metaPath(), writer)
 	log.Info("segment opened", "room", s.roomID, "part", writer.part, "file", writer.videoPath)
 	return nil
 }
@@ -228,7 +226,7 @@ func (s *pumpState) closeSegment() {
 	if err := s.writer.close(); err != nil {
 		log.Error("close segment failed", "room", s.roomID, "file", s.writer.videoPath, "err", err)
 	}
-	s.repo.finishSegmentMeta(s.layout.metaPath(), s.writer)
+	finishSegmentMeta(s.layout.metaPath(), s.writer)
 	s.writer = nil
 }
 
@@ -296,7 +294,7 @@ func (s *pumpState) writeFLVTag(tag *flv.Tag, persistError bool) error {
 	s.addWrittenBytes(n)
 
 	if err != nil && persistError {
-		s.repo.appendMetaError(s.layout.metaPath(), "record", err)
+		appendMetaError(s.layout.metaPath(), "record", err)
 	}
 	return err
 }
@@ -308,29 +306,4 @@ func (s *pumpState) addWrittenBytes(n int64) {
 
 func (s *pumpState) updateProgress() {
 	s.stats.setBytesWritten(s.baseBytes + s.result.BytesWritten + s.guard.bufBytes)
-}
-
-// healthMonitor 跟踪连续无新数据落盘的轮数，是 pumpSessionLoop 的内部状态。
-type healthMonitor struct {
-	lastGrowth int64 // 上次检查时的累计写入字节数
-	failRounds int   // 连续未见新数据的轮数
-}
-
-// check 用当前累计写入字节数更新状态，连续失败达到 maxRounds 时返回错误。
-func (h *healthMonitor) check(written int64, maxRounds int) error {
-	if written > h.lastGrowth {
-		h.lastGrowth = written
-		h.failRounds = 0
-		return nil
-	}
-	h.failRounds++
-	if h.failRounds < maxRounds {
-		return nil
-	}
-	return fmt.Errorf("recording unhealthy: no new data for %d rounds", h.failRounds)
-}
-
-// resetFailRounds 清零连续失败计数：CDN 重复块被丢弃不计入无新数据。
-func (h *healthMonitor) resetFailRounds() {
-	h.failRounds = 0
 }

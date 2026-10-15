@@ -11,16 +11,22 @@ const (
 	sizeSplitOverrunDivisor = 10               // 大小切分等待关键帧的强切裕度分母
 )
 
-// ShouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
+// 分段上限，暂不开放配置。用 var 仅为让测试缩小阈值，生产代码不得修改。
+var (
+	segmentSizeLimit     int64 = 2_684_354_560 // 2.5 GiB
+	segmentDurationLimit       = 120 * time.Minute
+)
+
+// shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
 // 等待视频关键帧以保证分段可独立播放：
 //  1. 大小：已写字节达到上限，且该 tag 是关键帧；或超出上限的
 //     1/sizeSplitOverrunDivisor 裕度仍无关键帧则强制切分；
 //  2. 时长：达到目标时长且该 tag 是关键帧；或超出 splitOverrun 强制切分。
-func ShouldSplit(writer *segmentWriter, tag *flv.Tag, maxSegmentBytes int64, segmentDuration time.Duration) bool {
+func shouldSplit(writer *segmentWriter, tag *flv.Tag) bool {
 	if !writer.hasStart {
 		return false
 	}
-	return splitBySize(writer, tag, maxSegmentBytes) || splitByDuration(writer, tag, segmentDuration)
+	return splitBySize(writer, tag, segmentSizeLimit) || splitByDuration(writer, tag, segmentDurationLimit)
 }
 
 // splitBySize 判断当前分段是否应当因体积超限而切分。

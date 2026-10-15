@@ -173,13 +173,15 @@ declared in `biz` and implemented in `data`:
   with hot-swap, and the signer/buvid wiring.
 - `RecorderRepo` — the storage seam; session directory layout, FLV
   parsing/writing (`flv/`), danmaku JSONL, per-session `meta.json`, and
-  the session-end merge (`merger.go`). It embeds
+  the session-end merge (`merge.go`). It embeds
   `SessionStatsRepo` — write-progress stats come from the same
   implementation's in-memory state, so the wiring narrows the interface
   instead of asserting it. Implemented across `internal/data/recorder/`
   (`recorder.go` session lifecycle + recovery, `paths.go` session layout
   and file naming, `meta.go` `meta.json` bookkeeping, `recorder_pump.go`
-  the stream pump, `recorder_segment.go` segment files, `stats.go`
+  the stream pump, `pump_monitor.go` speed sampling + health check,
+  `segment.go` segment files, `split.go` split policy, `dedup.go` CDN
+  loop dedup, `stats.go`
   write-progress stats); the atomic write-temp-then-rename shared by
   `meta.json` and the merge outputs lives in `internal/utils/file.go`
   (`utils.WriteFileAtomic`).

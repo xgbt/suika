@@ -35,6 +35,14 @@ func newTestRepo(t *testing.T, c *conf.Recorder) *recorderRepo {
 	return repo
 }
 
+// setSplitLimits 临时改写分段上限，测试结束后还原；依赖测试不并行。
+func setSplitLimits(t *testing.T, size int64, dur time.Duration) {
+	t.Helper()
+	oldSize, oldDur := segmentSizeLimit, segmentDurationLimit
+	segmentSizeLimit, segmentDurationLimit = size, dur
+	t.Cleanup(func() { segmentSizeLimit, segmentDurationLimit = oldSize, oldDur })
+}
+
 func testSession() *biz.RecordingSession {
 	return &biz.RecordingSession{
 		RoomID:        42,
@@ -278,7 +286,7 @@ func TestNextPartNumber(t *testing.T) {
 	}
 }
 
-// --- ShouldSplit ---
+// --- shouldSplit ---
 
 func TestShouldSplit(t *testing.T) {
 	key := []byte{0x17, 0x01, 0, 0, 0}   // 关键帧 NALU
@@ -319,8 +327,9 @@ func TestShouldSplit(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			seg := &segmentWriter{hasStart: tc.hasStart, startTs: tc.startTs}
-			if got := ShouldSplit(seg, tc.tag, 0, tc.dur); got != tc.want {
-				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
+			setSplitLimits(t, 0, tc.dur)
+			if got := shouldSplit(seg, tc.tag); got != tc.want {
+				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -356,8 +365,9 @@ func TestShouldSplitBySize(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// segmentDuration 置 0：只验证大小触发一路。
 			seg := &segmentWriter{hasStart: tc.hasStart, bytesWritten: tc.bytes}
-			if got := ShouldSplit(seg, tc.tag, tc.maxBytes, 0); got != tc.want {
-				t.Fatalf("ShouldSplit = %v, want %v", got, tc.want)
+			setSplitLimits(t, tc.maxBytes, 0)
+			if got := shouldSplit(seg, tc.tag); got != tc.want {
+				t.Fatalf("shouldSplit = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -367,11 +377,7 @@ func TestShouldSplitBySize(t *testing.T) {
 
 func TestNewRecorderRepoConfigMapping(t *testing.T) {
 	r := NewRecorderRepo(nil).(*recorderRepo)
-	if r.recordRoot != defaultRecordRoot ||
-		r.maxSegmentMintes != defaultMaxSegmentMinutes*time.Minute ||
-		r.maxSegmentBytes != defaultMaxSegmentBytes ||
-		r.healthInterval != defaultHealthInterval ||
-		r.healthFailRounds != defaultHealthRounds {
+	if r.recordRoot != defaultRecordRoot {
 		t.Fatalf("defaults not applied: %+v", r)
 	}
 
@@ -423,7 +429,7 @@ func TestPrepareSessionResumeKeepsSegments(t *testing.T) {
 	metaPath := lay.metaPath()
 
 	// 模拟崩溃/重启前已录好的一个分段
-	repo.appendSegmentMeta(metaPath, &segmentWriter{
+	appendSegmentMeta(metaPath, &segmentWriter{
 		part:        1,
 		videoPath:   lay.segmentVideoPath(1),
 		danmakuPath: lay.segmentDanmakuPath(1),
@@ -736,7 +742,7 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 
 func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	repo.maxSegmentMintes = 50 * time.Millisecond // 测试中使用亚分钟粒度
+	setSplitLimits(t, segmentSizeLimit, 50*time.Millisecond) // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -848,7 +854,7 @@ func TestPumpSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 // 重注入一次——开启 part2 的切分关键帧不在缓存中，所以那边也不会重复。
 func TestPumpSessionSplitHeadersWrittenOnce(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	repo.maxSegmentMintes = 50 * time.Millisecond // 测试中使用亚分钟粒度
+	setSplitLimits(t, segmentSizeLimit, 50*time.Millisecond) // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -993,7 +999,7 @@ func TestPumpSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 // 切分，共产出 4 段；每段（含最后一段）都 ≥ 阈值，且切分点都是关键帧。
 func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	repo.maxSegmentBytes = 250 // 测试中使用小阈值
+	setSplitLimits(t, 250, segmentDurationLimit) // 测试中使用小阈值
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1258,7 +1264,7 @@ func TestPumpSessionDisconnectsOnCDNLoop(t *testing.T) {
 // 且仍无关键帧）会先裁决缓冲块：在途数据不能因为关段而丢失。
 func TestPumpSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	repo.maxSegmentMintes = 50 * time.Millisecond // 测试中使用亚分钟粒度
+	setSplitLimits(t, segmentSizeLimit, 50*time.Millisecond) // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1327,7 +1333,7 @@ func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (sessio
 		if err := os.WriteFile(danmuPath, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		repo.appendSegmentMeta(metaPath, &segmentWriter{
+		appendSegmentMeta(metaPath, &segmentWriter{
 			part:        part,
 			videoPath:   videoPath,
 			danmakuPath: danmuPath,
@@ -1600,7 +1606,7 @@ func TestRecoverPendingFinishesInterruptedSessions(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1)
 	// 模拟合并期间崩溃
-	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusMerging })
+	updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusMerging })
 
 	if err := repo.RecoverPending(context.Background()); err != nil {
 		t.Fatalf("RecoverPending: %v", err)
@@ -1623,7 +1629,7 @@ func TestRecoverPendingSkipsUnknownStatus(t *testing.T) {
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1)
-	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = "remuxing" })
+	updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = "remuxing" })
 
 	if err := repo.RecoverPending(context.Background()); err != nil {
 		t.Fatalf("RecoverPending: %v", err)
@@ -1649,7 +1655,7 @@ func TestRecoverPendingRetriesPartialWithSources(t *testing.T) {
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1)
-	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
+	updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
 
 	if err := repo.RecoverPending(context.Background()); err != nil {
 		t.Fatalf("RecoverPending: %v", err)
@@ -1669,7 +1675,7 @@ func TestRecoverPendingLeavesPartialWithoutSources(t *testing.T) {
 	part1 := buildFLVStream(t, metaTag, videoSeq, audioSeq)
 	repo := newTestRepo(t, nil)
 	lay, metaPath := seedMergeSession(t, repo, part1, nil) // part2 未落盘
-	repo.updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
+	updateMeta(metaPath, func(meta *sessionMeta) { meta.Status = metaStatusPartial })
 
 	if err := repo.RecoverPending(context.Background()); err != nil {
 		t.Fatalf("RecoverPending: %v", err)
