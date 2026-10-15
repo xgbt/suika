@@ -31,75 +31,76 @@ type dedupGuard struct {
 	lastTS  int64  // 当前块最后一个 tag 的时间戳
 }
 
-// atBoundary 判断 tag 是否应先关闭当前块。
-func (g *dedupGuard) atBoundary(tag *flv.Tag) bool {
-	if len(g.tags) == 0 {
+// atBoundary 判断该 tag 是否在边界处, 是的话说明应关闭当前块
+func (guard *dedupGuard) atBoundary(tag *flv.Tag) bool {
+	if len(guard.tags) == 0 {
 		return false
 	}
+
 	switch {
 	// 头标签和元数据也作边界，避免它们被缓冲到下一块之后落盘，打乱与数据标签的顺序
-	case tag.IsAVCKeyframe(), tag.IsMetadata(),
-		tag.IsAVCSequenceHeader(), tag.IsAACSequenceHeader():
+	case tag.IsAVCKeyframe(), tag.IsMetadata(), tag.IsAVCSequenceHeader(), tag.IsAACSequenceHeader():
 		return true
-	case tag.Timestamp-g.lastTS >= dedupGapMs:
+	case tag.Timestamp-guard.lastTS >= dedupGapMs:
 		return true
-	case tag.Timestamp-g.firstTS >= dedupSpanMs:
+	case tag.Timestamp-guard.firstTS >= dedupSpanMs:
 		return true
 	}
-	return g.size >= dedupMaxBytes
+
+	return guard.size >= dedupMaxBytes
 }
 
 // push 将 tag 折入当前块，只缓冲不落盘。
-func (g *dedupGuard) push(tag *flv.Tag) {
-	if len(g.tags) == 0 {
-		g.firstTS = tag.Timestamp
+func (guard *dedupGuard) push(tag *flv.Tag) {
+	if len(guard.tags) == 0 {
+		guard.firstTS = tag.Timestamp
 	}
-	g.lastTS = tag.Timestamp
-	g.hash = g.hash*131 + tagDigest(tag)
-	g.size += int64(len(tag.Data)) + flv.TagOverhead
-	g.tags = append(g.tags, tag)
+	guard.lastTS = tag.Timestamp
+	guard.hash = guard.hash*131 + tagDigest(tag)
+	guard.size += int64(len(tag.Data)) + flv.TagOverhead
+	guard.tags = append(guard.tags, tag)
 }
 
 // flush 结束当前块并重置，返回应写入的 tag（空块或重复块为 nil）及是否需断开。
-func (g *dedupGuard) flush() (out []*flv.Tag, disconnect bool) {
-	if len(g.tags) == 0 {
+func (guard *dedupGuard) flush() (out []*flv.Tag, disconnect bool) {
+	if len(guard.tags) == 0 {
 		return nil, false
 	}
 
-	fp := g.fingerprint()
-	dup := g.seen(fp)
+	fp := guard.fingerprint()
+	dup := guard.seen(fp)
 
 	// 重复块同样入窗，保证连续计数不因登记而中断
-	g.hits[g.hitsN%dedupWindowSize] = fp
-	g.hitsN++
+	guard.hits[guard.hitsN%dedupWindowSize] = fp
+	guard.hitsN++
 	if dup {
-		g.streak++
+		guard.streak++
 	} else {
-		g.streak = 0
+		guard.streak = 0
 	}
 
-	tags := g.drain()
+	tags := guard.drain()
 	if dup {
-		return nil, g.streak >= dedupMaxStreak
+		return nil, guard.streak >= dedupMaxStreak
 	}
 	return tags, false
 }
 
 // drain 取走当前块全部 tag 且不判重，流结束或中止时用以保留已收数据。
-func (g *dedupGuard) drain() []*flv.Tag {
-	tags := g.tags
-	g.tags, g.size, g.hash, g.firstTS, g.lastTS = nil, 0, 0, 0, 0
+func (guard *dedupGuard) drain() []*flv.Tag {
+	tags := guard.tags
+	guard.tags, guard.size, guard.hash, guard.firstTS, guard.lastTS = nil, 0, 0, 0, 0
 	return tags
 }
 
-func (g *dedupGuard) fingerprint() uint64 {
+func (guard *dedupGuard) fingerprint() uint64 {
 	// 混入 tag 数以区分折叠值相同但长度不同的块
-	return g.hash ^ uint64(len(g.tags))*0x9E3779B97F4A7C15
+	return guard.hash ^ uint64(len(guard.tags))*0x9E3779B97F4A7C15
 }
 
 // seen 判断指纹是否命中窗口。
-func (g *dedupGuard) seen(fp uint64) bool {
-	return slices.Contains(g.hits[:min(g.hitsN, dedupWindowSize)], fp)
+func (guard *dedupGuard) seen(fp uint64) bool {
+	return slices.Contains(guard.hits[:min(guard.hitsN, dedupWindowSize)], fp)
 }
 
 // tagDigest 计算单个 tag 的 FNV-1a 64 位指纹。
