@@ -20,27 +20,27 @@ type initTags struct {
 	audioSeqHeader *flv.Tag // 最近一次 AAC 序列头
 }
 
-// sequenceHeaderChanged 报告 tag 是否为与缓存不同的序列头（首次出现不算），变化时需切段。
-func (h *initTags) sequenceHeaderChanged(tag *flv.Tag) bool {
+// seqHeaderChanged 判断 Tag 是否为与缓存不同的序列头（首次出现不算），变化时需切段。
+func (it *initTags) seqHeaderChanged(tag *flv.Tag) bool {
 	switch {
 	case tag.IsAVCSequenceHeader():
-		return h.videoSeqHeader != nil && !bytes.Equal(h.videoSeqHeader.Data, tag.Data)
+		return it.videoSeqHeader != nil && !bytes.Equal(it.videoSeqHeader.Data, tag.Data)
 	case tag.IsAACSequenceHeader():
-		return h.audioSeqHeader != nil && !bytes.Equal(h.audioSeqHeader.Data, tag.Data)
+		return it.audioSeqHeader != nil && !bytes.Equal(it.audioSeqHeader.Data, tag.Data)
 	}
 	// metadata 不参与判断：它只是分辨率/帧率等展示用提示值，不影响解码器配置。
 	return false
 }
 
 // observe 如果 tag 是初始化标签，则更新缓存；否则不做任何操作。
-func (h *initTags) observe(tag *flv.Tag) {
+func (it *initTags) observe(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
-		h.metadata = tag
+		it.metadata = tag
 	case tag.IsAVCSequenceHeader():
-		h.videoSeqHeader = tag
+		it.videoSeqHeader = tag
 	case tag.IsAACSequenceHeader():
-		h.audioSeqHeader = tag
+		it.audioSeqHeader = tag
 	}
 }
 
@@ -51,13 +51,11 @@ type segmentWriter struct {
 	// 视频文件
 	videoPath   string        // 视频文件路径
 	videoFile   *os.File      // 视频文件句柄
-	videoWriter *bufio.Writer // 视频文件缓冲写入器（1MB）
+	videoWriter *bufio.Writer // 视频文件缓冲写入器
 
 	// 弹幕文件（无缓冲，事件直接写入）
 	danmakuPath string   // 弹幕文件路径
 	danmakuFile *os.File // 弹幕文件句柄
-
-	buf []byte // 标签序列化复用缓冲，writeRawTag 每次复用，避免逐标签分配
 
 	hasStart     bool      // 是否已写入首个正文标签；初始化标签不计，未写入时 startTs 无效
 	startTs      int64     // 首个正文标签的时间戳，切分时长以此为起点
@@ -68,17 +66,17 @@ type segmentWriter struct {
 
 // close 刷新视频缓冲并关闭两个文件。任一步骤失败都不会跳过后续步骤，
 // 以保证文件句柄全部释放，所有错误合并返回。
-func (s *segmentWriter) close() error {
+func (sw *segmentWriter) close() error {
 	var errs []error
 
 	// 视频文件需先刷新缓冲再关闭，否则尾部数据丢失；弹幕文件无缓冲，直接关闭即可。
-	if err := s.videoWriter.Flush(); err != nil {
+	if err := sw.videoWriter.Flush(); err != nil {
 		errs = append(errs, fmt.Errorf("flush video buffer: %w", err))
 	}
-	if err := s.videoFile.Close(); err != nil {
+	if err := sw.videoFile.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close video file: %w", err))
 	}
-	if err := s.danmakuFile.Close(); err != nil {
+	if err := sw.danmakuFile.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close danmaku file: %w", err))
 	}
 
@@ -87,11 +85,11 @@ func (s *segmentWriter) close() error {
 
 // OpenSegment 创建分段文件并写入 FLV 文件头与缓存的初始化标签；失败时清理已创建的文件。
 func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, initTags *initTags) (writer *segmentWriter, err error) {
+	// 初始化分段编号和文件路径
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
 
-	// 依赖命名返回值 err：失败时关闭并删除已打开的文件，不留半成品分段。
 	var videoFile, danmakuFile *os.File
 	defer func() {
 		if err == nil {
@@ -107,19 +105,20 @@ func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, initTags *initTa
 		}
 	}()
 
+	// 打开视频和弹幕文件
 	if videoFile, err = os.OpenFile(videoPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err != nil {
 		return nil, err
 	}
-	// 与视频文件一致使用 O_TRUNC，part 编号复用时避免旧弹幕残留。
 	if danmakuFile, err = os.OpenFile(danmakuPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err != nil {
 		return nil, err
 	}
 
+	// 初始化分段写入器结构体，准备写入视频和弹幕数据。
 	writer = &segmentWriter{
 		part:        part,
 		videoPath:   videoPath,
 		videoFile:   videoFile,
-		videoWriter: bufio.NewWriterSize(videoFile, 1<<20),
+		videoWriter: bufio.NewWriterSize(videoFile, 1<<20), // 1MB 缓冲
 		danmakuPath: danmakuPath,
 		danmakuFile: danmakuFile,
 		wallStart:   time.Now(),
@@ -134,44 +133,45 @@ func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, initTags *initTa
 }
 
 // writePreamble 依次写入 FLV 文件头与缓存的初始化标签，即分段正文之前的全部内容。
-func (s *segmentWriter) writePreamble(fileHeader *flv.FileHeader, initTags *initTags) error {
+func (sw *segmentWriter) writePreamble(fileHeader *flv.FileHeader, initTags *initTags) error {
 	// 写入 FLV 文件头
-	if _, err := s.videoWriter.Write(fileHeader.Bytes()); err != nil {
+	if _, err := sw.videoWriter.Write(fileHeader.Bytes()); err != nil {
 		return err
 	}
-	s.bytesWritten += int64(len(fileHeader.Bytes()))
+	sw.bytesWritten += int64(len(fileHeader.Bytes()))
 
 	// 写入缓存的初始化标签（metadata/序列头）
 	for _, tag := range []*flv.Tag{initTags.metadata, initTags.videoSeqHeader, initTags.audioSeqHeader} {
 		if tag == nil {
 			continue
 		}
-		if _, err := s.writeRawTag(tag); err != nil {
+		if _, err := sw.writeRawTag(tag); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
-// writeRawTag 序列化 tag 并写入视频文件，只累计字节数，不推进时间戳。
-func (s *segmentWriter) writeRawTag(tag *flv.Tag) (int64, error) {
-	s.buf = tag.AppendTo(s.buf[:0])
-	n, err := s.videoWriter.Write(s.buf)
-	s.bytesWritten += int64(n)
+// writeRawTag 将标签序列化并写入视频文件的缓冲区，仅累计字节数，不推进时间戳。
+func (sw *segmentWriter) writeRawTag(tag *flv.Tag) (int64, error) {
+	encoded := tag.AppendTo(sw.videoWriter.AvailableBuffer())
+	n, err := sw.videoWriter.Write(encoded)
+	sw.bytesWritten += int64(n)
 	return int64(n), err
 }
 
 // writeBodyTag 写入正文标签，仅在写入成功时推进起止时间戳。
-func (s *segmentWriter) writeBodyTag(tag *flv.Tag) (int64, error) {
-	n, err := s.writeRawTag(tag)
+func (sw *segmentWriter) writeBodyTag(tag *flv.Tag) (int64, error) {
+	n, err := sw.writeRawTag(tag)
 	if err != nil {
 		return n, err
 	}
-	if !s.hasStart {
-		s.hasStart = true
-		s.startTs = tag.Timestamp
+	if !sw.hasStart {
+		sw.hasStart = true
+		sw.startTs = tag.Timestamp
 	}
-	s.lastTs = tag.Timestamp
+	sw.lastTs = tag.Timestamp
 	return n, nil
 }
 
@@ -197,7 +197,7 @@ type danmakuEventPO struct {
 }
 
 // writeDanmaku 将 DO 转换为 danmakuEventPO 后序列化为一行 JSON 写入弹幕文件。
-func (s *segmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
+func (sw *segmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
 	entry := danmakuEventPO{
 		Ts:       ev.TS.UnixMilli(),
 		SendTs:   ev.SendTS,
@@ -215,5 +215,5 @@ func (s *segmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
 		Level:    ev.Level,
 		Raw:      ev.Raw,
 	}
-	return json.NewEncoder(s.danmakuFile).Encode(entry)
+	return json.NewEncoder(sw.danmakuFile).Encode(entry)
 }

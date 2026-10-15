@@ -177,7 +177,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 		if err := s.rotateSegment(); err != nil {
 			return err
 		}
-	case s.initTags.sequenceHeaderChanged(tag):
+	case s.initTags.seqHeaderChanged(tag):
 		log.Warn("sequence header changed, splitting segment", "room", s.roomID, "part", s.writer.part)
 		// 强制切段，确保新序列头写入新段。
 		if err := s.rotateSegment(); err != nil {
