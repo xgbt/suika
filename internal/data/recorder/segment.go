@@ -13,15 +13,15 @@ import (
 	"suika/internal/data/flv"
 )
 
-// headerTags 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
-type headerTags struct {
+// initTags 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
+type initTags struct {
 	metadata       *flv.Tag // 最近一次 onMetaData 脚本标签
 	videoSeqHeader *flv.Tag // 最近一次 AVC 序列头
 	audioSeqHeader *flv.Tag // 最近一次 AAC 序列头
 }
 
 // sequenceHeaderChanged 报告 tag 是否为与缓存不同的序列头（首次出现不算），变化时需切段。
-func (h *headerTags) sequenceHeaderChanged(tag *flv.Tag) bool {
+func (h *initTags) sequenceHeaderChanged(tag *flv.Tag) bool {
 	switch {
 	case tag.IsAVCSequenceHeader():
 		return h.videoSeqHeader != nil && !bytes.Equal(h.videoSeqHeader.Data, tag.Data)
@@ -33,7 +33,7 @@ func (h *headerTags) sequenceHeaderChanged(tag *flv.Tag) bool {
 }
 
 // observe 如果 tag 是头标签，则更新缓存；否则不做任何操作。
-func (h *headerTags) observe(tag *flv.Tag) {
+func (h *initTags) observe(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
 		h.metadata = tag
@@ -86,7 +86,7 @@ func (s *segmentWriter) close() error {
 }
 
 // OpenSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
-func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *headerTags) (writer *segmentWriter, err error) {
+func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, initTags *initTags) (writer *segmentWriter, err error) {
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
 	danmakuPath := lay.segmentDanmakuPath(part)
@@ -126,15 +126,15 @@ func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, cache *headerTag
 	}
 
 	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
-	if err = writer.writeHeaderTags(fileHeader, cache); err != nil {
+	if err = writer.writeInitTags(fileHeader, initTags); err != nil {
 		return nil, err
 	}
 
 	return writer, nil
 }
 
-// writeHeaderTags 写入 FLV 文件头及缓存的头标签。
-func (s *segmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *headerTags) error {
+// writeInitTags 写入 FLV 文件头及缓存的头标签。
+func (s *segmentWriter) writeInitTags(fileHeader *flv.FileHeader, initTags *initTags) error {
 	// 写入 FLV 文件头
 	if _, err := s.videoWriter.Write(fileHeader.Bytes()); err != nil {
 		return err
@@ -142,7 +142,7 @@ func (s *segmentWriter) writeHeaderTags(fileHeader *flv.FileHeader, cache *heade
 	s.bytesWritten += int64(len(fileHeader.Bytes()))
 
 	// 写入缓存的头标签（metadata/序列头）
-	for _, tag := range []*flv.Tag{cache.metadata, cache.videoSeqHeader, cache.audioSeqHeader} {
+	for _, tag := range []*flv.Tag{initTags.metadata, initTags.videoSeqHeader, initTags.audioSeqHeader} {
 		if tag == nil {
 			continue
 		}
