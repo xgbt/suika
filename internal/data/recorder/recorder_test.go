@@ -38,9 +38,9 @@ func newTestRepo(t *testing.T, c *conf.Recorder) *recorderRepo {
 // setSplitLimits 临时改写分段上限，测试结束后还原；依赖测试不并行。
 func setSplitLimits(t *testing.T, size int64, dur time.Duration) {
 	t.Helper()
-	oldSize, oldDur := segmentSizeLimit, segmentDurationLimit
-	segmentSizeLimit, segmentDurationLimit = size, dur
-	t.Cleanup(func() { segmentSizeLimit, segmentDurationLimit = oldSize, oldDur })
+	oldSize, oldDur := maxSegmentSize, maxSegmentDuration
+	maxSegmentSize, maxSegmentDuration = size, dur
+	t.Cleanup(func() { maxSegmentSize, maxSegmentDuration = oldSize, oldDur })
 }
 
 func testSession() *biz.RecordingSession {
@@ -742,7 +742,7 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 
 func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	setSplitLimits(t, segmentSizeLimit, 50*time.Millisecond) // 测试中使用亚分钟粒度
+	setSplitLimits(t, maxSegmentSize, 50*time.Millisecond) // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -854,7 +854,7 @@ func TestPumpSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 // 重注入一次——开启 part2 的切分关键帧不在缓存中，所以那边也不会重复。
 func TestPumpSessionSplitHeadersWrittenOnce(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	setSplitLimits(t, segmentSizeLimit, 50*time.Millisecond) // 测试中使用亚分钟粒度
+	setSplitLimits(t, maxSegmentSize, 50*time.Millisecond) // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -999,7 +999,7 @@ func TestPumpSessionRepeatedSeqHeaderDoesNotSplit(t *testing.T) {
 // 切分，共产出 4 段；每段（含最后一段）都 ≥ 阈值，且切分点都是关键帧。
 func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	setSplitLimits(t, 250, segmentDurationLimit) // 测试中使用小阈值
+	setSplitLimits(t, 250, maxSegmentDuration) // 测试中使用小阈值
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {
@@ -1264,7 +1264,7 @@ func TestPumpSessionDisconnectsOnCDNLoop(t *testing.T) {
 // 且仍无关键帧）会先裁决缓冲块：在途数据不能因为关段而丢失。
 func TestPumpSessionSplitOverrunFlushesPendingBlock(t *testing.T) {
 	repo := newTestRepo(t, nil)
-	setSplitLimits(t, segmentSizeLimit, 50*time.Millisecond) // 测试中使用亚分钟粒度
+	setSplitLimits(t, maxSegmentSize, 50*time.Millisecond) // 测试中使用亚分钟粒度
 	ctx := context.Background()
 	session := testSession()
 	if err := repo.PrepareSession(ctx, session); err != nil {

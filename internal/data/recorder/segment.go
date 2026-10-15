@@ -219,14 +219,14 @@ func (sw *segmentWriter) writeDanmaku(ev *biz.DanmakuEvent) error {
 }
 
 const (
-	splitOverrun            = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 	sizeSplitOverrunDivisor = 10               // 大小切分等待关键帧的强切裕度分母
+	splitOverrun            = 15 * time.Second // 分段在等待关键帧切点时最多超出目标时长
 )
 
 // 分段上限，暂不开放配置。用 var 仅为让测试缩小阈值，生产代码不得修改。
 var (
-	segmentSizeLimit     int64 = 2_684_354_560 // 2.5 GiB
-	segmentDurationLimit       = 120 * time.Minute
+	maxSegmentSize     int64 = 2_684_354_560 // 2.5 GiB
+	maxSegmentDuration       = 120 * time.Minute
 )
 
 // shouldSplit 判断下一个 tag 是否应开启新分段。两个独立触发条件，都优先
@@ -238,7 +238,7 @@ func (sw *segmentWriter) shouldSplit(tag *flv.Tag) bool {
 	if !sw.hasStart {
 		return false
 	}
-	return sw.splitBySize(tag, segmentSizeLimit) || sw.splitByDuration(tag, segmentDurationLimit)
+	return sw.splitBySize(tag, maxSegmentSize) || sw.splitByDuration(tag, maxSegmentDuration)
 }
 
 // splitBySize 判断当前分段是否应当因体积超限而切分。
