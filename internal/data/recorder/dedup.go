@@ -1,181 +1,134 @@
 package recorder
 
-import (
-	"suika/internal/data/flv"
-)
+import "suika/internal/data/flv"
 
-// CDN 循环吐流去重常量。参照录播姬 RemoveDuplicatedChunkRule。
+// CDN 循环吐流去重（参照录播姬 RemoveDuplicatedChunkRule）。
 const (
-	// dupHistorySize 块指纹滑动窗口大小。
-	dupHistorySize = 16
-	// dupDisconnectStreak 连续重复块达到该值判定为 CDN 边缘节点循环吐
-	// 流，中止泵送并由断流决策树换流地址重连。
-	dupDisconnectStreak = 10
+	dedupWindowSize       = 16       // 块指纹滑动窗口大小
+	dedupMaxStreak        = 10       // 连续重复块达到该值即判定为循环吐流，请求断开
+	dedupGapMs      int64 = 25_000   // 相邻 tag 时间戳间隔上限，纯音频流唯一的自然边界
+	dedupSpanMs     int64 = 60_000   // 单块时长上限，防止病态长 GOP 撑爆缓冲
+	dedupMaxBytes   int64 = 64 << 20 // 单块字节上限，框定内存占用
 
-	// dupGapThreshold（毫秒）：相邻标签时间戳间隔超过该值则关闭当前块。
-	// 纯音频流没有视频关键帧，这是唯一的自然边界。
-	dupGapThreshold int64 = 25_000
-	// dupBlockMaxSpan（毫秒）：单块的流内时长跨度上限，超限强制关闭，
-	// 防止病态长 GOP 让缓冲无限增长。
-	dupBlockMaxSpan int64 = 60_000
-
-	// dupBlockMaxBytes 单块缓冲字节上限，超限强制关闭，框定去重内存占用。
-	dupBlockMaxBytes int64 = 64 << 20
-
-	// tagDigestSampleBytes 单 tag 指纹采样字节数：仅取前 64 字节，配合
-	// 载荷长度降低误判，同时避免全量遍历大包体。
-	tagDigestSampleBytes = 64
+	digestSampleBytes = 64 // 单 tag 指纹仅采样载荷前 64 字节
 )
 
-// dupGuard 检测 CDN 循环吐流：泵送把标签按"块"（从视频关键帧开始、到
-// 下一个边界之前）缓冲，块关闭时以内容指纹与最近窗口比对，重复块整块
-// 丢弃，连续重复达到上限则请求断开（调用方包装为 ErrStreamTransient，
-// 由断流决策树换流地址重连）。块先整块缓冲再裁决落盘，因此重复内容不
-// 会写盘。指纹只含标签类型与载荷（不含时间戳），容忍循环重放时时间戳
-// 被重写。
+// dedupGuard 检测 CDN 循环吐流。
 //
-// 注意：当前实现使用 tag 载荷前缀采样（见 digestTag），是吞吐与误判率
-// 的折中；通过块级聚合和连续重复阈值降低静态画面误判带来的影响。
-type dupGuard struct {
-	// hist 是最近块的指纹滑动窗口。
-	hist [dupHistorySize]uint64
-	// histN 是累计入窗次数（可超过窗口长度），用于定位环形写入位置。
-	histN int
-	// streak 是连续重复块的计数。
-	streak int
+// tag 按"块"缓冲（从视频关键帧起，到下一个边界止），块关闭时用内容指纹
+// 与最近窗口比对：重复块整体丢弃（不落盘），连续重复达到上限则请求断开，
+// 由调用方包装为 ErrStreamTransient 触发换流重连。
+// 指纹不含时间戳，可容忍循环重放时时间戳被重写。
+type dedupGuard struct {
+	// 指纹窗口（环形）
+	window [dedupWindowSize]uint64
+	total  int // 累计入窗次数，可超过窗口长度
+	streak int // 连续重复块计数
 
-	// 当前块的累积。
-	buf []*flv.Tag
-	// bufBytes 是当前块估算字节数（tag.Data + FLV 封装开销）。
-	bufBytes int64
-	// sum 是块内 tag 指纹的顺序折叠值。
-	sum uint64
-	// count 是块内 tag 数，用于 fingerprint 二次混入避免长度碰撞。
-	count int
-	// firstTs/lastTs 用于 gap/span 边界判断，不参与内容指纹。
-	firstTs int64
-	lastTs  int64
+	// 当前块
+	tags    []*flv.Tag
+	size    int64  // 估算字节数（载荷 + FLV 封装开销）
+	hash    uint64 // 块内 tag 指纹的顺序折叠值
+	firstTS int64  // 仅用于边界判断，不参与指纹
+	lastTS  int64
 }
 
-// isBoundary 判断 tag 是否为块边界：当前块非空且 tag 是视频关键帧、头标
-// 签，或触发间隔/跨度/字节上限时，应先关闭当前块。初始化标签作为边界是为
-// 了避免它们被缓冲到下一块之后才落盘，破坏与数据标签的先后顺序。
-func (g *dupGuard) isBoundary(tag *flv.Tag) bool {
-	if len(g.buf) == 0 {
+// atBoundary 判断 tag 是否应先关闭当前块。
+// 头标签和元数据也视为边界，避免它们被缓冲到下一块之后落盘，打乱与数据标签的顺序。
+func (g *dedupGuard) atBoundary(tag *flv.Tag) bool {
+	if len(g.tags) == 0 {
 		return false
 	}
-	if tag.IsAVCKeyframe() || tag.IsMetadata() ||
-		tag.IsAVCSequenceHeader() || tag.IsAACSequenceHeader() {
+	switch {
+	case tag.IsAVCKeyframe(), tag.IsMetadata(),
+		tag.IsAVCSequenceHeader(), tag.IsAACSequenceHeader():
+		return true
+	case tag.Timestamp-g.lastTS >= dedupGapMs:
+		return true
+	case tag.Timestamp-g.firstTS >= dedupSpanMs:
 		return true
 	}
-	if tag.Timestamp-g.lastTs >= dupGapThreshold {
-		return true
-	}
-	if tag.Timestamp-g.firstTs >= dupBlockMaxSpan {
-		return true
-	}
-	return g.bufBytes >= dupBlockMaxBytes
+	return g.size >= dedupMaxBytes
 }
 
-// add 把 tag 折入当前块（只缓冲，不落盘）。
-func (g *dupGuard) add(tag *flv.Tag) {
-	if len(g.buf) == 0 {
-		g.firstTs = tag.Timestamp
+// push 将 tag 折入当前块，只缓冲不落盘。
+func (g *dedupGuard) push(tag *flv.Tag) {
+	if len(g.tags) == 0 {
+		g.firstTS = tag.Timestamp
 	}
-	g.lastTs = tag.Timestamp
-	g.count++
-	g.sum = g.sum*131 + digestTag(tag)
-	g.bufBytes += int64(len(tag.Data)) + flv.TagOverhead
-	g.buf = append(g.buf, tag)
+	g.lastTS = tag.Timestamp
+	g.hash = g.hash*131 + tagDigest(tag)
+	g.size += int64(len(tag.Data)) + flv.TagOverhead
+	g.tags = append(g.tags, tag)
 }
 
-// close 结束当前块并清空累积：返回应写入的标签（重复块与空块为
-// nil），以及连续重复是否已达断开上限。重复块同样计入指纹窗口，连续
-// 计数不因窗口登记而中断。
-func (g *dupGuard) close() (write []*flv.Tag, disconnect bool) {
-	// 当前块为空时直接返回，不做任何处理。
-	if len(g.buf) == 0 {
+// flush 结束当前块并重置：返回应写入的 tag（空块或重复块为 nil），
+// 以及连续重复是否已达断开上限。
+func (g *dedupGuard) flush() (out []*flv.Tag, disconnect bool) {
+	if len(g.tags) == 0 {
 		return nil, false
 	}
 
-	// 计算当前块的指纹，并判断是否在滑动窗口中出现过。
 	fp := g.fingerprint()
 	dup := g.seen(fp)
-	g.hist[g.histN%dupHistorySize] = fp
-	g.histN++
+
+	// 重复块同样入窗，保证连续计数不因登记而中断
+	g.window[g.total%dedupWindowSize] = fp
+	g.total++
 	if dup {
 		g.streak++
 	} else {
 		g.streak = 0
 	}
 
-	// 保存当前块内容
-	buf := g.buf
-
-	// 重置当前块的累积状态，为下一块做准备
-	g.resetBlock()
+	tags := g.drain()
 	if dup {
-		return nil, g.streak >= dupDisconnectStreak
+		return nil, g.streak >= dedupMaxStreak
 	}
-
-	return buf, false
+	return tags, false
 }
 
-// takeAll 取走当前块的全部标签，不做重复裁决（流结束/中止时尽量保留
-// 已收到的数据）。
-func (g *dupGuard) takeAll() []*flv.Tag {
-	buf := g.buf
-	g.resetBlock()
-	return buf
+// drain 取走当前块全部 tag，不做重复裁决（流结束或中止时尽量保留已收数据）。
+func (g *dedupGuard) drain() []*flv.Tag {
+	tags := g.tags
+	g.tags, g.size, g.hash, g.firstTS, g.lastTS = nil, 0, 0, 0, 0
+	return tags
 }
 
-// fingerprint 折叠块内全部内容指纹，再混入标签数以区分不同长度的块。
-func (g *dupGuard) fingerprint() uint64 {
-	return g.sum ^ uint64(g.count)*0x9E3779B97F4A7C15
+// fingerprint 混入 tag 数以区分内容折叠值相同但长度不同的块。
+func (g *dedupGuard) fingerprint() uint64 {
+	return g.hash ^ uint64(len(g.tags))*0x9E3779B97F4A7C15
 }
 
-// seen 判断指纹是否命中滑动窗口。
-func (g *dupGuard) seen(fp uint64) bool {
-	for i := range min(g.histN, dupHistorySize) {
-		if g.hist[i] == fp {
+// seen 判断指纹是否命中窗口。
+func (g *dedupGuard) seen(fp uint64) bool {
+	for _, h := range g.window[:min(g.total, dedupWindowSize)] {
+		if h == fp {
 			return true
 		}
 	}
 	return false
 }
 
-func (g *dupGuard) resetBlock() {
-	g.buf = nil
-	g.bufBytes = 0
-	g.sum = 0
-	g.count = 0
-	g.firstTs = 0
-	g.lastTs = 0
-}
-
-// digestTag 计算单个 tag 的内容指纹（FNV-1a 64-bit）。
-//
-// 指纹输入：len(data) + tag.Type + data 前缀采样。
-// 不混入 timestamp，避免 CDN 循环重放时"内容相同但时间戳被重写"导致
-// 判重失效。
-func digestTag(tag *flv.Tag) uint64 {
+// tagDigest 计算单个 tag 的 FNV-1a 64 位指纹，输入为载荷长度、tag 类型和
+// 载荷前缀。前缀采样是吞吐与误判率的折中，误判的影响由块级聚合与连续重复
+// 阈值兜底；不含时间戳以抵御时间戳重写。
+func tagDigest(tag *flv.Tag) uint64 {
 	const (
-		fnvOffset = uint64(14695981039346656037)
-		fnvPrime  = uint64(1099511628211)
+		offset = uint64(14695981039346656037)
+		prime  = uint64(1099511628211)
 	)
 
-	h := fnvOffset
-	h = (h ^ uint64(len(tag.Data))) * fnvPrime
-	h = (h ^ uint64(tag.Type)) * fnvPrime
+	h := offset
+	h = (h ^ uint64(len(tag.Data))) * prime
+	h = (h ^ uint64(tag.Type)) * prime
 
-	// 截取前缀采样字节；小于阈值时按实际长度参与。
 	data := tag.Data
-	if len(data) > tagDigestSampleBytes {
-		data = data[:tagDigestSampleBytes]
+	if len(data) > digestSampleBytes {
+		data = data[:digestSampleBytes]
 	}
-
 	for _, b := range data {
-		h = (h ^ uint64(b)) * fnvPrime
+		h = (h ^ uint64(b)) * prime
 	}
 	return h
 }

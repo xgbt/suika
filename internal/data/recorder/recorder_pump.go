@@ -122,7 +122,7 @@ type pumpState struct {
 	initTags   initTags            // 缓存可在分段间复用的初始化标签，用于检测序列头变化并在新分段开头重放
 	stats      *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
 	baseBytes  int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
-	guard      dupGuard            // CDN 循环吐流去重状态
+	guard      dedupGuard          // CDN 循环吐流去重状态
 	writer     *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
 	result     biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘的正文 tag 字节，不含文件头与初始化标签
 
@@ -161,7 +161,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 			return err
 		}
 	// 当前 tag 是块边界, 说明可以落盘当前缓冲块了
-	case s.guard.isBoundary(tag):
+	case s.guard.atBoundary(tag):
 		if err := s.flushBlock(); err != nil {
 			s.closeSegment()
 			return err
@@ -186,7 +186,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	// 记录状态。初始化标签须在切段判定之后入缓存：序列头变化触发的切段会把新序列头
 	// 注入新段，若此时已入缓存，同一个 tag 还会作为正文再写一次，造成重复。
 	s.initTags.observe(tag)
-	s.guard.add(tag)
+	s.guard.push(tag)
 	// 进度计入去重缓冲中已接收但未落盘的字节（见 updateProgress），块落盘后
 	// 这部分转为已写字节，进度随之校正为实际落盘值。
 	s.updateProgress()
@@ -235,7 +235,7 @@ func (s *pumpState) stop() {
 	// 尝试落盘在途缓冲块，避免丢失数据。写失败时中断排空，但仍要往下走
 	// 到 closeSegment()：否则句柄不关、缓冲区不刷、meta 的收尾字段不写，
 	// 而这些恰恰是磁盘写满时最需要保住的东西。
-	for _, tag := range s.guard.takeAll() {
+	for _, tag := range s.guard.drain() {
 		if err := s.writeFLVTag(tag, false); err != nil {
 			log.Warn("drain pending block failed", "room", s.roomID, "err", err)
 			break
@@ -266,7 +266,7 @@ func (s *pumpState) rotateSegment() error {
 }
 
 func (s *pumpState) flushBlock() error {
-	buf, disconnect := s.guard.close()
+	buf, disconnect := s.guard.flush()
 	if disconnect {
 		return fmt.Errorf("%w: cdn looping duplicate stream data", biz.ErrStreamTransient)
 	}
@@ -305,5 +305,5 @@ func (s *pumpState) addWrittenBytes(n int64) {
 }
 
 func (s *pumpState) updateProgress() {
-	s.stats.setBytesWritten(s.baseBytes + s.result.BytesWritten + s.guard.bufBytes)
+	s.stats.setBytesWritten(s.baseBytes + s.result.BytesWritten + s.guard.size)
 }

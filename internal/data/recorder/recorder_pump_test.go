@@ -34,7 +34,7 @@ func TestPumpSessionProgressIncludesBufferedBlock(t *testing.T) {
 		result:    biz.RecordingResult{BytesWritten: 200},
 	}
 	tag := &flv.Tag{Type: flv.TagVideo, Timestamp: 1000, Data: []byte{0x27, 0x01, 0xAA}}
-	loop.guard.add(tag)
+	loop.guard.push(tag)
 	loop.updateProgress()
 
 	want := int64(100 + 200 + len(tag.Data) + flv.TagOverhead)
@@ -873,7 +873,7 @@ func TestPumpSessionDisconnectsOnCDNLoop(t *testing.T) {
 	loopInter := []byte{0x27, 0x01, 0, 0, 0, 0xBB}
 
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq}
-	for i := range dupDisconnectStreak + 2 {
+	for i := range dedupMaxStreak + 2 {
 		base := int64(i) * 100
 		tags = append(
 			tags,
