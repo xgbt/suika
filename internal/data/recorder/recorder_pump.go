@@ -120,12 +120,12 @@ type pumpState struct {
 	roomID     int64               // 当前录制房间 ID
 	layout     sessionLayout       // 会话在磁盘上的位置（目录 + 文件名前缀）
 	fileHeader *flv.FileHeader     // 拉流解析出的 FLV 文件头
-	initTags   initTags            // 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放
+	initTags   initTags            // 缓存可在分段间复用的初始化标签，用于检测序列头变化并在新分段开头重放
 	stats      *sessionStats       // 房间级写入进度，跨多次 PumpSession 调用（重连）共享
 	baseBytes  int64               // 本次调用开始前 stats 已有的写入字节数，用于换算绝对进度
 	guard      dupGuard            // CDN 循环吐流去重状态
 	writer     *segmentWriter      // 当前打开的分段文件，nil 表示尚未开段
-	result     biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘的正文 tag 字节，不含文件头与头标签
+	result     biz.RecordingResult // 待返回给调用方的最终结果；BytesWritten 即累计写盘的正文 tag 字节，不含文件头与初始化标签
 
 	speed  speedTracker  // 下载速度采样状态
 	health healthMonitor // 健康检查状态：连续无新数据落盘的轮数
@@ -150,7 +150,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 	s.speed.addReceived(int64(len(tag.Data)) + flv.TagOverhead)
 
 	// 分段须从视频关键帧开始：尚未开段时丢弃首个关键帧之前的正文 tag
-	// 头标签仍需缓存，供开段时注入。
+	// 初始化标签仍需缓存，供开段时注入。
 	if s.writer == nil && s.fileHeader.HasVideo && !tag.IsAVCKeyframe() {
 		s.initTags.observe(tag)
 		return nil
@@ -185,7 +185,7 @@ func (s *pumpState) handleTag(tag *flv.Tag) error {
 		}
 	}
 
-	// 记录状态。头标签须在切段判定之后入缓存：序列头变化触发的切段会把新序列头
+	// 记录状态。初始化标签须在切段判定之后入缓存：序列头变化触发的切段会把新序列头
 	// 注入新段，若此时已入缓存，同一个 tag 还会作为正文再写一次，造成重复。
 	s.initTags.observe(tag)
 	s.guard.add(tag)

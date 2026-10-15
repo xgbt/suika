@@ -494,7 +494,7 @@ func TestPrepareSessionResetsStatsBetweenSessions(t *testing.T) {
 	inter40 := &flv.Tag{Type: flv.TagVideo, Timestamp: 40, Data: []byte{0x27, 0x01, 0, 0, 0, 0xBB}}
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40}
 	var wantBytes int64
-	for _, tag := range []*flv.Tag{key0, inter40} { // 头标签不计入
+	for _, tag := range []*flv.Tag{key0, inter40} { // 初始化标签不计入
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 	pump := func(session *biz.RecordingSession) {
@@ -673,7 +673,7 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40}
 
 	var wantBytes int64
-	for _, tag := range []*flv.Tag{key0, inter40} { // 头标签不计入
+	for _, tag := range []*flv.Tag{key0, inter40} { // 初始化标签不计入
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 
@@ -694,8 +694,8 @@ func TestPumpSessionSingleSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// part1 在首个视频关键帧处开启，头标签取自缓存注入，
-	// 流内容原样写入：任何头标签都不会出现两次。
+	// part1 在首个视频关键帧处开启，初始化标签取自缓存注入，
+	// 流内容原样写入：任何初始化标签都不会出现两次。
 	videoPath := lay.segmentVideoPath(1)
 	header, gotTags := readSegmentTags(t, videoPath)
 	if !header.HasAudio || !header.HasVideo {
@@ -753,7 +753,7 @@ func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 	tags := []*flv.Tag{metaTag, videoSeq, audioSeq, key0, inter40, key100, inter120}
 
 	var wantBytes int64
-	for _, tag := range []*flv.Tag{key0, inter40, key100, inter120} { // 头标签不计入
+	for _, tag := range []*flv.Tag{key0, inter40, key100, inter120} { // 初始化标签不计入
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 
@@ -796,7 +796,7 @@ func TestPumpSessionSplitsAtKeyframe(t *testing.T) {
 }
 
 // 回归：触发新分段的那个 tag 必须恰好写入一次。此前拉流写入会在开启
-// part1 前先缓存首个头标签，openSegment 重注入（此时已非空的）缓存，
+// part1 前先缓存首个初始化标签，openSegment 重注入（此时已非空的）缓存，
 // 拉流写入又把同一个标签写了一遍——part1 里的 onMetaData 因此重复。
 func TestPumpSessionSingleSegmentHeadersWrittenOnce(t *testing.T) {
 	repo := newTestRepo(t, nil)
@@ -899,7 +899,7 @@ func TestPumpSessionSplitHeadersWrittenOnce(t *testing.T) {
 
 // TestPumpSessionSplitsOnSeqHeaderChange 验证流中途序列头变化（CDN 换
 // 源、主播改码率）触发强制切段：视频与音频序列头各变化一次，产生三段；
-// 每段从缓存注入当时的旧头标签，新序列头作为首个正文标签写入。
+// 每段从缓存注入当时的旧初始化标签，新序列头作为首个正文标签写入。
 func TestPumpSessionSplitsOnSeqHeaderChange(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
@@ -1036,7 +1036,7 @@ func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
 		if seg.Bytes < 250 {
 			t.Fatalf("segment %d bytes = %d, want >= 250", seg.Part, seg.Bytes)
 		}
-		// part2 起：注入的三个头标签之后首个正文标签必须是关键帧（切分点）。
+		// part2 起：注入的三个初始化标签之后首个正文标签必须是关键帧（切分点）。
 		if i == 0 {
 			continue
 		}
@@ -1049,7 +1049,7 @@ func TestPumpSessionSplitsAtSizeLimit(t *testing.T) {
 
 // TestPumpSessionWaitsForFirstKeyframe 验证新场次的首个分段只在第一个视
 // 频关键帧处开启：关键帧之前的正文标签被丢弃（流内重连后的新段同理），
-// 头标签照常入缓存并在开段时注入，保证段首即关键帧、独立可解码。
+// 初始化标签照常入缓存并在开段时注入，保证段首即关键帧、独立可解码。
 func TestPumpSessionWaitsForFirstKeyframe(t *testing.T) {
 	repo := newTestRepo(t, nil)
 	ctx := context.Background()
@@ -1187,7 +1187,7 @@ func TestPumpSessionDropsDuplicateBlocks(t *testing.T) {
 	want := append([]*flv.Tag{metaTag, videoSeq, audioSeq},
 		append(append(blockA, blockB...), tail...)...)
 	var wantBytes int64
-	for _, tag := range want[3:] { // 跳过头标签
+	for _, tag := range want[3:] { // 跳过初始化标签
 		wantBytes += int64(len(tag.AppendTo(nil)))
 	}
 	if result.BytesWritten != wantBytes {
@@ -1337,7 +1337,7 @@ func seedMergeSession(t *testing.T, repo *recorderRepo, parts ...[]byte) (sessio
 	return lay, metaPath
 }
 
-// mergeTestTags 返回合并测试共用的头标签。
+// mergeTestTags 返回合并测试共用的初始化标签。
 func mergeTestTags() (metaTag, videoSeq, audioSeq *flv.Tag) {
 	metaTag = &flv.Tag{Type: flv.TagScript, Timestamp: 0, Data: []byte{0x02, 0x00, 0x0a, 'o', 'n', 'M', 'e', 't', 'a', 'D', 'a', 't', 'a'}}
 	videoSeq = &flv.Tag{Type: flv.TagVideo, Timestamp: 0, Data: []byte{0x17, 0x00, 0, 0, 0, 1, 2, 3}}

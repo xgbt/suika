@@ -25,7 +25,7 @@ const (
 //
 // 具体职责按文件拆分：recorder.go 会话生命周期（Prepare/Finish/Recover）、
 // paths.go 会话布局与文件名派生、meta.go meta.json 的 schema 与读写、
-// recorder_pump.go 拉流写入循环、recorder_segment.go 分段文件与头标签缓存、
+// recorder_pump.go 拉流写入循环、recorder_segment.go 分段文件与初始化标签缓存、
 // splitter.go 切分策略、recorder_dedup.go CDN 循环吐流去重、
 // stats.go 写入进度统计、merger.go 收尾合并。meta.json 与合并产物
 // 共用的原子替换不在本包，由 internal/utils.WriteFileAtomic 提供。

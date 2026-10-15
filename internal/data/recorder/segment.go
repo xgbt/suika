@@ -13,7 +13,7 @@ import (
 	"suika/internal/data/flv"
 )
 
-// initTags 缓存可在分段间复用的头标签，用于检测序列头变化并在新分段开头重放。
+// initTags 缓存可在分段间复用的初始化标签，用于检测序列头变化并在新分段开头重放。
 type initTags struct {
 	metadata       *flv.Tag // 最近一次 onMetaData 脚本标签
 	videoSeqHeader *flv.Tag // 最近一次 AVC 序列头
@@ -32,7 +32,7 @@ func (h *initTags) sequenceHeaderChanged(tag *flv.Tag) bool {
 	return false
 }
 
-// observe 如果 tag 是头标签，则更新缓存；否则不做任何操作。
+// observe 如果 tag 是初始化标签，则更新缓存；否则不做任何操作。
 func (h *initTags) observe(tag *flv.Tag) {
 	switch {
 	case tag.IsMetadata():
@@ -59,10 +59,10 @@ type segmentWriter struct {
 
 	buf []byte // 标签序列化复用缓冲，writeRawTag 每次复用，避免逐标签分配
 
-	hasStart     bool      // 是否已写入首个正文标签；头标签不计，未写入时 startTs 无效
+	hasStart     bool      // 是否已写入首个正文标签；初始化标签不计，未写入时 startTs 无效
 	startTs      int64     // 首个正文标签的时间戳，切分时长以此为起点
 	lastTs       int64     // 最近一次写入的正文标签的时间戳，即本段结束时间
-	bytesWritten int64     // 已写入视频文件的字节数，含 FLV 文件头、头标签与正文标签
+	bytesWritten int64     // 已写入视频文件的字节数，含 FLV 文件头、初始化标签与正文标签
 	wallStart    time.Time // 分段打开的墙钟时间，对应 meta.json 的 WallStart
 }
 
@@ -85,7 +85,7 @@ func (s *segmentWriter) close() error {
 	return errors.Join(errs...)
 }
 
-// OpenSegment 创建分段文件并写入 FLV 文件头与缓存的头标签；失败时清理已创建的文件。
+// OpenSegment 创建分段文件并写入 FLV 文件头与缓存的初始化标签；失败时清理已创建的文件。
 func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, initTags *initTags) (writer *segmentWriter, err error) {
 	part := nextPartNumber(lay)
 	videoPath := lay.segmentVideoPath(part)
@@ -125,23 +125,23 @@ func OpenSegment(lay sessionLayout, fileHeader *flv.FileHeader, initTags *initTa
 		wallStart:   time.Now(),
 	}
 
-	// 写入 FLV 文件头及缓存的头标签（metadata/序列头），确保分段文件可独立播放。
-	if err = writer.writeInitTags(fileHeader, initTags); err != nil {
+	// 写入 FLV 文件头及缓存的初始化标签（metadata/序列头），确保分段文件可独立播放。
+	if err = writer.writePreamble(fileHeader, initTags); err != nil {
 		return nil, err
 	}
 
 	return writer, nil
 }
 
-// writeInitTags 写入 FLV 文件头及缓存的头标签。
-func (s *segmentWriter) writeInitTags(fileHeader *flv.FileHeader, initTags *initTags) error {
+// writePreamble 依次写入 FLV 文件头与缓存的初始化标签，即分段正文之前的全部内容。
+func (s *segmentWriter) writePreamble(fileHeader *flv.FileHeader, initTags *initTags) error {
 	// 写入 FLV 文件头
 	if _, err := s.videoWriter.Write(fileHeader.Bytes()); err != nil {
 		return err
 	}
 	s.bytesWritten += int64(len(fileHeader.Bytes()))
 
-	// 写入缓存的头标签（metadata/序列头）
+	// 写入缓存的初始化标签（metadata/序列头）
 	for _, tag := range []*flv.Tag{initTags.metadata, initTags.videoSeqHeader, initTags.audioSeqHeader} {
 		if tag == nil {
 			continue

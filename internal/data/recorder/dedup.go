@@ -58,7 +58,7 @@ type dupGuard struct {
 }
 
 // isBoundary 判断 tag 是否为块边界：当前块非空且 tag 是视频关键帧、头标
-// 签，或触发间隔/跨度/字节上限时，应先关闭当前块。头标签作为边界是为
+// 签，或触发间隔/跨度/字节上限时，应先关闭当前块。初始化标签作为边界是为
 // 了避免它们被缓冲到下一块之后才落盘，破坏与数据标签的先后顺序。
 func (g *dupGuard) isBoundary(tag *flv.Tag) bool {
 	if len(g.buf) == 0 {
