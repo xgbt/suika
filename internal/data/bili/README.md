@@ -6,58 +6,40 @@
 
 ```mermaid
 flowchart TB
-    UC["biz（调用方）<br/>RecorderUsecase / Monitor · AccountUsecase"]
+    UC["biz<br/>RecorderUsecase · AccountUsecase"]
 
-    subgraph ENDPOINTS["端点实现（薄：声明端点形状 / 解析响应 / 翻译业务码）"]
-        LIVE["liveClient<br/>live.go（含弹幕鉴权 danmuInfo）"]
-        DM["danmakuConn 弹幕子系统<br/>danmaku.go（连接+协议）· danmaku_event.go"]
-        PASS["passportClient<br/>passport.go"]
+    subgraph BILI["data/bili"]
+        LIVE["liveClient<br/>房间信息 · 拉流 · 弹幕鉴权"]
+        DM["danmakuConn<br/>弹幕连接 · 事件解析"]
+        PASS["passportClient<br/>扫码登录 · 账号核验"]
+        RISK["riskGuard<br/>合规请求 · 重试 · 冷却"]
+        CLIENT["Client<br/>登录态 · 签名器 · 指纹 · HTTP"]
     end
 
-    RISK["riskGuard<br/>risk.go<br/>合规请求与重试/冷却的唯一归属"]
-    CLIENT["Client<br/>client.go<br/>共享状态与接线 · riskTransport 的唯一实现"]
-
-    subgraph HELPERS["风控助手（由 Client 持有并驱动）"]
-        WBI["wbiSigner<br/>wbi.go"]
-        BUVID["buvidStore<br/>buvid.go"]
-    end
-
-    HTTP["HTTP 原语<br/>http.go<br/>browserRequest / getJSON"]
-
-    subgraph BILI["B 站"]
-        BILIAPI["直播 API<br/>api.live.bilibili.com"]
-        WWWAPI["主站 API<br/>api.bilibili.com"]
+    subgraph PLAT["B 站"]
+        API["直播 API"]
+        WWW["主站 API"]
         CDN["直播 CDN"]
-        WS["弹幕 WebSocket"]
-        PP["passport.bilibili.com"]
+        WS["弹幕 WS"]
+        PP["passport"]
     end
 
-    UC -->|"实现 LiveClient"| LIVE
-    UC -->|"实现 PassportClient"| PASS
-    LIVE -->|"DanmakuConn 构造"| DM
-    DM -->|"经 lc 回调：danmuInfo · GetRoomInfo"| LIVE
-    LIVE --> RISK
-    DM -.->|"cookie 快照 · buvid3"| CLIENT
-    RISK -->|"riskTransport<br/>注入指纹 · 签名 · 发请求 · 刷新"| CLIENT
-    CLIENT -.->|"哨兵错误 errHTTPRiskControl"| RISK
-
-    CLIENT --> WBI
-    CLIENT --> BUVID
-    CLIENT --> HTTP
-    WBI --> HTTP
-    BUVID --> HTTP
-    LIVE -->|"browserRequest"| HTTP
-    PASS --> HTTP
-
-    CLIENT ==> BILIAPI
-    WBI ==>|"nav 取密钥"| WWWAPI
-    BUVID ==>|"spi 取指纹"| WWWAPI
-    LIVE ==>|"FLV 长连接"| CDN
-    DM ==>|"弹幕事件流"| WS
-    PASS ==>|"扫码登录 · nav 核验"| PP
+    UC -.->|LiveClient| LIVE
+    UC -.->|PassportClient| PASS
+    LIVE -->|构造 DanmakuConn| DM
+    DM -->|danmuInfo · GetRoomInfo| LIVE
+    LIVE -->|全部直播 API 调用| RISK
+    RISK -.->|riskTransport| CLIENT
+    CLIENT ==>|nav · spi| WWW
+    CLIENT ==> API
+    LIVE ==>|FLV| CDN
+    DM ==>|弹幕流| WS
+    PASS ==>|扫码登录| PP
 ```
 
-图里要紧的只有方向：**端点是薄的——只声明端点形状；构造合规请求（注入指纹、WBI 签名）与重试/退避/冷却全部收敛到 `riskGuard` 一个模块**。而 `riskGuard` 本身只依赖 `riskTransport` 这一个缝（生产实现是 `*Client`），既不碰 HTTP 原语、也不直接持有签名器与指纹缓存——所以"合规请求怎么构造"只有一处可改。
+点线是缝（接口与实现），实线是包内调用，粗线是出网流量。
+
+图里要紧的只有方向：**端点是薄的——只声明端点形状；构造合规请求（注入指纹、WBI 签名）与重试/退避/冷却全部收敛到 `riskGuard` 一个模块**。`riskGuard` 只依赖 `riskTransport` 这一个缝（生产实现是 `*Client`），既不碰 HTTP 原语、也不直接持有签名器与指纹缓存——所以"合规请求怎么构造"只有一处可改。
 
 `liveClient` 与 `danmakuConn` 是同一颗对象树里的父子关系，不是两个独立组件：`liveClient` 构造 `danmakuConn`（`DanmakuConn` 构造），`danmakuConn` 又经持有的 `lc` 反过来调用 `liveClient` 的 `danmuInfo`（弹幕鉴权）与 `GetRoomInfo`（断线重连后的房态复查）。这是刻意的双向依赖：两者本就同属"直播侧"，没有必要为了单向箭头而拆出额外接口。
 
