@@ -19,17 +19,16 @@ const (
 
 // dedupGuard 按块缓冲 tag 并检测 CDN 循环吐流。
 type dedupGuard struct {
-	// 最近块的指纹窗口（环形），块关闭时与之比对
-	hits   [dedupWindowSize]uint64
-	hitsN  int // 累计入窗次数，可超过窗口长度
-	streak int // 连续重复块计数，达到上限由调用方包装为 ErrStreamTransient 触发换流重连
+	hits   [dedupWindowSize]uint64 // 最近块的指纹窗口（环形），块关闭时与之比对
+	hitsN  int                     // 累计入窗次数，可超过窗口长度
+	streak int                     // 连续重复块计数，达到上限由调用方包装为 ErrStreamTransient 触发换流重连
 
-	// 当前块：从视频关键帧起，到下一个边界止
-	tags    []*flv.Tag
+	tags []*flv.Tag // 当前块的 tag 列表
+
 	size    int64  // 估算字节数（载荷 + FLV 封装开销）
 	hash    uint64 // 块内 tag 指纹的顺序折叠值，不含时间戳，可容忍循环重放时时间戳被重写
 	firstTS int64  // 仅用于边界判断，不参与指纹
-	lastTS  int64
+	lastTS  int64  // 当前块最后一个 tag 的时间戳
 }
 
 // atBoundary 判断 tag 是否应先关闭当前块。
