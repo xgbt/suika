@@ -163,12 +163,28 @@
 	font-weight: 500;
 }
 
-.room-toggle-label {
-	white-space: nowrap;
-}
-
 .room-record-switch {
 	flex-shrink: 0;
+	min-width: 80px;
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+}
+
+.room-record-switch.ant-switch {
+	background: #dfe4e0;
+}
+
+.room-record-switch.ant-switch.ant-switch-checked {
+	background: #6f8a79;
+}
+
+.room-record-switch.ant-switch .ant-switch-inner .ant-switch-inner-unchecked {
+	color: #646b66;
+}
+
+.room-record-switch.ant-switch .ant-switch-inner .ant-switch-inner-checked {
+	color: #fff;
 }
 
 .room-metrics {

@@ -34,7 +34,7 @@ function App() {
         },
         components: {
           Button: { primaryShadow: 'none', defaultShadow: 'none' },
-          Switch: { trackHeight: 28, trackMinWidth: 54, handleSize: 22 },
+          Switch: { trackHeight: 28, trackMinWidth: 54, handleSize: 22, trackPadding: 3 },
         },
       }}
     >

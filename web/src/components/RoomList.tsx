@@ -164,6 +164,15 @@ export default function RoomList() {
     };
   }, [loadPage, REFRESH_INTERVAL_MS]);
 
+  async function updateRecordEnabled(roomId: number, enabled: boolean) {
+    try {
+      await roomsApi.updateRecordEnabled(roomId, enabled);
+      loadPage(pageTokenStack[currentPage] ?? '');
+    } catch (e: unknown) {
+      message.error((e as Error).message ?? '更新失败');
+    }
+  }
+
   function handleRefresh() {
     loadPage(pageTokenStack[currentPage] ?? '');
   }
@@ -335,24 +344,22 @@ export default function RoomList() {
                     </Tooltip>
                   ) : (RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>)}
                   <span className="room-toggle">
-                    <span className="room-toggle-label">录制开关</span>
                     <Switch
                       className="room-record-switch"
+                      checkedChildren="录制开"
+                      unCheckedChildren="录制关"
                       checked={room.record_enabled}
                       onChange={(checked) => {
+                        if (checked) {
+                          void updateRecordEnabled(room.room_id, true);
+                          return;
+                        }
                         modal.confirm({
-                          title: checked ? `录制房间 ${room.room_id}？` : `停止录制房间 ${room.room_id}？`,
-                          okText: checked ? '录制' : '停止',
+                          title: `停止录制房间 ${room.room_id}？`,
+                          okText: '停止',
                           cancelText: '取消',
-                          okButtonProps: checked ? {} : { danger: true },
-                          onOk: async () => {
-                            try {
-                              await roomsApi.updateRecordEnabled(room.room_id, checked);
-                              loadPage(pageTokenStack[currentPage] ?? '');
-                            } catch (e: unknown) {
-                              message.error((e as Error).message ?? '更新失败');
-                            }
-                          },
+                          okButtonProps: { danger: true },
+                          onOk: () => updateRecordEnabled(room.room_id, false),
                         });
                       }}
                     />
