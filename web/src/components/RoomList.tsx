@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useId } from 'react';
 import {
-  Card,
   Button,
   Modal,
   Form,
@@ -89,6 +88,19 @@ function SpeedTooltipChart({ speeds }: SpeedSparklineProps) {
     <div className="speed-tooltip-panel">
       <div className="speed-tooltip-title">下载速度趋势</div>
       <SpeedSparkline speeds={speeds} />
+    </div>
+  );
+}
+
+function FileTooltip({ path }: { path: string }) {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const dir = cut >= 0 ? path.slice(0, cut + 1) : '';
+  const name = cut >= 0 ? path.slice(cut + 1) : path;
+  return (
+    <div className="file-tip-body">
+      <div className="file-tip-label">录制文件</div>
+      <div className="file-tip-name">{name}</div>
+      {dir ? <div className="file-tip-dir">{dir}</div> : null}
     </div>
   );
 }
@@ -231,118 +243,126 @@ export default function RoomList() {
         </Space>
       </div>
 
-      <div>
-        {rooms.length === 0 ? (
-          <Card className="room-card-empty" bordered={false}>
-            <Empty description="当前页暂无房间" />
-          </Card>
-        ) : (
-          <div className="room-grid">
-            {rooms.map((room) => {
-              const speedHistory = speedHistoryByRoom[room.room_id] ?? [0];
-              const isLive = room.live_status === LiveStatus.LIVE_STATUS_LIVE;
-              const isRecording = room.record_status === RecordStatus.RECORD_STATUS_RECORDING;
-              return (
-                <Card key={room.room_id} className={`room-card ${isLive ? 'room-card-live' : ''}`} bordered={false}>
-                  <div className="room-card-head">
-                    <div>
-                      <div className="room-link-row">
-                        <Popconfirm
-                          title={`确认打开房间 ${room.room_id}？`}
-                          description="将在新标签页跳转到 Bilibili 直播间"
-                          okText="打开"
-                          cancelText="取消"
-                          onConfirm={() => openRoomWithConfirm(room.room_id)}
-                        >
-                          <button type="button" className="room-link room-link-trigger">
-                            房间 #{room.room_id}
-                          </button>
-                        </Popconfirm>
-                        {isLive ? <span className="live-indicator" aria-label="直播中" title="直播中" /> : null}
-                      </div>
-                      <div className="room-name">{room.streamer_name || '未命名主播'}</div>
-                    </div>
-                    <Space align="start" className="room-head-actions">
-                      <Popconfirm
-                        title={`确认删除房间 ${room.room_id}？`}
-                        onConfirm={() => handleDelete(room.room_id)}
-                        okText="删除"
-                        cancelText="取消"
-                        okButtonProps={{ danger: true }}
-                      >
-                        <Tooltip title="删除">
-                          <Button type="text" size="small" danger icon={<DeleteOutlined />} />
-                        </Tooltip>
-                      </Popconfirm>
-                    </Space>
+      {rooms.length === 0 ? (
+        <Empty className="room-empty" description="当前页暂无房间" />
+      ) : (
+        <div className="room-grid">
+          {rooms.map((room) => {
+            const speedHistory = speedHistoryByRoom[room.room_id] ?? [0];
+            const isLive = room.live_status === LiveStatus.LIVE_STATUS_LIVE;
+            const isRecording = room.record_status === RecordStatus.RECORD_STATUS_RECORDING;
+            return (
+              <div key={room.room_id} className={`room-card ${isLive ? 'room-card-live' : ''}`}>
+                <div className="room-card-head">
+                  <div className="room-name-row">
+                    <span className="room-name">{room.streamer_name || '未命名主播'}</span>
+                    {isLive ? (
+                      <span className="live-badge">
+                        <span className="live-indicator" />
+                        直播中
+                      </span>
+                    ) : null}
                   </div>
+                  <Popconfirm
+                    title={`确认删除房间 ${room.room_id}？`}
+                    onConfirm={() => handleDelete(room.room_id)}
+                    okText="删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                  >
+                    <Tooltip title="删除">
+                      <Button className="room-delete" type="text" size="small" icon={<DeleteOutlined />} />
+                    </Tooltip>
+                  </Popconfirm>
+                </div>
 
-                  <div className="room-title">{room.room_title || '暂无房间标题'}</div>
+                <div className="room-sub">
+                  <Popconfirm
+                    title={`确认打开房间 ${room.room_id}？`}
+                    description="将在新标签页跳转到 Bilibili 直播间"
+                    okText="打开"
+                    cancelText="取消"
+                    onConfirm={() => openRoomWithConfirm(room.room_id)}
+                  >
+                    <button type="button" className="room-link">
+                      房间 #{room.room_id}
+                    </button>
+                  </Popconfirm>
+                  <Text className="room-title" ellipsis={{ tooltip: room.room_title }}>
+                    {room.room_title || '暂无房间标题'}
+                  </Text>
+                </div>
 
-                  <div className="room-status-row">
-                    {isRecording && room.granted_qn ? (
-                      <Tooltip title={`QN ${room.granted_qn}${room.granted_qn_desc ? ` · ${room.granted_qn_desc}` : ''}`}>
-                        <span aria-label="查看当前录制清晰度">{RECORD_STATUS_MAP[room.record_status]}</span>
-                      </Tooltip>
-                    ) : (RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>)}
-                    <span className="room-toggle">
-                      <span className="room-toggle-label">录制开关</span>
-                      <Switch
-                        className="room-record-switch"
-                        checked={room.record_enabled}
-                        onChange={(checked) => {
-                          modal.confirm({
-                            title: checked ? `录制房间 ${room.room_id}？` : `停止录制房间 ${room.room_id}？`,
-                            okText: checked ? '录制' : '停止',
-                            cancelText: '取消',
-                            okButtonProps: checked ? {} : { danger: true },
-                            onOk: async () => {
-                              try {
-                                await roomsApi.updateRecordEnabled(room.room_id, checked);
-                                loadPage(pageTokenStack[currentPage] ?? '');
-                              } catch (e: unknown) {
-                                message.error((e as Error).message ?? '更新失败');
-                              }
-                            },
-                          });
-                        }}
-                      />
-                    </span>
+                <div className="room-metrics">
+                  <div className="metric-box">
+                    <span>已录制</span>
+                    <strong>{formatBytes(room.bytes_written)}</strong>
                   </div>
-
-                  <div className="room-metrics">
-                    <div className="metric-box">
-                      <span>已录制</span>
-                      <strong>{formatBytes(room.bytes_written)}</strong>
-                    </div>
-                    <div className="metric-box">
-                      <span>实时下载速度</span>
-                      <Tooltip placement="top" title={<SpeedTooltipChart speeds={speedHistory} />}>
-                        <strong className={`speed-chip ${isRecording ? 'speed-chip-live' : ''}`}>{formatSpeed(room.download_speed_bps)}</strong>
-                      </Tooltip>
-                    </div>
+                  <div className="metric-box">
+                    <span>实时下载速度</span>
+                    <Tooltip placement="top" title={<SpeedTooltipChart speeds={speedHistory} />}>
+                      <strong className={`speed-chip ${isRecording ? 'speed-chip-live' : ''}`}>{formatSpeed(room.download_speed_bps)}</strong>
+                    </Tooltip>
                   </div>
+                </div>
 
-                  <div className="room-foot">
-                    <Text type="secondary" ellipsis={{ tooltip: room.current_file || '暂无录制文件' }}>
-                      文件: {room.current_file || '—'}
-                    </Text>
-                    {room.last_error ? (
-                      <Tooltip title={room.last_error}>
-                        <Text type="danger" ellipsis>
-                          错误: {room.last_error}
-                        </Text>
-                      </Tooltip>
-                    ) : (
-                      <Text type="secondary">错误: —</Text>
-                    )}
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                <div className="room-foot">
+                  <Text
+                    type="secondary"
+                    ellipsis={{
+                      tooltip: room.current_file
+                        ? { title: <FileTooltip path={room.current_file} />, classNames: { root: 'file-tip-root', container: 'file-tip' }, arrow: false }
+                        : '暂无录制文件',
+                    }}
+                  >
+                    文件: {room.current_file || '—'}
+                  </Text>
+                  {room.last_error ? (
+                    <Tooltip title={room.last_error}>
+                      <Text type="danger" ellipsis>
+                        错误: {room.last_error}
+                      </Text>
+                    </Tooltip>
+                  ) : (
+                    <Text type="secondary">错误: —</Text>
+                  )}
+                </div>
+
+                <div className="room-control">
+                  {isRecording && room.granted_qn ? (
+                    <Tooltip title={`QN ${room.granted_qn}${room.granted_qn_desc ? ` · ${room.granted_qn_desc}` : ''}`}>
+                      <span aria-label="查看当前录制清晰度">{RECORD_STATUS_MAP[room.record_status]}</span>
+                    </Tooltip>
+                  ) : (RECORD_STATUS_MAP[room.record_status] ?? <Tag>未知</Tag>)}
+                  <span className="room-toggle">
+                    <span className="room-toggle-label">录制开关</span>
+                    <Switch
+                      className="room-record-switch"
+                      checked={room.record_enabled}
+                      onChange={(checked) => {
+                        modal.confirm({
+                          title: checked ? `录制房间 ${room.room_id}？` : `停止录制房间 ${room.room_id}？`,
+                          okText: checked ? '录制' : '停止',
+                          cancelText: '取消',
+                          okButtonProps: checked ? {} : { danger: true },
+                          onOk: async () => {
+                            try {
+                              await roomsApi.updateRecordEnabled(room.room_id, checked);
+                              loadPage(pageTokenStack[currentPage] ?? '');
+                            } catch (e: unknown) {
+                              message.error((e as Error).message ?? '更新失败');
+                            }
+                          },
+                        });
+                      }}
+                    />
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <Modal
         title="添加房间"

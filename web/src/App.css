@@ -1,29 +1,175 @@
 .app-shell {
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 18% 0%, rgba(184, 201, 191, 0.20), transparent 44%),
-    radial-gradient(circle at 85% 100%, rgba(232, 237, 233, 0.62), transparent 50%),
-    linear-gradient(180deg, #f6f7f6, #f1f3f1);
+  background: #f6f7f6;
+}
+
+.app-sider {
+  position: sticky !important;
+  top: 0;
+  height: 100vh;
+  overflow: auto;
+  border-right: 1px solid #e6e9e6;
+  background: #fff !important;
+}
+
+.app-sider .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 76px;
+  padding: 0 24px;
+  color: #1d1d1f;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+
+.app-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  color: #fff;
+  background: #6f8a79;
+  font-size: 18px;
+}
+
+.app-nav {
+  flex: 1;
+  border-inline-end: 0 !important;
+  padding: 8px 12px;
+  background: transparent !important;
+}
+
+.app-nav .ant-menu-item {
+  height: 46px;
+  margin: 4px 0;
+  padding-inline: 14px !important;
+  border-radius: 10px;
+  color: #4e5550;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.app-nav .ant-menu-item .ant-menu-item-icon {
+  font-size: 17px;
+}
+
+.app-nav .ant-menu-item-selected {
+  color: #345340 !important;
+  background: #e8efe9 !important;
+  font-weight: 600;
+}
+
+.account-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 12px 14px;
+  padding: 10px;
+  border-radius: 10px;
+  cursor: default;
+  transition: background 0.15s ease;
+}
+
+.account-card:hover {
+  background: #f1f3f1;
+}
+
+.account-card-clickable {
+  cursor: pointer;
+}
+
+.account-avatar {
+  flex-shrink: 0;
+  background: #6f8a79 !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+
+.account-avatar-off {
+  background: #e3e7e4 !important;
+  color: #8a908c !important;
+}
+
+.account-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.account-name {
+  overflow: hidden;
+  color: #1d1d1f;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-hint {
+  color: #8a908c;
+  font-size: 12px;
+}
+
+.account-hint-warn {
+  color: #d48806;
+}
+
+.account-popover .ant-popover-inner {
+  padding: 4px;
+  border: 1px solid #e6e9e6;
+  box-shadow: 0 6px 18px rgba(29, 29, 31, 0.08);
+}
+
+.account-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 140px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #1d1d1f;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.account-action:hover {
+  background: #f1f3f1;
+}
+
+.account-action-danger {
+  color: #d4380d;
+}
+
+.app-main {
+  min-width: 0;
+  background: transparent;
 }
 
 .app-header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin: 14px auto 0;
-  width: min(1220px, calc(100% - 24px));
-  min-height: 56px;
-  border-radius: 16px 16px 0 0;
-  background: linear-gradient(120deg, #f0f3f0, #e8ede9 80%);
-  border: 1px solid rgba(123, 137, 128, 0.22);
-  box-shadow: 0 10px 20px rgba(29, 29, 31, 0.08);
-  padding: 0 18px;
-}
-
-.app-header-right {
-  display: flex;
-  align-items: center;
+  gap: 12px;
+  height: 68px;
+  padding: 0 28px;
+  border-bottom: 1px solid #e6e9e6;
+  background: #fff;
 }
 
 .app-title {
@@ -34,28 +180,37 @@
 }
 
 .app-content-wrap {
-  padding: 0 12px 18px;
   width: 100%;
   margin: 0 auto;
+  padding: 24px 28px;
 }
 
 .app-content-card {
-  width: min(1220px, 100%);
-  margin: 0 auto;
-  background: rgba(252, 253, 252, 0.93);
-  border: 1px solid rgba(123, 137, 128, 0.14);
-  border-top: none;
-  border-radius: 0 0 18px 18px;
-  padding: 18px;
-  box-shadow: 0 16px 26px rgba(29, 29, 31, 0.07);
-  backdrop-filter: blur(6px);
+  width: 100%;
+}
+
+.workflow-empty {
+  display: grid;
+  min-height: 320px;
+  place-items: center;
 }
 
 @media (max-width: 768px) {
+  .app-sider {
+    flex: 0 0 176px !important;
+    max-width: 176px !important;
+    min-width: 176px !important;
+    width: 176px !important;
+  }
+
+  .app-brand {
+    min-height: 68px;
+    padding: 0 18px;
+  }
+
   .app-header {
-    width: calc(100% - 12px);
-    margin-top: 8px;
-    border-radius: 14px 14px 0 0;
+    height: 60px;
+    padding: 0 16px;
   }
 
   .app-title {
@@ -63,11 +218,76 @@
   }
 
   .app-content-wrap {
-    padding: 0 6px 16px;
+    padding: 16px;
   }
 
-  .app-content-card {
+}
+
+@media (max-width: 560px) {
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .app-sider {
+    position: static !important;
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 100% !important;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid #e6e9e6;
+  }
+
+  .app-sider .ant-layout-sider-children {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .app-brand {
+    min-height: 60px;
+    padding: 0 12px;
+    font-size: 17px;
+  }
+
+  .app-brand-mark {
+    width: 30px;
+    height: 30px;
+    font-size: 16px;
+  }
+
+  .app-nav {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 8px;
+  }
+
+  .app-nav .ant-menu-item {
+    width: auto;
+    height: 42px;
+    padding-inline: 10px !important;
+    line-height: 42px;
+  }
+
+  .app-nav .ant-menu-item .ant-menu-title-content {
+    font-size: 12px;
+  }
+
+  .app-header {
+    position: static;
+    padding: 0 14px;
+  }
+
+  .app-content-wrap {
     padding: 12px;
-    border-radius: 0 0 14px 14px;
+  }
+
+  .account-card {
+    margin: 0 8px;
+    padding: 6px;
+  }
+
+  .account-meta {
+    display: none;
   }
 }

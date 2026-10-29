@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { App, Button, Space, Spin, Tag, Typography } from 'antd';
+import { App, Avatar, Popover, Spin } from 'antd';
+import { LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { authApi, AccountState } from '../api/auth';
 import type { AccountInfo } from '../api/auth';
 import QRLoginModal from './QRLoginModal';
 
-const { Text } = Typography;
-
-// AccountBar 位于页头右侧，展示登录状态并提供登录/登出入口。
+// AccountBar 位于侧栏底部，展示登录状态；已登录时悬停头像弹出退出入口。
 function AccountBar() {
   const { message, modal } = App.useApp();
   const [account, setAccount] = useState<AccountInfo | null>(null);
@@ -51,32 +50,54 @@ function AccountBar() {
   }, [modal, message, refresh]);
 
   const state = account?.state;
+  const loggedIn = state === AccountState.ACCOUNT_STATE_LOGGED_IN;
+  const expired = state === AccountState.ACCOUNT_STATE_EXPIRED;
+  const name = loggedIn ? account?.uname || '未知用户' : expired ? '登录已过期' : '未登录';
+  const hint = loggedIn ? '已登录' : expired ? '点击重新登录' : '点击登录';
+
+  const popoverContent = loggedIn ? (
+    <button type="button" className="account-action account-action-danger" onClick={handleLogout}>
+      <LogoutOutlined />
+      退出登录
+    </button>
+  ) : null;
+
+  const trigger = (
+    <div
+      className={`account-card${loggedIn ? '' : ' account-card-clickable'}`}
+      role={loggedIn ? undefined : 'button'}
+      tabIndex={loggedIn ? undefined : 0}
+      onClick={loggedIn ? undefined : () => setLoginOpen(true)}
+      onKeyDown={loggedIn ? undefined : (e) => e.key === 'Enter' && setLoginOpen(true)}
+    >
+      <Avatar className={`account-avatar${loggedIn ? '' : ' account-avatar-off'}`} size={36}>
+        {loggedIn ? name.slice(0, 1).toUpperCase() : <UserOutlined />}
+      </Avatar>
+      <div className="account-meta">
+        <span className="account-name">{name}</span>
+        <span className={`account-hint${expired ? ' account-hint-warn' : ''}`}>{hint}</span>
+      </div>
+    </div>
+  );
 
   return (
     <>
-      <Space size="middle">
-        {loading && !account ? (
+      {loading && !account ? (
+        <div className="account-card">
           <Spin size="small" />
-        ) : state === AccountState.ACCOUNT_STATE_LOGGED_IN ? (
-          <>
-            <Text strong>已登录：{account?.uname || '未知用户'}</Text>
-            <Button size="small" onClick={handleLogout}>
-              退出
-            </Button>
-          </>
-        ) : state === AccountState.ACCOUNT_STATE_EXPIRED ? (
-          <>
-            <Tag color="warning">登录已过期</Tag>
-            <Button size="small" type="primary" onClick={() => setLoginOpen(true)}>
-              重新登录
-            </Button>
-          </>
-        ) : (
-          <Button size="small" type="primary" onClick={() => setLoginOpen(true)}>
-            登录
-          </Button>
-        )}
-      </Space>
+        </div>
+      ) : (
+        <Popover
+          content={popoverContent}
+          placement="topLeft"
+          trigger="hover"
+          arrow={false}
+          overlayClassName="account-popover"
+          open={loggedIn ? undefined : false}
+        >
+          {trigger}
+        </Popover>
+      )}
       {loginOpen && (
         <QRLoginModal
           open={loginOpen}
