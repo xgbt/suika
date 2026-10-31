@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package chat.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "suika/api/chat/v1;v1";
+
+// ModelService 提供模型相关操作，包括官方模型发现与模型配置管理。
+service ModelService {
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse) {
+    option (google.api.http) = {
+      post: "/v1/chat/models/list"
+      body: "*"
+    };
+  }
+  rpc GetModelConfig(GetModelConfigRequest) returns (GetModelConfigResponse) {
+    option (google.api.http) = {
+      post: "/v1/chat/config/get"
+      body: "*"
+    };
+  }
+  rpc SaveModelConfig(SaveModelConfigRequest) returns (SaveModelConfigResponse) {
+    option (google.api.http) = {
+      post: "/v1/chat/config/save"
+      body: "*"
+    };
+  }
+  rpc DeleteModelConfig(DeleteModelConfigRequest) returns (DeleteModelConfigResponse) {
+    option (google.api.http) = {
+      post: "/v1/chat/config/delete"
+      body: "*"
+    };
+  }
+}
+
+message ListModelsRequest {
+  string provider = 1 [(google.api.field_behavior) = REQUIRED];
+  // 首次配置或更换凭据时使用；留空使用已保存的 key，不会保存本次输入。
+  string api_key = 2 [(google.api.field_behavior) = INPUT_ONLY];
+}
+
+message AvailableModel {
+  string id = 1;
+  string name = 2;
+}
+
+message ListModelsResponse {
+  repeated AvailableModel models = 1;
+}
+
+// 不包含原始 API key，避免凭据读回前端。
+message ModelConfig {
+  string provider = 1;
+  string model = 2;
+  bool configured = 3;
+}
+
+message GetModelConfigRequest {}
+message GetModelConfigResponse {
+  ModelConfig config = 1;
+}
+message SaveModelConfigRequest {
+  string provider = 1 [(google.api.field_behavior) = REQUIRED];
+  string model = 2 [(google.api.field_behavior) = REQUIRED];
+  // 首次配置必填；更新时留空保留已有 key。仅用于写入。
+  string api_key = 3 [(google.api.field_behavior) = INPUT_ONLY];
+}
+message SaveModelConfigResponse {
+  ModelConfig config = 1;
+}
+message DeleteModelConfigRequest {}
+message DeleteModelConfigResponse {
+  google.protobuf.Empty empty = 1;
+}

@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package chat.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "suika/api/chat/v1;v1";
+
+// ChatService 是对话式素材检索入口，无状态：客户端每次携带完整历史。
+service ChatService {
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc Chat(ChatRequest) returns (stream ChatEvent) {
+    option (google.api.http) = {
+      post: "/v1/chat"
+      body: "*"
+    };
+  }
+}
+
+enum ChatRole {
+  CHAT_ROLE_UNSPECIFIED = 0;
+  CHAT_ROLE_USER = 1;
+  CHAT_ROLE_ASSISTANT = 2;
+}
+
+message ChatMessage {
+  ChatRole role = 1;
+  string content = 2;
+}
+
+message ChatRequest {
+  // 对话历史，按时间升序，最后一条必须是用户消息。
+  repeated ChatMessage messages = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message ChatEvent {
+  // 回答文本的增量片段，按到达顺序拼接即为完整回答。
+  string text_delta = 1;
+}

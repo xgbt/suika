@@ -2,4 +2,11 @@ package biz
 
 import "github.com/google/wire"
 
-var ProviderSet = wire.NewSet(NewRoomRegistry, NewRecorderUsecase, NewRoomUsecase, NewAccountUsecase)
+var ProviderSet = wire.NewSet(
+	NewRoomRegistry,
+	NewRecorderUsecase,
+	NewRoomUsecase,
+	NewAccountUsecase,
+	NewChatUsecase,
+	NewModelConfigUsecase,
+)

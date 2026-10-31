@@ -10,6 +10,7 @@ import (
 	"suika/internal/biz"
 	"suika/internal/conf"
 	"suika/internal/data/bili"
+	"suika/internal/data/deepseek"
 	"suika/internal/data/recorder"
 
 	"github.com/go-kratos/kratos/v3/log"
@@ -18,7 +19,17 @@ import (
 	"gorm.io/gorm"
 )
 
-var ProviderSet = wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient)
+var ProviderSet = wire.NewSet(
+	NewData,
+	NewRecorderRepo,
+	NewSessionStatsRepo,
+	NewLiveClient,
+	NewRoomRepo,
+	NewCredentialRepo,
+	NewPassportClient,
+	NewChatModelClient,
+	NewModelConfigRepo,
+)
 
 // Data 持有长生命周期的存储/平台客户端（模板惯例）：共享的 sqlite
 // 句柄、与 B 站平台交互的共享客户端（bili 子包），以及录制器配置。
@@ -39,6 +50,10 @@ func NewPassportClient() biz.PassportClient {
 	return bili.NewPassportClient()
 }
 
+func NewChatModelClient() biz.ChatModelClient {
+	return deepseek.NewClient()
+}
+
 func NewRecorderRepo(d *Data, c *conf.Recorder) biz.RecorderRepo {
 	_ = d
 	return recorder.NewRecorderRepo(c)
@@ -50,7 +65,9 @@ func NewSessionStatsRepo(repo biz.RecorderRepo) biz.SessionStatsRepo {
 
 // Cookie 返回当前生效的 B 站 Cookie 头；未登录为 ""。
 // 登录态由 bili 客户端持有，这里只是读快照的委托。
-func (d *Data) Cookie() string { return d.bili.Cookie() }
+func (d *Data) Cookie() string {
+	return d.bili.Cookie()
+}
 
 // NewData 构建共享客户端。
 func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
@@ -58,7 +75,7 @@ func NewData(c *conf.Data, rc *conf.Recorder) (*Data, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := db.AutoMigrate(&roomPO{}, &credentialPO{}); err != nil {
+	if err := db.AutoMigrate(&roomPO{}, &credentialPO{}, &modelConfigPO{}); err != nil {
 		return nil, nil, fmt.Errorf("data: auto-migrate tables: %w", err)
 	}
 

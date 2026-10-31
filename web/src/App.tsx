@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { ConfigProvider, Layout, Typography, App as AntApp, Empty, Menu, theme } from 'antd';
 import type { MenuProps } from 'antd';
-import { ApartmentOutlined, VideoCameraFilled, VideoCameraOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, RobotOutlined, VideoCameraFilled, VideoCameraOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import RoomList from './components/RoomList';
 import AccountBar from './components/AccountBar';
+import Assistant from './components/Assistant';
 import './App.css';
 
 const { Header, Content, Sider } = Layout;
@@ -33,8 +34,16 @@ function App() {
           fontFamily: '"SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Noto Sans SC", "Microsoft YaHei", sans-serif',
         },
         components: {
-          Button: { primaryShadow: 'none', defaultShadow: 'none' },
-          Switch: { trackHeight: 28, trackMinWidth: 54, handleSize: 22, trackPadding: 3 },
+          Button: {
+            primaryShadow: 'none',
+            defaultShadow: 'none'
+          },
+          Switch: {
+            trackHeight: 28,
+            trackMinWidth: 54,
+            handleSize: 22,
+            trackPadding: 3
+          },
         },
       }}
     >
@@ -51,8 +60,21 @@ function App() {
               selectedKeys={[activePage]}
               onClick={handleMenuClick}
               items={[
-                { key: 'recording', icon: <VideoCameraOutlined />, label: '录制管理' },
-                { key: 'workflow', icon: <ApartmentOutlined />, label: '工作流' },
+                {
+                  key: 'recording',
+                  icon: <VideoCameraOutlined />,
+                  label: '录制管理'
+                },
+                {
+                  key: 'workflow',
+                  icon: <ApartmentOutlined />,
+                  label: '工作流'
+                },
+                {
+                  key: 'assistant',
+                  icon: <RobotOutlined />,
+                  label: '智能助手'
+                },
               ]}
             />
             <AccountBar />
@@ -60,7 +82,7 @@ function App() {
           <Layout className="app-main">
             <Header className="app-header">
               <Title level={4} className="app-title">
-                {activePage === 'recording' ? '录制管理' : '工作流'}
+                {activePage === 'recording' ? '录制管理' : activePage === 'workflow' ? '工作流' : '智能助手'}
               </Title>
             </Header>
             <Content className="app-content-wrap">
@@ -68,14 +90,17 @@ function App() {
                 <div className="app-content-card">
                   <RoomList />
                 </div>
-              ) : (
+              ) : activePage === 'workflow' ? (
                 <div className="workflow-empty">
                   <Empty
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                     description="工作流功能暂未开放"
                   />
                 </div>
-              )}
+              ) : null}
+              <div hidden={activePage !== 'assistant'}>
+                <Assistant />
+              </div>
             </Content>
           </Layout>
         </Layout>

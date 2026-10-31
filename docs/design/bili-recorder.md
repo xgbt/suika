@@ -1,7 +1,8 @@
 # Bilibili 直播自动录播服务 — 技术文档
 
 基于当前实现代码（2026-10 快照）。suika 是一个 Kratos (go-kratos/v3)
-常驻进程，Bilibili 直播录播是其唯一业务域。仓库级的分层契约、命名约定
+常驻进程，本文聚焦 Bilibili 直播录播域；新增 Eino 智能助手见
+[ADR-0007](../adr/0007-eino-assistant.md)。仓库级的分层契约、命名约定
 与构建命令见根目录 CLAUDE.md，本文只描述录播服务本身"现在是什么、怎么跑"。
 术语遵循根目录 `CONTEXT.md`（Room / Session / Monitor / Fallback poll /
 Session policy / Reconcile）。
@@ -45,6 +46,9 @@ API 提供，见 §8）、历史查询 API（磁盘上的 meta.json 即历史）
   卡死。45s 覆盖了 biz 层的 `finishGracePeriod = 30s`（见 §3.5）加余量。
 
 ### 2.2 代码布局（逐文件）
+
+以下以录播域为主，共享 server / Wire 装配包含助手；助手实现和接口见
+[ADR-0007](../adr/0007-eino-assistant.md) 与[README](../../README.md#api)。
 
 ```
 api/room/v1/
@@ -211,14 +215,23 @@ internal/service/
   account.go             AccountService：QR 登录创建/轮询、账号状态、登出四个
                          handler，DTO↔DO 转换，只调 AccountUsecase；
                          平台失败映射 ERROR_REASON_UNAVAILABLE（503）
+  chat.go                ChatService：仅 Chat 文本流；
+                         HTTP filter 保存加超时前的连接 context；
+                         请求边界接回 SSE 取消，不继承一元超时（不加包装层）
+  model.go               ModelService：模型发现与配置增改删查，一元 DTO↔DO
+  chat_http_test.go / model_config_http_test.go  外部测试包验证真实 HTTP 契约
 
 internal/server/
-  http.go                NewHTTPServer：recovery + validate（field_behavior）中间件，
+  http.go                NewHTTPServer：原生 Timeout(15s) + recovery + validate，
                          v1.RegisterRoomServiceHTTPServer +
-                         accountv1.RegisterAccountServiceHTTPServer
-  grpc.go                NewGRPCServer：仅 recovery 中间件，
+                         accountv1.RegisterAccountServiceHTTPServer +
+                         chatv1.RegisterChatServiceHTTPServer +
+                         chatv1.RegisterModelServiceHTTPServer
+  grpc.go                NewGRPCServer：原生 Timeout(15s) + recovery，
                          v1.RegisterRoomServiceServer +
-                         accountv1.RegisterAccountServiceServer
+                         accountv1.RegisterAccountServiceServer +
+                         chatv1.RegisterChatServiceServer +
+                         chatv1.RegisterModelServiceServer
   daemon.go              Daemon（transport.Server，见 §2.1）
   server.go              ProviderSet（NewGRPCServer / NewHTTPServer / NewDaemon）
 
@@ -243,8 +256,6 @@ configs/
   config.yaml            data.database 指向 sqlite（./data/suika.db）；recorder 段
                          不含房间列表（房间在 sqlite 的 rooms 表，经 CRUD API 管理）；
                          cookie / merge_enabled 均已废弃不再读取（§7.3、§7.4）
-  credentials.example.yaml  说明性占位（进 git）：凭据不再经配置文件提供，
-                         唯一来自 Web 扫码登录（写入 credentials 表）
 
 web/                     管理界面前端（React 19 + TypeScript + Vite + Ant Design 6）：
   src/api/rooms.ts       与 room.proto 对齐的类型 + fetch 封装（全部 POST）
@@ -253,13 +264,16 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
                          清晰度 tooltip、下载速度 sparkline）、自动刷新、
                          添加弹窗、record_enabled 启停确认、删除确认
   src/components/AccountBar.tsx / QRLoginModal.tsx  顶栏登录态 + 扫码登录弹窗
+  src/components/Assistant.tsx / ModelConfigModal.tsx  智能助手页签 / 模型配置
+  src/api/chat.ts / modelConfig.ts  分别对应 chat.proto / model.proto；
+                         POST SSE / 一元模型配置与发现（HTTP 路径保持不变）
   vite.config.ts         开发代理 /v1 → http://localhost:8000
 ```
 
 领域对象关系、分层与仓储/防腐层缝的图示见
 `docs/design/architecture-diagrams.md`（应用架构图与 ER 图）。
 
-### 2.3 五条缝与决策/IO 分工
+### 2.3 录播域五条缝与决策/IO 分工
 
 | 缝 | 声明（biz） | 实现（data） | 职责 |
 |---|---|---|---|
@@ -282,25 +296,33 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 `DanmakuConn` 同理：biz 只消费 `Events()`（弹幕事件）与
 `RoomStateUpdates()`（房态复查结果 `*RoomInfo`）两个通道。
 
+助手另外通过 `ModelConfigRepo` / `ChatModelClient` 隔离模型配置存储与
+DeepSeek IO；唯一工具 `list_rooms` 复用 `RoomUsecase`，不依赖录制实现。
+`data/model_config.go` 管数据库，`data/deepseek/client.go` 管厂商 SDK 与
+官方模型发现，`data.NewChatModelClient` 仅做 Wire 构造委托。
+完整分层与七条缝见[应用架构图](architecture-diagrams.md#2-应用架构图)。
+
 ### 2.4 Wire 接线
 
 ProviderSet：
 
 | 包 | ProviderSet |
 |---|---|
-| data | `wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient)` |
-| biz | `wire.NewSet(NewRoomRegistry, NewRecorderUsecase, NewRoomUsecase, NewAccountUsecase)` |
-| service | `wire.NewSet(NewRoomService, NewAccountService)` |
+| data | `wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient, NewChatModelClient, NewModelConfigRepo)` |
+| biz | `wire.NewSet(NewRoomRegistry, NewRecorderUsecase, NewRoomUsecase, NewAccountUsecase, NewChatUsecase, NewModelConfigUsecase)` |
+| service | `wire.NewSet(NewRoomService, NewAccountService, NewChatService, NewModelService)` |
 | server | `wire.NewSet(NewGRPCServer, NewHTTPServer, NewDaemon)` |
 
 `wire_gen.go` 的实际构造顺序：
 `NewData → NewRoomRepo → NewRoomRegistry → NewRecorderRepo →
 NewSessionStatsRepo → NewRoomUsecase → NewRoomService →
 NewPassportClient → NewCredentialRepo → NewAccountUsecase →
-NewAccountService → NewGRPCServer / NewHTTPServer → NewLiveClient →
+NewAccountService → NewModelConfigRepo → NewChatModelClient →
+NewModelConfigUsecase → NewChatUsecase → NewChatService → NewModelService →
+NewGRPCServer / NewHTTPServer → NewLiveClient →
 NewRecorderUsecase → NewDaemon → newApp`。
 `NewData` 依据 `conf.Data` 打开 sqlite 并 AutoMigrate rooms /
-credentials 表，
+credentials / model_configs 表，
 `NewRoomRepo(d *Data)` 挂在其上；`NewRoomRegistry(repo)` 改吃
 `biz.RoomRepo`（不再解析配置），启动时全量加载房间，返回 error，
 加载失败即启动失败。`NewRoomUsecase(repo, reg, stats)` 注入 repo 与
@@ -953,7 +975,7 @@ ErrRoomInvalidArgument。
 
 - 凭据不来自配置文件：`recorder.cookie` 已废弃、不再被读取（配置里
   填了值启动时只记 warn）；`configs/credentials.yaml` 不再是配置项，
-  `credentials.example.yaml` 只留说明性占位。
+  不再提供凭据配置示例。
 - 唯一来源是 sqlite `credentials` 表的单例行，经 Web 管理页扫码登录获取
   （AccountService `/v1/account/qr-login/*`，调 B 站 passport 接口，
   确认时从轮询响应的 Set-Cookie 捕获登录 cookie）。
@@ -1075,7 +1097,8 @@ offset token 栈式翻页、添加弹窗
 （`QRLoginModal`）、登录状态显示与登出。开发模式经 vite 代理
 `/v1` → `http://localhost:8000`。
 前端类型与 room.proto 手工对齐（`web/src/api/rooms.ts`）、与
-account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
+account.proto 手工对齐（`web/src/api/auth.ts`），助手类型分别与 chat.proto /
+model.proto 对齐（`web/src/api/chat.ts` / `modelConfig.ts`），改 proto
 时需同步。
 
 ### 8.1 CRUD 与录制进程的时序（实时生效）
@@ -1136,9 +1159,15 @@ account.proto 手工对齐（`web/src/api/auth.ts`），改 proto
 ## 10. 测试
 
 测试与被测代码同包同目录（`*_test.go`），分层隔离（CLAUDE.md 纪律），
-共 27 个测试文件 / 225 个测试函数。运行：`go test -mod=mod ./...`
-（本仓库一律 `-mod=mod`）。全部离线可跑，不需要外网：只有
-`data/bili/passport_test.go` 用到 `httptest` 本地回环服务。
+运行：`go test -mod=mod ./...`
+（本仓库一律 `-mod=mod`）。全部离线可跑，不需要外网；
+厂商 HTTP、SSE 取消等测试通过 `httptest` 本地回环服务验证。
+
+助手相关覆盖：biz 的对话工具/分页与配置生命周期，data 的官方模型发现/
+配置持久化，service 的凭据不读回、HTTP 配置契约、首 token 前/流中/
+一元超时后的断开取消。HTTP/gRPC 一元 RPC 统一使用原生 15s 超时，
+不再维护自定义超时中间件。Web 的 SSE 协议测试为
+`cd web && node --test tests/chat.test.ts`（Node 22.18+）。
 
 | 层 | 文件（用例数） | fake 什么 / 测什么 |
 |---|---|---|
@@ -1184,17 +1213,25 @@ fieldmask / fieldbehavior）、`go.uber.org/automaxprocs` v1.6.0、
 `github.com/go-kratos/kratos/v3`（另有 contrib/otel 用于日志 trace
 属性提取）。Go 1.25.x。
 
+助手另外依赖 `github.com/cloudwego/eino` 与官方
+`github.com/cloudwego/eino-ext/components/model/deepseek`；厂商模型发现
+使用已有 Resty 客户端库。与录播数据/风控链路独立。
+
 前端依赖（web/，与 Go 构建无关）：React 19 / react-dom、Ant Design 6
 （antd + @ant-design/icons）、Vite 8、TypeScript 6；`npm install` +
 `npm run dev` 起开发服务器（API 经 vite 代理转发，见 §8）。
 
 运行时会在工作目录按 `data.database.source` 打开 sqlite 文件
 （默认 `./data/suika.db`）：路径校验 + 父目录自动创建，AutoMigrate
-rooms / credentials 表，单连接访问。`/data/` 已入 .gitignore，db 文件不进仓库。
+rooms / credentials / model_configs 表，单连接访问。`/data/` 已入 .gitignore，
+db 文件不进仓库。模型配置与录制登录凭据独立；未配置模型不会影响录制。
 
 外部二进制：无。录制与收尾合并全部为纯 Go 实现，不依赖任何外部工具。
 
 本地运行：
+
+从项目根目录启动/调试；默认 `-conf ./configs`。SQLite 与录制目录的相对路径
+均相对工作目录，而非配置目录。从其他目录启动会使用另一份数据。
 
 ```bash
 make init                                  # 首次安装 wire/buf
@@ -1220,7 +1257,7 @@ curl -X POST localhost:8000/v1/rooms/create \
 - 全事件 JSONL → SC/礼物/上舰是高光定位的最强信号，弹幕密度切片与
   事件驱动切片都可直接消费；
 - part 化的目录结构 → 切片素材溯源与"已使用"标记天然有落点；
-- 数据库已经就位（sqlite + gorm，rooms / credentials 表）；素材使用记录等
+- 数据库已经就位（sqlite + gorm，rooms / credentials / model_configs 表）；素材使用记录等
   第二阶段数据直接在同一个 data 层加表
   （AutoMigrate 已在 NewData）。
 

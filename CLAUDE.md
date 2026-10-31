@@ -2,10 +2,44 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This is a Kratos (go-kratos/v3) service for managing Bilibili live rooms and
-recording sessions. The canonical API contract is
-`api/room/v1/room.proto`; the app entrypoint is `cmd/suika/` and the Go module
-name is `suika`.
+This is a Kratos (go-kratos/v3) service for Bilibili room management, recording
+and an Eino conversational assistant. Canonical API contracts are
+`api/room/v1/room.proto`, `api/account/v1/account.proto` and
+`api/chat/v1/chat.proto` and `api/chat/v1/model.proto`; the app entrypoint is `cmd/suika/` and the Go module
+name is `suika`. Automatic cutting/publishing workflows are not implemented.
+
+## Kratos V3 conventions (required)
+
+For all Go implementation and file-layout changes, follow the official
+[Kratos V3 source](https://github.com/go-kratos/kratos/tree/v3.0.0) and
+[Kratos project template](https://github.com/go-kratos/kratos-layout).
+Verify examples against this repository's Kratos V3 dependency; do not copy
+V2 patterns or another local project's implementation without checking them.
+Existing local code is not justification for violating the official layering.
+
+- `cmd/`: application entrypoint and Wire assembly only.
+- `internal/server/`: HTTP/gRPC construction, middleware installation and
+  service registration; the recorder daemon's transport lifecycle stays here.
+  Do not put domain handlers, provider clients, middleware implementations or
+  extra per-resource service wrappers here.
+- `internal/service/`: proto DTO conversion, input validation and request/stream
+  boundary handling; delegate business decisions to biz. No storage access.
+- `internal/biz/`: domain objects, usecases and repo/client interfaces.
+  No transport-specific handling, storage clients or provider SDKs.
+- `internal/data/`: database repos, persistence conversion and thin Wire
+  constructors. Provider SDK/HTTP implementations belong in provider subpackages,
+  such as `internal/data/bili/` and `internal/data/deepseek/`.
+- Use Kratos native timeout options rather than a custom timeout middleware.
+  If other custom middleware is needed, keep its implementation outside server.
+- Keep tests beside the implementation. Service HTTP integration tests use an
+  external test package when importing server construction.
+
+Prefer native Kratos V3 capabilities and the smallest complete implementation;
+avoid unnecessary wrappers, duplicate helpers and scattered files. Before
+adding a file, identify its layer and responsibility. Document any necessary
+deviation from official patterns and preserve the layer boundaries above.
+Update directly affected architecture docs and regenerate API/Wire code when
+changing contracts or constructors.
 
 ## Commands
 
@@ -22,6 +56,10 @@ go test -mod=mod ./...                                          # all tests
 go test -mod=mod ./internal/service/                            # one package
 go test -mod=mod ./internal/service/ -run TestRoomServiceCRUD   # one test
 ```
+
+Start and debug the backend with the repository root as the working directory.
+The default `-conf` is `./configs`. Relative database and recording paths resolve
+against the working directory, not against the config directory.
 
 There is no configured linter. Proto codegen uses buf v2 with
 buf.build/googleapis/googleapis as a BSR dependency (buf.lock committed).
@@ -137,6 +175,11 @@ design rather than add the import.
 
 - Construct HTTP/gRPC servers, apply middleware, register services. No
   translation, no business logic.
+- Keep middleware implementations in `internal/middleware`, not in server.
+  Request/stream transport handling belongs to the service boundary; HTTP
+  integration tests live beside the service using an external test package.
+- Keep provider SDK and HTTP implementations in `internal/data/<provider>/`
+  (`bili/`, `deepseek/`); data owns database repos and thin Wire constructors.
 
 ### Recorder daemon
 
@@ -249,6 +292,61 @@ QR login and stored in the sqlite `credentials` table — the only cookie source
 `EXPIRED`, `CONFIRMED`); expiry/scanned are normal outcomes, not errors.
 Platform failures map to `ERROR_REASON_UNAVAILABLE` (503).
 
+### Chat API
+
+`ChatService` (`api/chat/v1/chat.proto`, `POST /v1/chat`) is the
+conversational entry. It is a stateless server-streaming RPC: the client sends
+the full history; Kratos v3 serves the stream over HTTP as SSE (one
+`ChatEvent{text_delta}` per event, a failure after the stream has started
+arrives as `event: error`) and over gRPC as a normal stream. Browsers must
+read it with `fetch` + `ReadableStream` (EventSource is GET-only). HTTP enums
+are encoded as numbers (e.g. `"role": 1`).
+
+Keep streaming and unary APIs separate: `ChatService` contains only `Chat`;
+`ModelService` (`api/chat/v1/model.proto`) owns `ListModels`,
+`GetModelConfig`, `SaveModelConfig` and `DeleteModelConfig`. Their handlers live
+in `service/chat.go` and `service/model.go` respectively and both are
+registered for HTTP/gRPC. Existing `/v1/chat/config/*` and `/v1/chat/models/list`
+paths remain unchanged; gRPC configuration methods use `chat.v1.ModelService`.
+
+`biz.ChatUsecase` is an Eino ADK `ChatModelAgent` (ReAct) run by an
+`adk.Runner` with streaming; it forwards the assistant's text to the service.
+Read-only tools live in `biz/chat_tools.go` (currently `list_rooms`). Suika
+returns at most 50 rooms per tool page with `next_offset`; continue with the
+same filters when it is present. Do not treat one page as the full room list.
+`service/chat.go` uses the stream's own context, following Kratos's design:
+the SSE context keeps values but drops the unary timeout and cancellation, so
+a stream ends when `Send` fails after the client disconnects. A client that
+leaves while the model is still silent (e.g. between tool calls) is only
+noticed at the next text write.
+gRPC uses native stream cancellation. No extra HTTP service wrapper is needed.
+Suika loads the available DeepSeek models through `POST /v1/chat/models/list`:
+the backend authenticates `GET https://api.deepseek.com/models` with the
+supplied or stored key. Discovery does not persist supplied credentials.
+The assistant's model settings
+save the singleton provider, model and API key in SQLite `model_configs`.
+`ModelConfigRepo` is implemented in `data/model_config.go`; `ChatModelClient`
+is implemented in `data/deepseek/client.go`, constructed through data's thin
+`NewChatModelClient` Wire provider;
+each chat request loads a configuration snapshot and builds its own agent.
+New requests immediately pick up saves/deletes; in-flight requests retain their
+snapshot. Get/Save replies expose only provider, model and configured state,
+never the key. An empty key on update retains the stored value. Saving validates
+the selected model ID against the official list, rather than a hardcoded
+allowlist. HTTP/gRPC unary RPCs use Kratos's native 15-second server timeout;
+the DeepSeek model-list HTTP client also has a 15-second timeout. Streaming
+chat is not limited by the unary timeout. The
+`DEEPSEEK_API_KEY` environment variable is no longer read. No configuration
+means chat returns 503; recording is unaffected.
+
+The key is stored unencrypted for trusted local single-user usage. Do not
+expose the unauthenticated service publicly; protect the database and use HTTPS
+for remote access. Credential SQL uses a silent GORM logger; storage errors
+are logged without SQL, parameters or secret-bearing driver messages.
+Conversation history and tool-returned room data are sent to DeepSeek.
+See ADR-0007 for the scope and tradeoffs; automatic cutting/publishing remains
+out of scope.
+
 ### Room message
 
 The create request accepts `room_id` and `record_enabled`. `streamer_name` and
@@ -313,7 +411,14 @@ plus status display and logout. It is decoupled from the Go build —
 `npm install` / `npm run dev`, with vite proxying `/v1` to
 `http://localhost:8000`. Frontend types mirror `room.proto` by hand
 (`web/src/api/rooms.ts`) and `account.proto` by hand
-(`web/src/api/auth.ts`), so proto changes must be synced there.
+(`web/src/api/auth.ts`), `chat.proto` (`web/src/api/chat.ts`) and
+`model.proto` (`web/src/api/modelConfig.ts`), so proto changes must be
+synced there.
+`Assistant` stays mounted across tabs; only completed turns become context.
+`ModelConfigModal` uses one cancellable loading path for stored/supplied keys
+and corrects unavailable selections to a returned official ID.
+Frontend validation: `cd web && npm run build`, targeted ESLint, and
+`node --test tests/chat.test.ts` (Node 22.18+).
 
 ## Add-a-resource checklist
 
@@ -358,8 +463,8 @@ filesystem; the merge is pure Go, so nothing external is needed.
 - The Bilibili login credential (cookie) is obtained via web QR login and
   stored in the sqlite `credentials` table — it is the only cookie source.
   The config field `recorder.cookie` is deprecated and ignored;
-  `configs/credentials.yaml` is no longer needed (see
-  `credentials.example.yaml`). See ADR-0003.
+  `configs/credentials.yaml` and its example are no longer needed.
+  See ADR-0003.
 - Config governance: `config.yaml` holds only deployment-varying items
   (addrs, database path, record root, concurrency cap, merge switch). The
   `cookie` field is a deprecated placeholder kept for compatibility and is

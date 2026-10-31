@@ -82,6 +82,97 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/account.v1.GetAccountStatusResponse'
+    /v1/chat:
+        post:
+            tags:
+                - ChatService
+            description: buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+            operationId: ChatService_Chat
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/chat.v1.ChatRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/chat.v1.ChatEvent'
+    /v1/chat/config/delete:
+        post:
+            tags:
+                - ModelService
+            operationId: ModelService_DeleteModelConfig
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/chat.v1.DeleteModelConfigRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/chat.v1.DeleteModelConfigResponse'
+    /v1/chat/config/get:
+        post:
+            tags:
+                - ModelService
+            operationId: ModelService_GetModelConfig
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/chat.v1.GetModelConfigRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/chat.v1.GetModelConfigResponse'
+    /v1/chat/config/save:
+        post:
+            tags:
+                - ModelService
+            operationId: ModelService_SaveModelConfig
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/chat.v1.SaveModelConfigRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/chat.v1.SaveModelConfigResponse'
+    /v1/chat/models/list:
+        post:
+            tags:
+                - ModelService
+            operationId: ModelService_ListModels
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/chat.v1.ListModelsRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/chat.v1.ListModelsResponse'
     /v1/rooms/create:
         post:
             tags:
@@ -239,6 +330,98 @@ components:
                     readOnly: true
                     type: integer
                     format: enum
+        chat.v1.AvailableModel:
+            type: object
+            properties:
+                id:
+                    type: string
+                name:
+                    type: string
+        chat.v1.ChatEvent:
+            type: object
+            properties:
+                textDelta:
+                    type: string
+                    description: 回答文本的增量片段，按到达顺序拼接即为完整回答。
+        chat.v1.ChatMessage:
+            type: object
+            properties:
+                role:
+                    type: integer
+                    format: enum
+                content:
+                    type: string
+        chat.v1.ChatRequest:
+            required:
+                - messages
+            type: object
+            properties:
+                messages:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/chat.v1.ChatMessage'
+                    description: 对话历史，按时间升序，最后一条必须是用户消息。
+        chat.v1.DeleteModelConfigRequest:
+            type: object
+            properties: {}
+        chat.v1.DeleteModelConfigResponse:
+            type: object
+            properties: {}
+        chat.v1.GetModelConfigRequest:
+            type: object
+            properties: {}
+        chat.v1.GetModelConfigResponse:
+            type: object
+            properties:
+                config:
+                    $ref: '#/components/schemas/chat.v1.ModelConfig'
+        chat.v1.ListModelsRequest:
+            required:
+                - provider
+            type: object
+            properties:
+                provider:
+                    type: string
+                apiKey:
+                    writeOnly: true
+                    type: string
+                    description: 首次配置或更换凭据时使用；留空使用已保存的 key，不会保存本次输入。
+        chat.v1.ListModelsResponse:
+            type: object
+            properties:
+                models:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/chat.v1.AvailableModel'
+        chat.v1.ModelConfig:
+            type: object
+            properties:
+                provider:
+                    type: string
+                model:
+                    type: string
+                configured:
+                    type: boolean
+            description: 不包含原始 API key，避免凭据读回前端。
+        chat.v1.SaveModelConfigRequest:
+            required:
+                - provider
+                - model
+            type: object
+            properties:
+                provider:
+                    type: string
+                model:
+                    type: string
+                apiKey:
+                    writeOnly: true
+                    type: string
+                    description: 首次配置必填；更新时留空保留已有 key。仅用于写入。
+        chat.v1.SaveModelConfigResponse:
+            type: object
+            properties:
+                config:
+                    $ref: '#/components/schemas/chat.v1.ModelConfig'
         room.v1.CreateRoomRequest:
             required:
                 - room
@@ -371,4 +554,8 @@ tags:
       description: |-
         AccountService 管理录制器充当的 B 站账号：扫码登录获取凭据、
          查询登录状态、登出。凭据持久化在数据库中，是唯一登录态来源。
+    - name: ChatService
+      description: ChatService 是对话式素材检索入口，无状态：客户端每次携带完整历史。
+    - name: ModelService
+      description: ModelService 提供模型相关操作，包括官方模型发现与模型配置管理。
     - name: RoomService

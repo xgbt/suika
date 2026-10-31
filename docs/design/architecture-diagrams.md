@@ -1,16 +1,20 @@
 # Suika 架构图集
 
-基于当前代码（2026-10 快照）绘制。Suika 是一个 Kratos（go-kratos/v3）单体服务，负责 B 站直播间管理与直播录制。术语遵循仓库根目录 `CONTEXT.md`（Monitor = 每房间监控协程；Reconcile 仅指监督循环的监控集合调和；会话启停决策属于 sessionPolicy）。
+基于当前代码（2026-10 快照）绘制。Suika 是一个 Kratos（go-kratos/v3）单体服务，负责 B 站直播间管理、直播录制与 Eino 智能助手。自动切片/投稿工作流尚未实现。术语遵循仓库根目录 `CONTEXT.md`（Monitor = 每房间监控协程；Reconcile 仅指监督循环的监控集合调和；会话启停决策属于 sessionPolicy）。
 
 | 分类 | 图表 | 核心作用 / 解决什么问题 |
 |---|---|---|
 | 宏观架构 | [系统/部署架构图](#1-系统部署架构图) | 划分服务边界：单进程、SQLite、录制文件目录、外部 B 站平台如何连接 |
 | 代码分层 | [应用架构图](#2-应用架构图) | 规定 server / service / biz / data 的调用层级与依赖方向 |
-| 动态交互 | [时序图](#3-时序图) | 梳理房间 CRUD、开播检测、录制会话的调用链，明确同步/异步与入参出参 |
+| 动态交互 | [时序图](#3-时序图) | 房间 CRUD、开播检测、录制会话、模型配置与助手对话 |
 | 状态流转 | [状态机图](#4-状态机图) | Room 录制状态、会话策略状态、meta.json 会话状态的变化与触发事件 |
-| 数据建模 | [ER 图](#5-er-图) | rooms 表结构与录制会话（meta.json 逻辑实体）的一对多关系 |
+| 数据建模 | [ER 图](#5-er-图) | rooms / credentials / model_configs 与文件系统录制会话 |
 
-配套深读：`docs/design/bili-recorder.md`（录制器细节）、`docs/adr/0001-session-policy-module.md`（会话策略模块决策）。
+配套深读：[录制器细节](bili-recorder.md)、[会话策略决策](../adr/0001-session-policy-module.md)、[助手骨架决策](../adr/0007-eino-assistant.md)。
+
+助手 API 分为 `chat.proto` 的流式 `ChatService` 与 `model.proto` 的
+一元 `ModelService`。HTTP 路径不变；gRPC 配置方法迁至
+`chat.v1.ModelService`。
 
 ---
 
@@ -28,15 +32,16 @@ flowchart TB
     end
 
     subgraph SUIKA["suika 进程 · kratos.App（go run ./cmd/suika -conf ./configs）"]
-        HS["HTTP Server :8000<br/>中间件：recovery + validate（field_behavior REQUIRED）"]
-        GS["gRPC Server :9000<br/>中间件：仅 recovery"]
+        HS["HTTP Server :8000<br/>原生 Timeout 15s + recovery + validate<br/>注册 ChatService（原生 SSE）"]
+        GS["gRPC Server :9000<br/>原生 Timeout 15s + recovery"]
         DM["录制守护进程 Daemon<br/>监督循环 + 每房间 Monitor"]
         HS -.- GS
         HS -.- DM
     end
 
-    DB[("SQLite 文件 ./data/suika.db<br/>rooms + credentials（登录凭据单例）· GORM 单连接")]
+    DB[("SQLite 文件 ./data/suika.db<br/>rooms + credentials + model_configs<br/>两个凭据单例 · GORM 单连接")]
     REC[("录制目录 ./recordings/**<br/>FLV + 弹幕 JSONL + meta.json")]
+    DS["DeepSeek<br/>官方 /models + 对话接口"]
 
     subgraph BILI["B 站平台（外部依赖：直播流量经 LiveClient，登录/账号经 PassportClient）"]
         API["api.live.bilibili.com<br/>房间信息 getInfoByRoom<br/>流地址 getRoomPlayInfo<br/>弹幕 token getDanmuInfo/getConf<br/>passport.bilibili.com QR 登录/nav"]
@@ -45,8 +50,10 @@ flowchart TB
     end
 
     WEB -- "POST /v1/rooms/{create,list,get,update,delete}<br/>POST /v1/account/{qr-login/create,qr-login/poll,status/get,logout}" --> HS
-    GRPCCLI -- "RoomService / AccountService RPC" --> GS
-    HS -- "房间 CRUD" --> DB
+    WEB -- "POST /v1/chat（SSE）<br/>/v1/chat/config/{get,save,delete}<br/>/v1/chat/models/list" --> HS
+    GRPCCLI -- "RoomService / AccountService / ChatService / ModelService RPC" --> GS
+    HS -- "房间 CRUD / 模型配置" --> DB
+    HS -- "服务端使用 API key 查询模型 / 流式对话" --> DS
     HS -- "QR 登录 / 账号核验（passport 接口，不走风控）" --> API
     DM -- "平台身份信息回写（rooms 表）" --> DB
     DM -- "会话目录 / 分段 / meta.json 读写" --> REC
@@ -57,7 +64,8 @@ flowchart TB
 
 要点：
 
-- **唯一的图化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份契约（`api/room/v1/room.proto` + `api/account/v1/account.proto`）。两者的中间件并不对称：HTTP 挂 `recovery` + AIP `validate`（按 proto 的 `field_behavior` 校验 REQUIRED 字段），gRPC 只挂 `recovery` —— 必填校验只在 HTTP 入口生效。
+- **唯一的图形化消费方是 Web SPA**；HTTP 与 gRPC 暴露同一份契约（`api/room/v1/room.proto` + `api/account/v1/account.proto` + `api/chat/v1/chat.proto`）。两者使用原生 `Timeout(15s)` + `recovery`；HTTP 另挂 AIP `validate`（按 proto 的 `field_behavior` 校验 REQUIRED 字段）。一元 RPC 统一 15s，不用自定义超时中间件。HTTP SSE 在 `service/chat.go` 的 filter 中保留加超时前的连接 context，接回连接取消但不继承一元超时；gRPC 使用原生流取消。server 仅负责构造与注册。
+- DeepSeek 流量经 `ChatModelClient`，与 B 站风控完全独立。Web 不直连厂商，API key 不读回；数据库未加密，部署限可信本地单用户。对话历史与工具返回的房间数据会发给 DeepSeek。
 - 直播侧 B 站流量收敛在 `LiveClient` 一个缝（`data/bili/` 子包：`live.go`（含弹幕鉴权 `danmuInfo`）、`danmaku.go`（连接生命周期 + 二进制包协议）、`danmaku_event.go`、`client.go`、`http.go`、`wbi.go`、`buvid.go`，风控编排集中在 `risk.go` 的 `riskGuard`：构造合规请求（注入 buvid 指纹、WBI 签名）、冷却门、412/403/429 与 -352 刷新重试、旧接口降级）。端点只声明端点形状（`riskRequest`：路径、查询参数、是否签名、响应落点、可选 `done` 钩子），不自己构造请求。唯一例外是 passport 流量（扫码登录 / 账号核验，`passport.go` 的 `PassportClient`），刻意不走 riskGuard（无 WBI 签名、无重试），自带无 cookie jar 的 HTTP 客户端、不依赖 `Client`；登录凭据经 `CredentialRepo` 持久化在 `credentials` 表单例行，落库后热替换内存 cookie（ADR-0003）。
 - 录制产物是**文件系统**而非数据库；`meta.json` 是录制历史的唯一事实源，重启后由 `RecoverPending` 扫描恢复。
 
@@ -76,19 +84,23 @@ flowchart TB
     end
 
     subgraph SERVER["internal/server —— 只做传输，无业务逻辑"]
-        SHTTP["NewHTTPServer<br/>recovery + validate"]
-        SGRPC["NewGRPCServer<br/>recovery"]
+        SHTTP["NewHTTPServer<br/>原生 Timeout 15s + recovery + validate"]
+        SGRPC["NewGRPCServer<br/>原生 Timeout 15s + recovery"]
         SDMN["Daemon<br/>Start: 派生 context.Background 跑 Run<br/>Stop: cancel + 45s 上限等待"]
     end
 
     subgraph SERVICE["internal/service —— DTO ↔ DO"]
         RS["RoomService<br/>toRoomDO / toRoomDTO<br/>AIP pagination + fieldmask"]
         AS["AccountService<br/>QR 登录 / 状态 / 登出"]
+        CS["ChatService<br/>只含 Chat 文本流；接回 HTTP 请求取消"]
+        MCS["ModelService<br/>一元配置 / 模型列表 DTO ↔ DO"]
     end
 
     subgraph BIZ["internal/biz —— DO 与决策，不碰存储客户端"]
         RU["RoomUsecase<br/>房间 CRUD + 运行时合并"]
         AU["AccountUsecase<br/>扫码登录 / 账号状态 / 登出"]
+        CU["ChatUsecase<br/>Eino ADK ChatModelAgent + Runner<br/>list_rooms（只读分页工具）"]
+        MCU["ModelConfigUsecase<br/>单份配置 / 有效 key / 官方 ID 校验"]
         RECU["RecorderUsecase<br/>recorder.go：Run + reconcile<br/>recorder_monitor.go：runMonitor / runMonitorConnection<br/>recorder_session.go：runSession / runRecordingLoop / probeLive<br/>只做决策，不做字节级 IO"]
         REG["RoomRegistry<br/>房间配置 + 运行时状态的唯一事实源"]
         POL["sessionPolicy（ADR-0001/0002）<br/>会话启停决策：Start / Stop / None"]
@@ -97,6 +109,8 @@ flowchart TB
         IF3[/"LiveClient 接口"/]
         IF4[/"CredentialRepo 接口"/]
         IF5[/"PassportClient 接口"/]
+        IF6[/"ModelConfigRepo 接口"/]
+        IF7[/"ChatModelClient 接口"/]
     end
 
     subgraph DATA["internal/data —— PO 与全部 IO"]
@@ -105,15 +119,21 @@ flowchart TB
         LC["liveClient<br/>bili/ 子包：live · danmaku_* · client · wbi · buvid · http · risk<br/>（riskGuard 经 riskTransport 缝驱动 *Client）"]
         CR["credentialRepo<br/>credentials 表单例行 + cookie 热替换"]
         PC["passportClient<br/>QR 登录 · nav 核验（不走 riskGuard）"]
+        MCR["modelConfigRepo<br/>model_configs 表单例行<br/>凭据 SQL 静默"]
+        MC["deepseek.Client（data/deepseek/）<br/>官方 Eino DeepSeek 模型<br/>Resty GET /models"]
     end
 
-    DTO["api/room/v1 · api/account/v1<br/>proto DTO（RoomService / AccountService 契约）"]
+    DTO["api/room/v1 · api/account/v1 · api/chat/v1<br/>proto DTO"]
 
     WIRE --> SHTTP & SGRPC & SDMN
-    SHTTP & SGRPC --> RS & AS
+    SHTTP & SGRPC --> RS & AS & CS & MCS
     RS -- "DTO（请求/响应）" --- DTO
     RS -- "DO" --> RU
     AS --> AU
+    CS --> CU
+    MCS --> MCU
+    CU --> MCU & IF7 & RU
+    MCU --> IF6 & IF7
     SDMN --> RECU
     RU --> REG
     RECU --> REG
@@ -126,10 +146,14 @@ flowchart TB
     IF3 -. 实现 .-> LC
     IF4 -. 实现 .-> CR
     IF5 -. 实现 .-> PC
+    IF6 -. 实现 .-> MCR
+    IF7 -. 实现 .-> MC
     RR --> SQLITE[("SQLite / GORM")]
     CR --> SQLITE
+    MCR --> SQLITE
     RREPO --> FS[("recordings/ 文件目录")]
     LC --> BILI[("B 站 API / CDN / 弹幕 WS")]
+    MC --> DEEPSEEK[("DeepSeek")]
     PC --> BILI
 ```
 
@@ -142,13 +166,13 @@ flowchart TB
 | data | PO、`toXxxPO/toXxxDO` | DO ↔ PO | DTO |
 | server | 传输装配 | — | 转换与业务逻辑 |
 
-倒置缝都在 `biz` 声明、`data` 实现，共**五条**：`LiveClient`（直播平台 IO）、`RecorderRepo`（磁盘 IO）、`RoomRepo`（房间持久化）、`CredentialRepo`（凭据持久化 + cookie 热替换）与 `PassportClient`（账号平台，刻意不走风控）。`RecorderRepo` **内嵌** `SessionStatsRepo`，不是一个并列的第六条缝：写入进度与磁盘 IO 由同一个实现的同一份内存状态提供，内嵌让"一个对象同时满足两者"成为编译期事实，接线处不必再做运行时类型断言，房间管理只消费收窄后的那一半。`RoomRegistry` 是被两侧共享的运行时状态中枢：房间 CRUD 落库后同步 `Add/Update/Remove`，录制守护进程经 `Subscribe` 的合并式信号实时调和监控集合，无需重启。
+倒置缝都在 `biz` 声明、`data` 实现，共**七条**：`LiveClient`（直播平台 IO）、`RecorderRepo`（磁盘 IO）、`RoomRepo`（房间持久化）、`CredentialRepo`（凭据持久化 + cookie 热替换）、`PassportClient`（账号平台，刻意不走风控）、`ModelConfigRepo`（模型配置持久化）与 `ChatModelClient`（模型发现/构建）。`RecorderRepo` **内嵌** `SessionStatsRepo`，不是并列的第八条缝：写入进度与磁盘 IO 由同一个实现的同一份内存状态提供，接线处不必再做运行时类型断言，房间管理只消费收窄后的那一半。`RoomRegistry` 是房间管理与录制共享的运行时状态中枢；助手经 `RoomUsecase` 查询，不直接碰数据库。
 
 ---
 
 ## 3. 时序图
 
-四张时序图覆盖全部调用链：① 房间创建（同步 CRUD 全链）、② 开播检测与会话启动（异步事件驱动）、③ 录制会话与断流决策树、④ 房间查询（运行时状态合并）。
+下面覆盖房间创建、开播检测、录制会话、房间查询，以及助手的模型配置/对话链路。
 
 ### 3.1 房间创建：CreateRoom 同步链
 
@@ -317,6 +341,49 @@ sequenceDiagram
 
 （`GetRoom` 同链，仅以 `room_id` 单查；`page_size` 缺省 20。）
 
+### 3.5 模型配置与智能助手
+
+```mermaid
+sequenceDiagram
+    participant W as Web 智能助手
+    participant S as ModelService（一元 HTTP / gRPC）
+    participant CS as ChatService（HTTP SSE / gRPC）
+    participant M as ModelConfigUsecase
+    participant R as ModelConfigRepo（SQLite）
+    participant C as ChatUsecase（Eino ADK）
+    participant D as ChatModelClient / DeepSeek
+    participant U as RoomUsecase
+
+    W->>S: ListModels(provider, supplied_key 或空)
+    S->>M: ListModels
+    opt key 留空
+        M->>R: Get（仅后端读 key）
+        R-->>M: ModelConfig
+    end
+    M->>D: GET /models（Bearer key，不保存）
+    D-->>W: 官方模型 ID / name
+    W->>S: SaveModelConfig(provider, model, key 或空)
+    S->>M: Save
+    M->>D: 再次查询并校验官方 ID
+    M->>R: Save（固定 id=1，成功才替换）
+    S-->>W: provider / model / configured（无 key）
+    W->>CS: Chat（完整 user/assistant 历史）
+    CS->>C: Chat(ctx, messages, send)
+    C->>M: Get 当前配置快照
+    M->>R: Get
+    C->>D: 构建请求专属模型 / agent，流式 Run
+    opt 模型按需调用 list_rooms
+        C->>U: ListRoomRuntimes（查询 51 条探测下一页）
+        U-->>C: 房间运行时信息
+        Note over C: 工具返回至多 50 条及 next_offset；需要时继续查询
+        C->>D: 工具结果
+    end
+    D-->>C: 回答文本分片
+    C-->>CS: text_delta
+    CS-->>W: SSE message / gRPC ChatEvent
+    Note over W,D: HTTP 断开取消上游；流后失败为 SSE error<br/>保存/删除不改变在途配置快照
+```
+
 ---
 
 ## 4. 状态机图
@@ -374,8 +441,8 @@ stateDiagram-v2
 
 ## 5. ER 图
 
-数据库中有两张表：`rooms` 与 `credentials`（登录凭据单例行，来自
-Web 扫码登录，ADR-0003；两表无关联）。均为 GORM AutoMigrate、SQLite
+数据库中有三张表：`rooms`、`credentials`（B 站登录凭据单例，ADR-0003）
+与 `model_configs`（模型配置单例，ADR-0007）；三表无关联。均为 GORM AutoMigrate、SQLite
 单连接。录制会话与分段不落库，而是以 `meta.json` + 媒体文件持久化在
 录制目录，图中作为逻辑实体给出，关系均为一对多：
 
@@ -406,6 +473,13 @@ erDiagram
         string refresh_token "刷新令牌"
         datetime create_time "首次登录时间"
         datetime update_time "最近登录时间"
+    }
+
+    MODEL_CONFIGS {
+        int64 id PK "固定为 1 的单例行"
+        string provider "当前仅 deepseek"
+        string model "官方模型 ID"
+        string api_key "明文存储，API 禁止读回"
     }
 
     SESSION {

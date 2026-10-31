@@ -1,7 +1,10 @@
 package server
 
 import (
+	"time"
+
 	accountv1 "suika/api/account/v1"
+	chatv1 "suika/api/chat/v1"
 	v1 "suika/api/room/v1"
 	"suika/internal/conf"
 	"suika/internal/service"
@@ -15,8 +18,9 @@ import (
 )
 
 // NewHTTPServer 创建 HTTP 服务器。
-func NewHTTPServer(c *conf.Server, room *service.RoomService, account *service.AccountService) *http.Server {
-	var opts = []http.ServerOption{
+func NewHTTPServer(c *conf.Server, room *service.RoomService, account *service.AccountService, chat *service.ChatService, model *service.ModelService) *http.Server {
+	opts := []http.ServerOption{
+		http.Timeout(15 * time.Second),
 		http.Middleware(
 			recovery.Recovery(),
 			validate.Validator(func(req any) error {
@@ -35,5 +39,7 @@ func NewHTTPServer(c *conf.Server, room *service.RoomService, account *service.A
 	srv := http.NewServer(opts...)
 	v1.RegisterRoomServiceHTTPServer(srv, room)
 	accountv1.RegisterAccountServiceHTTPServer(srv, account)
+	chatv1.RegisterChatServiceHTTPServer(srv, chat)
+	chatv1.RegisterModelServiceHTTPServer(srv, model)
 	return srv
 }

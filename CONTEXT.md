@@ -1,6 +1,9 @@
 # Suika
 
-Suika manages Bilibili live rooms and records their broadcasts. Two concerns share one in-memory registry: room management (room CRUD) and recording execution (the recorder daemon).
+Suika manages Bilibili live rooms, records their broadcasts, and provides an
+Eino-based conversational assistant for read-only room queries. Room management
+and recording share one in-memory registry; the assistant queries through the
+room usecase. Automated cutting/publishing workflows are not implemented.
 
 ## Language
 
@@ -35,3 +38,16 @@ _Avoid_: using "reconcile" for session-level start/stop decisions — that is th
 **Credential** (登录凭据):
 The persisted Bilibili login cookie, stored as a singleton row in the `credentials` table and obtained via web QR login. It is the recorder's only cookie source; a successful login hot-swaps the in-memory cookie so recording picks it up without a restart.
 _Avoid_: config cookie (the deprecated `recorder.cookie` field is ignored), "token" (ambiguous with the danmaku token)
+
+**Assistant** (智能助手):
+The stateless Eino ADK conversational entry. Each request carries user/assistant
+history and streams answer text; its only current tool is paginated read-only
+`list_rooms`.
+_Avoid_: workflow (automatic cutting/publishing is separate and not implemented),
+Session (reserved for recording)
+
+**Model configuration** (模型配置):
+The singleton provider, official model ID and write-only API key stored in
+`model_configs`. Currently DeepSeek only; new chats use the latest saved
+snapshot. Model discovery does not persist supplied keys.
+_Avoid_: Credential (reserved for the Bilibili login cookie), environment key

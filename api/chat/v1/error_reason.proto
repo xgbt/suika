@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "suika/api/chat/v1;v1";
+option java_multiple_files = true;
+option java_package = "chat.v1";
+option objc_class_prefix = "APIChatV1";
+
+enum ErrorReason {
+  ERROR_REASON_UNSPECIFIED = 0;
+  ERROR_REASON_INVALID_ARGUMENT = 1;
+  // 大模型未配置或调用失败。
+  ERROR_REASON_UNAVAILABLE = 2;
+  ERROR_REASON_INTERNAL = 3;
+}
