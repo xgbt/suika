@@ -32,8 +32,8 @@ The DeepSeek discovery HTTP client also has a 15-second timeout. There is no
 custom timeout middleware or per-operation budget policy.
 
 Support DeepSeek only for now through the official Eino DeepSeek component.
-`ModelConfigRepo` and `ChatModelClient` are biz seams implemented in data.
-Database configuration stays in `internal/data/model_config.go`; DeepSeek
+`ModelRepo` and `ChatModelClient` are biz seams implemented in data.
+Database configuration stays in `internal/data/model.go`; DeepSeek
 SDK/model-discovery IO and its tests live in `internal/data/deepseek/`.
 `data.NewChatModelClient` is a thin Wire constructor, following the Bilibili
 client organization. HTTP contract/cancellation tests live in service's

@@ -24,10 +24,10 @@ type ModelConfig struct {
 	APIKey   string `json:"-"`
 }
 
-type ModelConfigRepo interface {
-	Get(context.Context) (*ModelConfig, error)
-	Save(context.Context, *ModelConfig) error
-	Delete(context.Context) error
+type ModelRepo interface {
+	GetConfig(context.Context) (*ModelConfig, error)
+	SaveConfig(context.Context, *ModelConfig) error
+	DeleteConfig(context.Context) error
 }
 
 // ChatModelClient 隔离模型厂商 SDK，配置只在后端传递。
@@ -41,21 +41,21 @@ type AvailableModel struct {
 	Name string
 }
 
-type ModelConfigUsecase struct {
-	repo   ModelConfigRepo
+type ModelUsecase struct {
+	repo   ModelRepo
 	client ChatModelClient
 	mu     sync.Mutex
 }
 
-func NewModelConfigUsecase(repo ModelConfigRepo, client ChatModelClient) *ModelConfigUsecase {
-	return &ModelConfigUsecase{
+func NewModelUsecase(repo ModelRepo, client ChatModelClient) *ModelUsecase {
+	return &ModelUsecase{
 		repo:   repo,
 		client: client,
 	}
 }
 
-func (uc *ModelConfigUsecase) Get(ctx context.Context) (*ModelConfig, error) {
-	return uc.repo.Get(ctx)
+func (uc *ModelUsecase) GetConfig(ctx context.Context) (*ModelConfig, error) {
+	return uc.repo.GetConfig(ctx)
 }
 
 func SupportedChatModel(provider, model string) bool {
@@ -69,14 +69,14 @@ func validModelAPIKey(key string) bool {
 }
 
 // resolveKey 根据提供的 provider 和 key 解析出有效的 APIKey，如果 key 为空则尝试从当前配置中获取。
-func (uc *ModelConfigUsecase) resolveKey(ctx context.Context, provider, key string) (string, error) {
+func (uc *ModelUsecase) resolveKey(ctx context.Context, provider, key string) (string, error) {
 	if provider != ModelProviderDeepSeek || !validModelAPIKey(key) {
 		return "", ErrChatInvalidArgument
 	}
 	if key != "" {
 		return key, nil
 	}
-	current, err := uc.repo.Get(ctx)
+	current, err := uc.repo.GetConfig(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -86,7 +86,7 @@ func (uc *ModelConfigUsecase) resolveKey(ctx context.Context, provider, key stri
 	return current.APIKey, nil
 }
 
-func (uc *ModelConfigUsecase) ListModels(ctx context.Context, provider, key string) ([]AvailableModel, error) {
+func (uc *ModelUsecase) ListModels(ctx context.Context, provider, key string) ([]AvailableModel, error) {
 	key, err := uc.resolveKey(ctx, provider, key)
 	if err != nil {
 		return nil, err
@@ -94,7 +94,7 @@ func (uc *ModelConfigUsecase) ListModels(ctx context.Context, provider, key stri
 	return uc.client.ListModels(ctx, key)
 }
 
-func (uc *ModelConfigUsecase) Save(ctx context.Context, config ModelConfig) (*ModelConfig, error) {
+func (uc *ModelUsecase) SaveConfig(ctx context.Context, config ModelConfig) (*ModelConfig, error) {
 	if !SupportedChatModel(config.Provider, config.Model) {
 		return nil, ErrChatInvalidArgument
 	}
@@ -120,14 +120,14 @@ func (uc *ModelConfigUsecase) Save(ctx context.Context, config ModelConfig) (*Mo
 	if !found {
 		return nil, ErrChatInvalidArgument
 	}
-	if err := uc.repo.Save(ctx, &config); err != nil {
+	if err := uc.repo.SaveConfig(ctx, &config); err != nil {
 		return nil, err
 	}
 	return &config, nil
 }
 
-func (uc *ModelConfigUsecase) Delete(ctx context.Context) error {
+func (uc *ModelUsecase) DeleteConfig(ctx context.Context) error {
 	uc.mu.Lock()
 	defer uc.mu.Unlock()
-	return uc.repo.Delete(ctx)
+	return uc.repo.DeleteConfig(ctx)
 }

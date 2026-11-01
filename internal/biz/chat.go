@@ -42,21 +42,21 @@ type ChatMessage struct {
 // ChatUsecase 用 Eino ADK 的 ChatModelAgent（ReAct）编排对话：模型按需调用只读工具，
 // 再给出最终回答。
 type ChatUsecase struct {
-	config *ModelConfigUsecase
+	model  *ModelUsecase
 	client ChatModelClient
 	rooms  *RoomUsecase
 }
 
-func NewChatUsecase(config *ModelConfigUsecase, client ChatModelClient, rooms *RoomUsecase) *ChatUsecase {
+func NewChatUsecase(model *ModelUsecase, client ChatModelClient, rooms *RoomUsecase) *ChatUsecase {
 	return &ChatUsecase{
-		config: config,
+		model:  model,
 		client: client,
 		rooms:  rooms,
 	}
 }
 
 func (uc *ChatUsecase) newRunner(ctx context.Context) (*adk.Runner, error) {
-	config, err := uc.config.Get(ctx)
+	config, err := uc.model.GetConfig(ctx)
 	if err != nil {
 		return nil, err
 	}

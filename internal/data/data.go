@@ -28,7 +28,7 @@ var ProviderSet = wire.NewSet(
 	NewCredentialRepo,
 	NewPassportClient,
 	NewChatModelClient,
-	NewModelConfigRepo,
+	NewModelRepo,
 )
 
 // Data 持有长生命周期的存储/平台客户端（模板惯例）：共享的 sqlite

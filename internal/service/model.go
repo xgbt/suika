@@ -12,10 +12,10 @@ import (
 type ModelService struct {
 	v1.UnimplementedModelServiceServer
 
-	uc *biz.ModelConfigUsecase
+	uc *biz.ModelUsecase
 }
 
-func NewModelService(uc *biz.ModelConfigUsecase) *ModelService {
+func NewModelService(uc *biz.ModelUsecase) *ModelService {
 	return &ModelService{
 		uc: uc,
 	}
@@ -39,7 +39,7 @@ func (s *ModelService) ListModels(ctx context.Context, req *v1.ListModelsRequest
 }
 
 func (s *ModelService) GetModelConfig(ctx context.Context, _ *v1.GetModelConfigRequest) (*v1.GetModelConfigResponse, error) {
-	config, err := s.uc.Get(ctx)
+	config, err := s.uc.GetConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func (s *ModelService) GetModelConfig(ctx context.Context, _ *v1.GetModelConfigR
 }
 
 func (s *ModelService) SaveModelConfig(ctx context.Context, req *v1.SaveModelConfigRequest) (*v1.SaveModelConfigResponse, error) {
-	config, err := s.uc.Save(ctx, biz.ModelConfig{
+	config, err := s.uc.SaveConfig(ctx, biz.ModelConfig{
 		Provider: req.GetProvider(),
 		Model:    req.GetModel(),
 		APIKey:   req.GetApiKey(),
@@ -63,7 +63,7 @@ func (s *ModelService) SaveModelConfig(ctx context.Context, req *v1.SaveModelCon
 }
 
 func (s *ModelService) DeleteModelConfig(ctx context.Context, _ *v1.DeleteModelConfigRequest) (*v1.DeleteModelConfigResponse, error) {
-	if err := s.uc.Delete(ctx); err != nil {
+	if err := s.uc.DeleteConfig(ctx); err != nil {
 		return nil, err
 	}
 	return &v1.DeleteModelConfigResponse{

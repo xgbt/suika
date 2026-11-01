@@ -325,7 +325,7 @@ the backend authenticates `GET https://api.deepseek.com/models` with the
 supplied or stored key. Discovery does not persist supplied credentials.
 The assistant's model settings
 save the singleton provider, model and API key in SQLite `model_configs`.
-`ModelConfigRepo` is implemented in `data/model_config.go`; `ChatModelClient`
+`ModelRepo` is implemented in `data/model.go`; `ChatModelClient`
 is implemented in `data/deepseek/client.go`, constructed through data's thin
 `NewChatModelClient` Wire provider;
 each chat request loads a configuration snapshot and builds its own agent.

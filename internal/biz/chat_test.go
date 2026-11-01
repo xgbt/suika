@@ -64,23 +64,23 @@ func (m *scriptedChatModel) WithTools(_ []*schema.ToolInfo) (model.ToolCallingCh
 	return m, nil
 }
 
-type fakeModelConfigRepo struct {
+type fakeModelRepo struct {
 	config *ModelConfig
 }
 
-func (r *fakeModelConfigRepo) Get(context.Context) (*ModelConfig, error) {
+func (r *fakeModelRepo) GetConfig(context.Context) (*ModelConfig, error) {
 	if r.config == nil {
 		return nil, nil
 	}
 	config := *r.config
 	return &config, nil
 }
-func (r *fakeModelConfigRepo) Save(_ context.Context, config *ModelConfig) error {
+func (r *fakeModelRepo) SaveConfig(_ context.Context, config *ModelConfig) error {
 	copy := *config
 	r.config = &copy
 	return nil
 }
-func (r *fakeModelConfigRepo) Delete(context.Context) error {
+func (r *fakeModelRepo) DeleteConfig(context.Context) error {
 	r.config = nil
 	return nil
 }
@@ -126,7 +126,7 @@ func TestChatUsesLatestSavedModelConfig(t *testing.T) {
 		"test-first",
 		"test-second",
 	} {
-		if _, err := uc.config.Save(ctx, ModelConfig{
+		if _, err := uc.model.SaveConfig(ctx, ModelConfig{
 			Provider: ModelProviderDeepSeek,
 			Model:    ModelDeepSeekFlash,
 			APIKey:   key,
@@ -142,7 +142,7 @@ func TestChatUsesLatestSavedModelConfig(t *testing.T) {
 	if len(client.keys) != 2 || client.keys[0] != "test-first" || client.keys[1] != "test-second" {
 		t.Fatal("chat did not pick up the latest configuration")
 	}
-	if err := uc.config.Delete(ctx); err != nil {
+	if err := uc.model.DeleteConfig(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err := uc.Chat(ctx, userMessage("hi"), func(string) error {
@@ -167,7 +167,7 @@ func newChatTestUsecase(t *testing.T, cm ChatModel) *ChatUsecase {
 	if err != nil {
 		t.Fatalf("NewRoomRegistry: %v", err)
 	}
-	configRepo := &fakeModelConfigRepo{}
+	configRepo := &fakeModelRepo{}
 	if cm != nil {
 		configRepo.config = &ModelConfig{
 			Provider: ModelProviderDeepSeek,
@@ -175,7 +175,7 @@ func newChatTestUsecase(t *testing.T, cm ChatModel) *ChatUsecase {
 			APIKey:   "test-key",
 		}
 	}
-	return NewChatUsecase(NewModelConfigUsecase(configRepo, fakeChatModelClient{}), fakeChatModelClient{
+	return NewChatUsecase(NewModelUsecase(configRepo, fakeChatModelClient{}), fakeChatModelClient{
 		model: cm,
 	}, NewRoomUsecase(repo, reg, &fakeStatsRepo{}))
 }

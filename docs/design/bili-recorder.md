@@ -296,9 +296,9 @@ web/                     管理界面前端（React 19 + TypeScript + Vite + Ant
 `DanmakuConn` 同理：biz 只消费 `Events()`（弹幕事件）与
 `RoomStateUpdates()`（房态复查结果 `*RoomInfo`）两个通道。
 
-助手另外通过 `ModelConfigRepo` / `ChatModelClient` 隔离模型配置存储与
+助手另外通过 `ModelRepo` / `ChatModelClient` 隔离模型配置存储与
 DeepSeek IO；唯一工具 `list_rooms` 复用 `RoomUsecase`，不依赖录制实现。
-`data/model_config.go` 管数据库，`data/deepseek/client.go` 管厂商 SDK 与
+`data/model.go` 管数据库，`data/deepseek/client.go` 管厂商 SDK 与
 官方模型发现，`data.NewChatModelClient` 仅做 Wire 构造委托。
 完整分层与七条缝见[应用架构图](architecture-diagrams.md#2-应用架构图)。
 
@@ -308,8 +308,8 @@ ProviderSet：
 
 | 包 | ProviderSet |
 |---|---|
-| data | `wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient, NewChatModelClient, NewModelConfigRepo)` |
-| biz | `wire.NewSet(NewRoomRegistry, NewRecorderUsecase, NewRoomUsecase, NewAccountUsecase, NewChatUsecase, NewModelConfigUsecase)` |
+| data | `wire.NewSet(NewData, NewRecorderRepo, NewSessionStatsRepo, NewLiveClient, NewRoomRepo, NewCredentialRepo, NewPassportClient, NewChatModelClient, NewModelRepo)` |
+| biz | `wire.NewSet(NewRoomRegistry, NewRecorderUsecase, NewRoomUsecase, NewAccountUsecase, NewChatUsecase, NewModelUsecase)` |
 | service | `wire.NewSet(NewRoomService, NewAccountService, NewChatService, NewModelService)` |
 | server | `wire.NewSet(NewGRPCServer, NewHTTPServer, NewDaemon)` |
 
@@ -317,8 +317,8 @@ ProviderSet：
 `NewData → NewRoomRepo → NewRoomRegistry → NewRecorderRepo →
 NewSessionStatsRepo → NewRoomUsecase → NewRoomService →
 NewPassportClient → NewCredentialRepo → NewAccountUsecase →
-NewAccountService → NewModelConfigRepo → NewChatModelClient →
-NewModelConfigUsecase → NewChatUsecase → NewChatService → NewModelService →
+NewAccountService → NewModelRepo → NewChatModelClient →
+NewModelUsecase → NewChatUsecase → NewChatService → NewModelService →
 NewGRPCServer / NewHTTPServer → NewLiveClient →
 NewRecorderUsecase → NewDaemon → newApp`。
 `NewData` 依据 `conf.Data` 打开 sqlite 并 AutoMigrate rooms /

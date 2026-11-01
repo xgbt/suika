@@ -11,11 +11,27 @@ import './App.css';
 const { Header, Content, Sider } = Layout;
 const { Title } = Typography;
 
+type PageKey = 'recording' | 'workflow' | 'assistant';
+
+const activePageStorageKey = 'suika.activePage';
+
+function isPageKey(key: string): key is PageKey {
+  return key === 'recording' || key === 'workflow' || key === 'assistant';
+}
+
+function getInitialPage(): PageKey {
+  const savedPage = sessionStorage.getItem(activePageStorageKey);
+  return savedPage && isPageKey(savedPage) ? savedPage : 'recording';
+}
+
 function App() {
-  const [activePage, setActivePage] = useState('recording');
+  const [activePage, setActivePage] = useState<PageKey>(getInitialPage);
 
   const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
-    setActivePage(key);
+    if (isPageKey(key)) {
+      sessionStorage.setItem(activePageStorageKey, key);
+      setActivePage(key);
+    }
   };
 
   return (

@@ -100,7 +100,7 @@ flowchart TB
         RU["RoomUsecase<br/>房间 CRUD + 运行时合并"]
         AU["AccountUsecase<br/>扫码登录 / 账号状态 / 登出"]
         CU["ChatUsecase<br/>Eino ADK ChatModelAgent + Runner<br/>list_rooms（只读分页工具）"]
-        MCU["ModelConfigUsecase<br/>单份配置 / 有效 key / 官方 ID 校验"]
+        MCU["ModelUsecase<br/>单份配置 / 有效 key / 官方 ID 校验"]
         RECU["RecorderUsecase<br/>recorder.go：Run + reconcile<br/>recorder_monitor.go：runMonitor / runMonitorConnection<br/>recorder_session.go：runSession / runRecordingLoop / probeLive<br/>只做决策，不做字节级 IO"]
         REG["RoomRegistry<br/>房间配置 + 运行时状态的唯一事实源"]
         POL["sessionPolicy（ADR-0001/0002）<br/>会话启停决策：Start / Stop / None"]
@@ -109,7 +109,7 @@ flowchart TB
         IF3[/"LiveClient 接口"/]
         IF4[/"CredentialRepo 接口"/]
         IF5[/"PassportClient 接口"/]
-        IF6[/"ModelConfigRepo 接口"/]
+        IF6[/"ModelRepo 接口"/]
         IF7[/"ChatModelClient 接口"/]
     end
 
@@ -119,7 +119,7 @@ flowchart TB
         LC["liveClient<br/>bili/ 子包：live · danmaku_* · client · wbi · buvid · http · risk<br/>（riskGuard 经 riskTransport 缝驱动 *Client）"]
         CR["credentialRepo<br/>credentials 表单例行 + cookie 热替换"]
         PC["passportClient<br/>QR 登录 · nav 核验（不走 riskGuard）"]
-        MCR["modelConfigRepo<br/>model_configs 表单例行<br/>凭据 SQL 静默"]
+        MCR["modelRepo<br/>model_configs 表单例行<br/>凭据 SQL 静默"]
         MC["deepseek.Client（data/deepseek/）<br/>官方 Eino DeepSeek 模型<br/>Resty GET /models"]
     end
 
@@ -166,7 +166,7 @@ flowchart TB
 | data | PO、`toXxxPO/toXxxDO` | DO ↔ PO | DTO |
 | server | 传输装配 | — | 转换与业务逻辑 |
 
-倒置缝都在 `biz` 声明、`data` 实现，共**七条**：`LiveClient`（直播平台 IO）、`RecorderRepo`（磁盘 IO）、`RoomRepo`（房间持久化）、`CredentialRepo`（凭据持久化 + cookie 热替换）、`PassportClient`（账号平台，刻意不走风控）、`ModelConfigRepo`（模型配置持久化）与 `ChatModelClient`（模型发现/构建）。`RecorderRepo` **内嵌** `SessionStatsRepo`，不是并列的第八条缝：写入进度与磁盘 IO 由同一个实现的同一份内存状态提供，接线处不必再做运行时类型断言，房间管理只消费收窄后的那一半。`RoomRegistry` 是房间管理与录制共享的运行时状态中枢；助手经 `RoomUsecase` 查询，不直接碰数据库。
+倒置缝都在 `biz` 声明、`data` 实现，共**七条**：`LiveClient`（直播平台 IO）、`RecorderRepo`（磁盘 IO）、`RoomRepo`（房间持久化）、`CredentialRepo`（凭据持久化 + cookie 热替换）、`PassportClient`（账号平台，刻意不走风控）、`ModelRepo`（模型配置持久化）与 `ChatModelClient`（模型发现/构建）。`RecorderRepo` **内嵌** `SessionStatsRepo`，不是并列的第八条缝：写入进度与磁盘 IO 由同一个实现的同一份内存状态提供，接线处不必再做运行时类型断言，房间管理只消费收窄后的那一半。`RoomRegistry` 是房间管理与录制共享的运行时状态中枢；助手经 `RoomUsecase` 查询，不直接碰数据库。
 
 ---
 
@@ -348,8 +348,8 @@ sequenceDiagram
     participant W as Web 智能助手
     participant S as ModelService（一元 HTTP / gRPC）
     participant CS as ChatService（HTTP SSE / gRPC）
-    participant M as ModelConfigUsecase
-    participant R as ModelConfigRepo（SQLite）
+    participant M as ModelUsecase
+    participant R as ModelRepo（SQLite）
     participant C as ChatUsecase（Eino ADK）
     participant D as ChatModelClient / DeepSeek
     participant U as RoomUsecase

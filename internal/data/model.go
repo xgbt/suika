@@ -23,24 +23,24 @@ func (modelConfigPO) TableName() string {
 	return "model_configs"
 }
 
-type modelConfigRepo struct {
+type modelRepo struct {
 	data *Data
 }
 
-func NewModelConfigRepo(d *Data) biz.ModelConfigRepo {
-	return &modelConfigRepo{
+func NewModelRepo(d *Data) biz.ModelRepo {
+	return &modelRepo{
 		data: d,
 	}
 }
 
 // 凭据 SQL 禁止进入 GORM 日志；失败只记录操作名，不记录参数或驱动错误。
-func (r *modelConfigRepo) db(ctx context.Context) *gorm.DB {
+func (r *modelRepo) db(ctx context.Context) *gorm.DB {
 	return r.data.db.WithContext(ctx).Session(&gorm.Session{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 }
 
-func (r *modelConfigRepo) Get(ctx context.Context) (*biz.ModelConfig, error) {
+func (r *modelRepo) GetConfig(ctx context.Context) (*biz.ModelConfig, error) {
 	var po modelConfigPO
 	err := r.db(ctx).First(&po, 1).Error
 	if stderrors.Is(err, gorm.ErrRecordNotFound) {
@@ -52,7 +52,7 @@ func (r *modelConfigRepo) Get(ctx context.Context) (*biz.ModelConfig, error) {
 	return toModelConfigDO(&po), nil
 }
 
-func (r *modelConfigRepo) Save(ctx context.Context, config *biz.ModelConfig) error {
+func (r *modelRepo) SaveConfig(ctx context.Context, config *biz.ModelConfig) error {
 	err := r.db(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{
@@ -71,7 +71,7 @@ func (r *modelConfigRepo) Save(ctx context.Context, config *biz.ModelConfig) err
 	return nil
 }
 
-func (r *modelConfigRepo) Delete(ctx context.Context) error {
+func (r *modelRepo) DeleteConfig(ctx context.Context) error {
 	if err := r.db(ctx).Where("id = ?", 1).Delete(&modelConfigPO{}).Error; err != nil {
 		return modelConfigError("delete")
 	}

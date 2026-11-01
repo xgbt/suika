@@ -27,9 +27,9 @@ func (c *catalogClient) ListModels(_ context.Context, key string) ([]AvailableMo
 
 func TestModelDiscoveryAndSavingOfficialModels(t *testing.T) {
 	ctx := context.Background()
-	repo := &fakeModelConfigRepo{}
+	repo := &fakeModelRepo{}
 	client := &catalogClient{}
-	uc := NewModelConfigUsecase(repo, client)
+	uc := NewModelUsecase(repo, client)
 	if _, err := uc.ListModels(ctx, ModelProviderDeepSeek, "test-unsaved"); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestModelDiscoveryAndSavingOfficialModels(t *testing.T) {
 		Model:    "official-new-model",
 		APIKey:   "test-stored",
 	}
-	if _, err := uc.Save(ctx, config); err != nil {
+	if _, err := uc.SaveConfig(ctx, config); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := uc.ListModels(ctx, ModelProviderDeepSeek, ""); err != nil {
@@ -54,12 +54,12 @@ func TestModelDiscoveryAndSavingOfficialModels(t *testing.T) {
 		t.Fatal("stored key not used")
 	}
 	config.Model = "not-in-official-list"
-	if _, err := uc.Save(ctx, config); !errors.Is(err, ErrChatInvalidArgument) {
+	if _, err := uc.SaveConfig(ctx, config); !errors.Is(err, ErrChatInvalidArgument) {
 		t.Fatal("unlisted model accepted")
 	}
 	client.fail = true
 	config.APIKey = "test-replacement"
-	if _, err := uc.Save(ctx, config); !errors.Is(err, ErrChatUnavailable) {
+	if _, err := uc.SaveConfig(ctx, config); !errors.Is(err, ErrChatUnavailable) {
 		t.Fatal("discovery failure ignored")
 	}
 	if repo.config.APIKey != "test-stored" || repo.config.Model != "official-new-model" {
@@ -68,8 +68,8 @@ func TestModelDiscoveryAndSavingOfficialModels(t *testing.T) {
 }
 func TestModelConfigLifecycle(t *testing.T) {
 	ctx := context.Background()
-	uc := NewModelConfigUsecase(&fakeModelConfigRepo{}, fakeChatModelClient{})
-	if _, err := uc.Save(ctx, ModelConfig{
+	uc := NewModelUsecase(&fakeModelRepo{}, fakeChatModelClient{})
+	if _, err := uc.SaveConfig(ctx, ModelConfig{
 		Provider: ModelProviderDeepSeek,
 		Model:    ModelDeepSeekFlash,
 	}); !errors.Is(err, ErrChatInvalidArgument) {
@@ -80,10 +80,10 @@ func TestModelConfigLifecycle(t *testing.T) {
 		Model:    ModelDeepSeekFlash,
 		APIKey:   "test-first",
 	}
-	if _, err := uc.Save(ctx, first); err != nil {
+	if _, err := uc.SaveConfig(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	kept, err := uc.Save(ctx, ModelConfig{
+	kept, err := uc.SaveConfig(ctx, ModelConfig{
 		Provider: first.Provider,
 		Model:    first.Model,
 	})
@@ -91,17 +91,17 @@ func TestModelConfigLifecycle(t *testing.T) {
 		t.Fatalf("retain key failed: %v", err)
 	}
 	first.APIKey = "test-replaced"
-	if _, err := uc.Save(ctx, first); err != nil {
+	if _, err := uc.SaveConfig(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	got, err := uc.Get(ctx)
+	got, err := uc.GetConfig(ctx)
 	if err != nil || got.APIKey != first.APIKey {
 		t.Fatalf("replace key failed: %v", err)
 	}
-	if err := uc.Delete(ctx); err != nil {
+	if err := uc.DeleteConfig(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got, err = uc.Get(ctx)
+	got, err = uc.GetConfig(ctx)
 	if err != nil || got != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
@@ -130,8 +130,8 @@ func TestModelConfigValidation(t *testing.T) {
 			APIKey:   "key\ninjected",
 		},
 	} {
-		uc := NewModelConfigUsecase(&fakeModelConfigRepo{}, fakeChatModelClient{})
-		if _, err := uc.Save(context.Background(), config); !errors.Is(err, ErrChatInvalidArgument) {
+		uc := NewModelUsecase(&fakeModelRepo{}, fakeChatModelClient{})
+		if _, err := uc.SaveConfig(context.Background(), config); !errors.Is(err, ErrChatInvalidArgument) {
 			t.Errorf("invalid config accepted")
 		}
 	}
