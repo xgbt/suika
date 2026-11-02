@@ -10,6 +10,27 @@
 | Room / Registry | `room.go`、`room_registry.go` | 房间 CRUD（落库）+ 内存运行时注册表 |
 | Recorder | `recorder*.go` | 录制守护进程：监控开播、录制、断流重连、收尾合并 |
 
+## 依赖注入：RepoOptions 聚合
+
+`biz.go` 用 `wire.Struct(new(RepoOptions), "*")` 把所有 repo 接口聚合成一个结构体，
+每个 usecase 只持有一个 `opts *RepoOptions` 字段，通过 `uc.opts.<Repo>` 取用：
+
+```go
+type RepoOptions struct {
+	RoomRepo         RoomRepo
+	SessionStatsRepo SessionStatsRepo
+	RecorderRepo     RecorderRepo
+	CredentialRepo   CredentialRepo
+	ModelRepo        ModelRepo
+}
+```
+
+- 新增 repo：先在 `biz` 声明接口、在 `data` 实现并注册到 `data.ProviderSet`，
+  再给 `RepoOptions` 加一个字段即可，usecase 构造签名不变。
+- 字段类型必须是 `biz` 自己声明的接口——`biz` 不得 import `data`。
+- 平台缝（`LiveClient` / `PassportClient` / `ChatModelClient`）、`*RoomRegistry`、
+  `*conf.Recorder` 不是 repo，仍是显式构造参数。
+
 ## 0. 总览：Room 与 Recorder 如何协作
 
 ```mermaid

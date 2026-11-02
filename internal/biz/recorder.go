@@ -157,7 +157,7 @@ type ReconnectPolicy struct {
 
 type RecorderUsecase struct {
 	roomRegistry *RoomRegistry
-	repo         RecorderRepo
+	opts         *RepoOptions
 	liveClient   LiveClient
 
 	pollInterval          time.Duration   // 拉取房间状态的兜底轮询间隔
@@ -168,10 +168,10 @@ type RecorderUsecase struct {
 	stableResetAfter      time.Duration   // 泵送稳定录制超过该时长后重置重连预算；测试中会调小。
 }
 
-func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, lc LiveClient) *RecorderUsecase {
+func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, opts *RepoOptions, lc LiveClient) *RecorderUsecase {
 	uc := &RecorderUsecase{
 		roomRegistry: reg,
-		repo:         repo,
+		opts:         opts,
 		liveClient:   lc,
 		pollInterval: defaultRoomInfoPollInterval,
 		rec: ReconnectPolicy{
@@ -195,7 +195,7 @@ func NewRecorderUsecase(c *conf.Recorder, reg *RoomRegistry, repo RecorderRepo, 
 // 协程，由其决定开始或停止录制。
 func (uc *RecorderUsecase) Run(ctx context.Context) error {
 	// 收尾上次运行遗留的合并工作，若失败则记录错误并继续运行。
-	if err := uc.repo.RecoverPending(ctx); err != nil {
+	if err := uc.opts.RecorderRepo.RecoverPending(ctx); err != nil {
 		log.Error("recorder: recover pending merge", "err", err)
 	}
 

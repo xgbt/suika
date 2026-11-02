@@ -175,9 +175,9 @@ func newChatTestUsecase(t *testing.T, cm ChatModel) *ChatUsecase {
 			APIKey:   "test-key",
 		}
 	}
-	return NewChatUsecase(NewModelUsecase(configRepo, fakeChatModelClient{}), fakeChatModelClient{
+	return NewChatUsecase(NewModelUsecase(&RepoOptions{ModelRepo: configRepo}, fakeChatModelClient{}), fakeChatModelClient{
 		model: cm,
-	}, NewRoomUsecase(repo, reg, &fakeStatsRepo{}))
+	}, NewRoomUsecase(&RepoOptions{RoomRepo: repo, SessionStatsRepo: &fakeStatsRepo{}}, reg))
 }
 
 func userMessage(s string) []ChatMessage {
@@ -327,7 +327,7 @@ func TestChatRoomToolPagination(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tools, err := newChatTools(NewRoomUsecase(repo, registry, &fakeStatsRepo{}))
+			tools, err := newChatTools(NewRoomUsecase(&RepoOptions{RoomRepo: repo, SessionStatsRepo: &fakeStatsRepo{}}, registry))
 			if err != nil {
 				t.Fatal(err)
 			}

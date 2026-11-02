@@ -29,7 +29,7 @@ func TestModelDiscoveryAndSavingOfficialModels(t *testing.T) {
 	ctx := context.Background()
 	repo := &fakeModelRepo{}
 	client := &catalogClient{}
-	uc := NewModelUsecase(repo, client)
+	uc := NewModelUsecase(&RepoOptions{ModelRepo: repo}, client)
 	if _, err := uc.ListModels(ctx, ModelProviderDeepSeek, "test-unsaved"); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestModelDiscoveryAndSavingOfficialModels(t *testing.T) {
 }
 func TestModelConfigLifecycle(t *testing.T) {
 	ctx := context.Background()
-	uc := NewModelUsecase(&fakeModelRepo{}, fakeChatModelClient{})
+	uc := NewModelUsecase(&RepoOptions{ModelRepo: &fakeModelRepo{}}, fakeChatModelClient{})
 	if _, err := uc.SaveConfig(ctx, ModelConfig{
 		Provider: ModelProviderDeepSeek,
 		Model:    ModelDeepSeekFlash,
@@ -130,7 +130,7 @@ func TestModelConfigValidation(t *testing.T) {
 			APIKey:   "key\ninjected",
 		},
 	} {
-		uc := NewModelUsecase(&fakeModelRepo{}, fakeChatModelClient{})
+		uc := NewModelUsecase(&RepoOptions{ModelRepo: &fakeModelRepo{}}, fakeChatModelClient{})
 		if _, err := uc.SaveConfig(context.Background(), config); !errors.Is(err, ErrChatInvalidArgument) {
 			t.Errorf("invalid config accepted")
 		}

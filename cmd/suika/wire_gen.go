@@ -29,29 +29,36 @@ func wireApp(confServer *conf.Server, confData *conf.Data, recorder *conf.Record
 		return nil, nil, err
 	}
 	roomRepo := data.NewRoomRepo(dataData)
+	recorderRepo := data.NewRecorderRepo(dataData, recorder)
+	sessionStatsRepo := data.NewSessionStatsRepo(recorderRepo)
+	credentialRepo := data.NewCredentialRepo(dataData)
+	modelRepo := data.NewModelRepo(dataData)
+	repoOptions := &biz.RepoOptions{
+		RoomRepo:         roomRepo,
+		SessionStatsRepo: sessionStatsRepo,
+		RecorderRepo:     recorderRepo,
+		CredentialRepo:   credentialRepo,
+		ModelRepo:        modelRepo,
+	}
 	roomRegistry, err := biz.NewRoomRegistry(roomRepo)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	recorderRepo := data.NewRecorderRepo(dataData, recorder)
-	sessionStatsRepo := data.NewSessionStatsRepo(recorderRepo)
-	roomUsecase := biz.NewRoomUsecase(roomRepo, roomRegistry, sessionStatsRepo)
+	roomUsecase := biz.NewRoomUsecase(repoOptions, roomRegistry)
 	roomService := service.NewRoomService(roomUsecase)
 	passportClient := data.NewPassportClient()
-	credentialRepo := data.NewCredentialRepo(dataData)
-	accountUsecase := biz.NewAccountUsecase(passportClient, credentialRepo)
+	accountUsecase := biz.NewAccountUsecase(repoOptions, passportClient)
 	accountService := service.NewAccountService(accountUsecase)
-	modelRepo := data.NewModelRepo(dataData)
 	chatModelClient := data.NewChatModelClient()
-	modelUsecase := biz.NewModelUsecase(modelRepo, chatModelClient)
+	modelUsecase := biz.NewModelUsecase(repoOptions, chatModelClient)
 	chatUsecase := biz.NewChatUsecase(modelUsecase, chatModelClient, roomUsecase)
 	chatService := service.NewChatService(chatUsecase)
 	modelService := service.NewModelService(modelUsecase)
 	grpcServer := server.NewGRPCServer(confServer, roomService, accountService, chatService, modelService)
 	httpServer := server.NewHTTPServer(confServer, roomService, accountService, chatService, modelService)
 	liveClient := data.NewLiveClient(dataData)
-	recorderUsecase := biz.NewRecorderUsecase(recorder, roomRegistry, recorderRepo, liveClient)
+	recorderUsecase := biz.NewRecorderUsecase(recorder, roomRegistry, repoOptions, liveClient)
 	daemon := server.NewDaemon(recorderUsecase)
 	app := newApp(logger, grpcServer, httpServer, daemon)
 	return app, func() {

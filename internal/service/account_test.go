@@ -50,7 +50,7 @@ func (p *fakePassportClient) AccountInfo(_ context.Context, _ string) (*biz.Acco
 func newTestAccountEnv(t *testing.T, d *data.Data, passport *fakePassportClient) *AccountService {
 	t.Helper()
 	repo := data.NewCredentialRepo(d)
-	uc := biz.NewAccountUsecase(passport, repo)
+	uc := biz.NewAccountUsecase(&biz.RepoOptions{CredentialRepo: repo}, passport)
 	return NewAccountService(uc)
 }
 

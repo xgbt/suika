@@ -190,7 +190,7 @@ func TestRoomUsecaseCRUDSyncsRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
-	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	uc := NewRoomUsecase(&RepoOptions{RoomRepo: repo, SessionStatsRepo: &fakeStatsRepo{}}, reg)
 	ctx := context.Background()
 
 	if _, err := uc.CreateRoom(ctx, &Room{RoomID: 2, StreamerName: "b", RecordEnabled: true}); err != nil {
@@ -297,7 +297,7 @@ func TestListRoomsMergesStateAndStats(t *testing.T) {
 	reg.NoteError(2, stderrors.New("boom"))
 	reg.StartRecording(3)
 
-	uc := NewRoomUsecase(repo, reg, stats)
+	uc := NewRoomUsecase(&RepoOptions{RoomRepo: repo, SessionStatsRepo: stats}, reg)
 	out, err := uc.ListRoomRuntimes(context.Background(), ListQuery{Offset: 0, Limit: 20})
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +342,7 @@ func TestRoomUsecaseValidation(t *testing.T) {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 	repo := &fakeRoomRepo{}
-	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	uc := NewRoomUsecase(&RepoOptions{RoomRepo: repo, SessionStatsRepo: &fakeStatsRepo{}}, reg)
 	ctx := context.Background()
 
 	if _, err := uc.CreateRoom(ctx, nil); !stderrors.Is(err, ErrRoomInvalidArgument) {
@@ -372,7 +372,7 @@ func TestRoomUsecaseRepoErrors(t *testing.T) {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 	repo := &fakeRoomRepo{rooms: map[int64]*Room{1: {RoomID: 1, StreamerName: "a"}}}
-	uc := NewRoomUsecase(repo, reg, &fakeStatsRepo{})
+	uc := NewRoomUsecase(&RepoOptions{RoomRepo: repo, SessionStatsRepo: &fakeStatsRepo{}}, reg)
 	ctx := context.Background()
 
 	if _, err := uc.GetRoom(ctx, 2); !stderrors.Is(err, ErrRoomNotFound) {

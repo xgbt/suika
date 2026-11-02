@@ -83,12 +83,12 @@ type CredentialRepo interface {
 // AccountUsecase 管理录制器充当的 B 站账号：扫码登录、状态查询与登出。
 // 凭据持久化在数据库中，是唯一登录态来源。
 type AccountUsecase struct {
+	opts   *RepoOptions
 	client PassportClient
-	repo   CredentialRepo
 }
 
-func NewAccountUsecase(client PassportClient, repo CredentialRepo) *AccountUsecase {
-	return &AccountUsecase{client: client, repo: repo}
+func NewAccountUsecase(opts *RepoOptions, client PassportClient) *AccountUsecase {
+	return &AccountUsecase{opts: opts, client: client}
 }
 
 // CreateQRLogin 生成扫码登录二维码。
@@ -112,7 +112,7 @@ func (uc *AccountUsecase) PollQRLogin(ctx context.Context, qrcodeKey string) (*Q
 	if cred == nil || cred.Cookie == "" {
 		return nil, ErrPassportUnavailable
 	}
-	if err := uc.repo.SaveCredential(ctx, cred); err != nil {
+	if err := uc.opts.CredentialRepo.SaveCredential(ctx, cred); err != nil {
 		return nil, err
 	}
 	return poll, nil
@@ -122,7 +122,7 @@ func (uc *AccountUsecase) PollQRLogin(ctx context.Context, qrcodeKey string) (*Q
 // 核验。平台不可达时返回错误，而不是误报登出。凭据失效不删除凭据，
 // 让用户重新扫码或手动登出。
 func (uc *AccountUsecase) AccountStatus(ctx context.Context) (*AccountInfo, error) {
-	cred, err := uc.repo.GetCredential(ctx)
+	cred, err := uc.opts.CredentialRepo.GetCredential(ctx)
 	if errors.Is(err, ErrCredentialNotFound) {
 		return &AccountInfo{State: AccountLoggedOut}, nil
 	}
@@ -141,5 +141,5 @@ func (uc *AccountUsecase) AccountStatus(ctx context.Context) (*AccountInfo, erro
 
 // Logout 本地登出：删除数据库凭据并清除内存登录态。
 func (uc *AccountUsecase) Logout(ctx context.Context) error {
-	return uc.repo.DeleteCredential(ctx)
+	return uc.opts.CredentialRepo.DeleteCredential(ctx)
 }

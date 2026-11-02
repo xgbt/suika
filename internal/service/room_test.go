@@ -67,7 +67,7 @@ func newTestRoomEnv(t *testing.T, d *data.Data) *roomEnv {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 	stats := &fakeSessionStatsRepo{}
-	uc := biz.NewRoomUsecase(repo, reg, stats)
+	uc := biz.NewRoomUsecase(&biz.RepoOptions{RoomRepo: repo, SessionStatsRepo: stats}, reg)
 	return &roomEnv{svc: NewRoomService(uc), reg: reg, stats: stats}
 }
 

@@ -13,19 +13,19 @@ func WriteFileAtomic(dst string, fn func(w *bufio.Writer) (int64, error)) (err e
 	dir := filepath.Dir(dst)
 
 	// 1. 同目录创建临时文件，保证 rename 不跨文件系统
-	f, err := os.CreateTemp(dir, filepath.Base(dst)+".tmp-*")
+	file, err := os.CreateTemp(dir, filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp for %s: %w", dst, err)
 	}
-	tmp, committed := f.Name(), false
+	temp, committed := file.Name(), false
 
 	// 2. 统一收尾：未提交（报错或 panic）则清理临时文件；报错时统一补充上下文
 	defer func() {
 		if committed {
 			return
 		}
-		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = file.Close()
+		_ = os.Remove(temp)
 		if err != nil {
 			err = fmt.Errorf("atomic write %s: %w", dst, err)
 		}
@@ -36,12 +36,12 @@ func WriteFileAtomic(dst string, fn func(w *bufio.Writer) (int64, error)) (err e
 	if fi, e := os.Stat(dst); e == nil {
 		mode = fi.Mode().Perm()
 	}
-	if err = f.Chmod(mode); err != nil {
+	if err = file.Chmod(mode); err != nil {
 		return err
 	}
 
 	// 4. 写入并刷新缓冲
-	bw := bufio.NewWriterSize(f, 1<<20)
+	bw := bufio.NewWriterSize(file, 1<<20)
 	written, err := fn(bw)
 	if err != nil {
 		return err
@@ -51,7 +51,7 @@ func WriteFileAtomic(dst string, fn func(w *bufio.Writer) (int64, error)) (err e
 	}
 
 	// 5. 校验大小，防止截断或计数错误
-	fi, err := f.Stat()
+	fi, err := file.Stat()
 	if err != nil {
 		return err
 	}
@@ -60,15 +60,15 @@ func WriteFileAtomic(dst string, fn func(w *bufio.Writer) (int64, error)) (err e
 	}
 
 	// 6. 数据落盘后关闭（Close 的错误必须检查）
-	if err = f.Sync(); err != nil {
+	if err = file.Sync(); err != nil {
 		return err
 	}
-	if err = f.Close(); err != nil {
+	if err = file.Close(); err != nil {
 		return err
 	}
 
 	// 7. 原子替换，成功后不再清理
-	if err = os.Rename(tmp, dst); err != nil {
+	if err = os.Rename(temp, dst); err != nil {
 		return err
 	}
 	committed = true

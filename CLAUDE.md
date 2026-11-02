@@ -151,6 +151,14 @@ design rather than add the import.
 - Owns `ListQuery` — optional equality filters (`RoomID` /
   `StreamerName` / `RoomTitle` / `RecordEnabled`) plus `Offset` / `Limit` —
   so callers compose queries without leaking storage primitives.
+- Owns `RepoOptions` (`internal/biz/biz.go`) — a single aggregate of every
+  repo interface, provided by `wire.Struct(new(RepoOptions), "*")` at the
+  top of `biz.ProviderSet`. Usecases hold `opts *RepoOptions` and reach a
+  repo through `uc.opts.<Repo>`, so adding a repo is one field here instead
+  of an edit to every constructor. Aggregate fields are `biz` interfaces,
+  never `*data` types — `biz` must not import `data`. Platform seams
+  (`LiveClient`, `PassportClient`, `ChatModelClient`), `*RoomRegistry` and
+  `*conf.Recorder` stay explicit constructor parameters; they are not repos.
 
 **data (DO ↔ PO)**
 

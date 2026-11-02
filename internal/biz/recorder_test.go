@@ -113,7 +113,7 @@ func newTestUsecaseWithRooms(t *testing.T, rooms map[int64]*Room, repo RecorderR
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
-	uc := NewRecorderUsecase(&conf.Recorder{}, reg, repo, lc)
+	uc := NewRecorderUsecase(&conf.Recorder{}, reg, &RepoOptions{RecorderRepo: repo}, lc)
 	uc.rec.ReconnectDelay = time.Millisecond
 	uc.cdnBackoffBase = time.Millisecond
 	uc.monitorReconnectDelay = time.Millisecond
@@ -482,7 +482,7 @@ func TestNewRecorderUsecaseNilConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
-	uc := NewRecorderUsecase(nil, reg, &fakeRepo{}, &fakeLiveClient{})
+	uc := NewRecorderUsecase(nil, reg, &RepoOptions{RecorderRepo: &fakeRepo{}}, &fakeLiveClient{})
 	if !uc.rec.AutoReconnect || uc.rec.MaxReconnect != defaultMaxReconnect ||
 		uc.rec.ReconnectDelay != defaultReconnectDelay ||
 		uc.rec.CDNTransientBudget != defaultCDNTransientBudget ||
@@ -881,7 +881,7 @@ func TestRunReconcilesRoomAddAndRemove(t *testing.T) {
 		t.Fatalf("NewRoomRegistry() error = %v", err)
 	}
 	client := &connSignalingClient{}
-	uc := NewRecorderUsecase(&conf.Recorder{}, reg, &fakeRepo{}, client)
+	uc := NewRecorderUsecase(&conf.Recorder{}, reg, &RepoOptions{RecorderRepo: &fakeRepo{}}, client)
 	uc.monitorReconnectDelay = time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -42,20 +42,20 @@ type AvailableModel struct {
 }
 
 type ModelUsecase struct {
-	repo   ModelRepo
+	opts   *RepoOptions
 	client ChatModelClient
 	mu     sync.Mutex
 }
 
-func NewModelUsecase(repo ModelRepo, client ChatModelClient) *ModelUsecase {
+func NewModelUsecase(opts *RepoOptions, client ChatModelClient) *ModelUsecase {
 	return &ModelUsecase{
-		repo:   repo,
+		opts:   opts,
 		client: client,
 	}
 }
 
 func (uc *ModelUsecase) GetConfig(ctx context.Context) (*ModelConfig, error) {
-	return uc.repo.GetConfig(ctx)
+	return uc.opts.ModelRepo.GetConfig(ctx)
 }
 
 func SupportedChatModel(provider, model string) bool {
@@ -76,7 +76,7 @@ func (uc *ModelUsecase) resolveKey(ctx context.Context, provider, key string) (s
 	if key != "" {
 		return key, nil
 	}
-	current, err := uc.repo.GetConfig(ctx)
+	current, err := uc.opts.ModelRepo.GetConfig(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -120,7 +120,7 @@ func (uc *ModelUsecase) SaveConfig(ctx context.Context, config ModelConfig) (*Mo
 	if !found {
 		return nil, ErrChatInvalidArgument
 	}
-	if err := uc.repo.SaveConfig(ctx, &config); err != nil {
+	if err := uc.opts.ModelRepo.SaveConfig(ctx, &config); err != nil {
 		return nil, err
 	}
 	return &config, nil
@@ -129,5 +129,5 @@ func (uc *ModelUsecase) SaveConfig(ctx context.Context, config ModelConfig) (*Mo
 func (uc *ModelUsecase) DeleteConfig(ctx context.Context) error {
 	uc.mu.Lock()
 	defer uc.mu.Unlock()
-	return uc.repo.DeleteConfig(ctx)
+	return uc.opts.ModelRepo.DeleteConfig(ctx)
 }

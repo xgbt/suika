@@ -89,7 +89,7 @@ func TestAccountUsecasePollQRLoginSavesOnConfirmed(t *testing.T) {
 		pollCred: &Credential{Cookie: "SESSDATA=s; DedeUserID=1", RefreshToken: "rt"},
 	}
 	repo := &fakeCredentialRepo{}
-	uc := NewAccountUsecase(passport, repo)
+	uc := NewAccountUsecase(&RepoOptions{CredentialRepo: repo}, passport)
 
 	poll, err := uc.PollQRLogin(ctx, "key-1")
 	if err != nil {
@@ -108,7 +108,7 @@ func TestAccountUsecasePollQRLoginNonConfirmedDoesNotSave(t *testing.T) {
 	for _, status := range []QRLoginStatus{QRLoginNotScanned, QRLoginScanned, QRLoginExpired} {
 		passport := &fakePassport{poll: &QRLoginPoll{Status: status}}
 		repo := &fakeCredentialRepo{}
-		uc := NewAccountUsecase(passport, repo)
+		uc := NewAccountUsecase(&RepoOptions{CredentialRepo: repo}, passport)
 
 		poll, err := uc.PollQRLogin(ctx, "key-1")
 		if err != nil {
@@ -125,29 +125,29 @@ func TestAccountUsecasePollQRLoginNonConfirmedDoesNotSave(t *testing.T) {
 
 func TestAccountUsecasePollQRLoginValidation(t *testing.T) {
 	ctx := context.Background()
-	uc := NewAccountUsecase(&fakePassport{}, &fakeCredentialRepo{})
+	uc := NewAccountUsecase(&RepoOptions{CredentialRepo: &fakeCredentialRepo{}}, &fakePassport{})
 
 	if _, err := uc.PollQRLogin(ctx, ""); !stderrors.Is(err, ErrAccountInvalidArgument) {
 		t.Fatalf("PollQRLogin(empty key) error = %v, want invalid argument", err)
 	}
 
 	// 确认成功但缺失凭据 → 平台不可用。
-	uc = NewAccountUsecase(&fakePassport{poll: &QRLoginPoll{Status: QRLoginConfirmed}}, &fakeCredentialRepo{})
+	uc = NewAccountUsecase(&RepoOptions{CredentialRepo: &fakeCredentialRepo{}}, &fakePassport{poll: &QRLoginPoll{Status: QRLoginConfirmed}})
 	if _, err := uc.PollQRLogin(ctx, "key-1"); !stderrors.Is(err, ErrPassportUnavailable) {
 		t.Fatalf("PollQRLogin(confirmed without cred) error = %v, want passport unavailable", err)
 	}
 
 	// 平台错误原样上抛。
 	platformErr := stderrors.New("boom")
-	uc = NewAccountUsecase(&fakePassport{pollErr: platformErr}, &fakeCredentialRepo{})
+	uc = NewAccountUsecase(&RepoOptions{CredentialRepo: &fakeCredentialRepo{}}, &fakePassport{pollErr: platformErr})
 	if _, err := uc.PollQRLogin(ctx, "key-1"); !stderrors.Is(err, platformErr) {
 		t.Fatalf("PollQRLogin(platform error) error = %v, want platform error", err)
 	}
 
 	// 持久化失败上抛。
 	uc = NewAccountUsecase(
+		&RepoOptions{CredentialRepo: &fakeCredentialRepo{saveErr: stderrors.New("disk full")}},
 		&fakePassport{poll: &QRLoginPoll{Status: QRLoginConfirmed}, pollCred: &Credential{Cookie: "c"}},
-		&fakeCredentialRepo{saveErr: stderrors.New("disk full")},
 	)
 	if _, err := uc.PollQRLogin(ctx, "key-1"); err == nil {
 		t.Fatal("PollQRLogin(save error) error = nil, want error")
@@ -158,7 +158,7 @@ func TestAccountUsecaseAccountStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// 无凭据 → 登出，且不核验平台。
-	uc := NewAccountUsecase(&fakePassport{}, &fakeCredentialRepo{})
+	uc := NewAccountUsecase(&RepoOptions{CredentialRepo: &fakeCredentialRepo{}}, &fakePassport{})
 	info, err := uc.AccountStatus(ctx)
 	if err != nil {
 		t.Fatalf("AccountStatus(no cred) error = %v", err)
@@ -169,7 +169,7 @@ func TestAccountUsecaseAccountStatus(t *testing.T) {
 
 	// 在线 → 透传昵称与 mid。
 	passport := &fakePassport{info: &AccountInfo{State: AccountLoggedIn, UName: "alice", Mid: 42}}
-	uc = NewAccountUsecase(passport, &fakeCredentialRepo{cred: &Credential{Cookie: "ck"}})
+	uc = NewAccountUsecase(&RepoOptions{CredentialRepo: &fakeCredentialRepo{cred: &Credential{Cookie: "ck"}}}, passport)
 	info, err = uc.AccountStatus(ctx)
 	if err != nil {
 		t.Fatalf("AccountStatus(logged in) error = %v", err)
@@ -183,8 +183,8 @@ func TestAccountUsecaseAccountStatus(t *testing.T) {
 
 	// 平台报告未登录 → 凭据失效（保留凭据）。
 	uc = NewAccountUsecase(
+		&RepoOptions{CredentialRepo: &fakeCredentialRepo{cred: &Credential{Cookie: "ck"}}},
 		&fakePassport{info: &AccountInfo{State: AccountLoggedOut}},
-		&fakeCredentialRepo{cred: &Credential{Cookie: "ck"}},
 	)
 	info, err = uc.AccountStatus(ctx)
 	if err != nil {
@@ -196,15 +196,15 @@ func TestAccountUsecaseAccountStatus(t *testing.T) {
 
 	// 平台错误上抛，不误报登出。
 	uc = NewAccountUsecase(
+		&RepoOptions{CredentialRepo: &fakeCredentialRepo{cred: &Credential{Cookie: "ck"}}},
 		&fakePassport{infoErr: stderrors.New("network down")},
-		&fakeCredentialRepo{cred: &Credential{Cookie: "ck"}},
 	)
 	if _, err := uc.AccountStatus(ctx); err == nil {
 		t.Fatal("AccountStatus(platform error) error = nil, want error")
 	}
 
 	// 仓储读取错误上抛。
-	uc = NewAccountUsecase(&fakePassport{}, &fakeCredentialRepo{getErr: stderrors.New("db down")})
+	uc = NewAccountUsecase(&RepoOptions{CredentialRepo: &fakeCredentialRepo{getErr: stderrors.New("db down")}}, &fakePassport{})
 	if _, err := uc.AccountStatus(ctx); err == nil {
 		t.Fatal("AccountStatus(repo error) error = nil, want error")
 	}
@@ -213,7 +213,7 @@ func TestAccountUsecaseAccountStatus(t *testing.T) {
 func TestAccountUsecaseLogout(t *testing.T) {
 	ctx := context.Background()
 	repo := &fakeCredentialRepo{cred: &Credential{Cookie: "ck"}}
-	uc := NewAccountUsecase(&fakePassport{}, repo)
+	uc := NewAccountUsecase(&RepoOptions{CredentialRepo: repo}, &fakePassport{})
 
 	if err := uc.Logout(ctx); err != nil {
 		t.Fatalf("Logout() error = %v", err)

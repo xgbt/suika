@@ -53,7 +53,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, info *RoomInfo, event
 
 	// 准备会话目录与 meta.json。
 	uc.roomRegistry.StartRecording(roomID)
-	if err := uc.repo.PrepareSession(ctx, session); err != nil {
+	if err := uc.opts.RecorderRepo.PrepareSession(ctx, session); err != nil {
 		log.Error("prepare session failed", "room", roomID, "err", err)
 		uc.roomRegistry.FailRecording(roomID, err)
 		return
@@ -66,7 +66,7 @@ func (uc *RecorderUsecase) runSession(ctx context.Context, info *RoomInfo, event
 	uc.roomRegistry.SetMerging(roomID)
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishGracePeriod)
 	defer cancel()
-	if err := uc.repo.FinishSession(fctx, session); err != nil {
+	if err := uc.opts.RecorderRepo.FinishSession(fctx, session); err != nil {
 		log.Error("finish session failed", "room", roomID, "err", err)
 		uc.roomRegistry.FailRecording(roomID, err)
 		return
@@ -124,7 +124,7 @@ func (uc *RecorderUsecase) runRecordingLoop(ctx context.Context, session *Record
 		session.Quality = stream.Quality
 		uc.roomRegistry.SetStreamQuality(roomID, stream.Quality)
 		legStart := time.Now()
-		result, recErr := uc.repo.PumpSession(ctx, session, stream, events)
+		result, recErr := uc.opts.RecorderRepo.PumpSession(ctx, session, stream, events)
 		if result != nil {
 			log.Info("pump ended", "room", roomID, "bytes", result.BytesWritten, "parts", result.Parts, "err", recErr)
 		}

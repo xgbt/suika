@@ -88,20 +88,19 @@ type ListQuery struct {
 }
 
 type RoomUsecase struct {
-	repo             RoomRepo
-	registry         *RoomRegistry
-	sessionStatsRepo SessionStatsRepo
+	opts     *RepoOptions
+	registry *RoomRegistry
 }
 
-func NewRoomUsecase(repo RoomRepo, reg *RoomRegistry, stats SessionStatsRepo) *RoomUsecase {
-	return &RoomUsecase{repo: repo, registry: reg, sessionStatsRepo: stats}
+func NewRoomUsecase(opts *RepoOptions, reg *RoomRegistry) *RoomUsecase {
+	return &RoomUsecase{opts: opts, registry: reg}
 }
 
 func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime, error) {
 	if roomID <= 0 {
 		return nil, ErrRoomInvalidArgument
 	}
-	room, err := uc.repo.GetByRoomID(ctx, roomID)
+	room, err := uc.opts.RoomRepo.GetByRoomID(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +108,7 @@ func (uc *RoomUsecase) GetRoom(ctx context.Context, roomID int64) (*RoomRuntime,
 }
 
 func (uc *RoomUsecase) ListRoomRuntimes(ctx context.Context, query ListQuery) ([]*RoomRuntime, error) {
-	rooms, err := uc.repo.ListRooms(ctx, query)
+	rooms, err := uc.opts.RoomRepo.ListRooms(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +124,7 @@ func (uc *RoomUsecase) CreateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	if room == nil || room.RoomID <= 0 {
 		return nil, ErrRoomInvalidArgument
 	}
-	created, err := uc.repo.CreateRoom(ctx, room)
+	created, err := uc.opts.RoomRepo.CreateRoom(ctx, room)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +136,7 @@ func (uc *RoomUsecase) UpdateRoom(ctx context.Context, room *Room) (*RoomRuntime
 	if room == nil || room.RoomID <= 0 {
 		return nil, ErrRoomInvalidArgument
 	}
-	updated, err := uc.repo.UpdateRoom(ctx, room)
+	updated, err := uc.opts.RoomRepo.UpdateRoom(ctx, room)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +148,7 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, roomID int64) error {
 	if roomID <= 0 {
 		return ErrRoomInvalidArgument
 	}
-	if err := uc.repo.DeleteRoom(ctx, roomID); err != nil {
+	if err := uc.opts.RoomRepo.DeleteRoom(ctx, roomID); err != nil {
 		return err
 	}
 	uc.registry.Remove(roomID)
@@ -163,7 +162,7 @@ func (uc *RoomUsecase) withRuntime(ctx context.Context, room *Room) *RoomRuntime
 
 	// 如果房间正在录制中，尝试获取当前录制 session 的写入进度
 	if runtime.RecordStatus == RecordStatusRecording {
-		stats, err := uc.sessionStatsRepo.Stats(ctx, room.RoomID)
+		stats, err := uc.opts.SessionStatsRepo.Stats(ctx, room.RoomID)
 		if err == nil && stats != nil {
 			runtime.CurrentFile = stats.CurrentFile
 			runtime.BytesWritten = stats.BytesWritten
