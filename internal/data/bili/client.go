@@ -30,8 +30,8 @@ type Client struct {
 	// signer 是 WBI 签名器，负责生成风控请求的签名参数。
 	signer *wbiSigner
 
-	// buvids 是 buvid 缓存，负责生成风控请求的 buvid3/buvid4 指纹。
-	buvids *buvidStore
+	// buvidStore 是 buvid 缓存，负责生成风控请求的 buvid3/buvid4 指纹。
+	buvidStore *buvidStore
 }
 
 func NewClient(cookie string) *Client {
@@ -43,7 +43,7 @@ func NewClient(cookie string) *Client {
 		cookie:       cookie,
 	}
 	c.signer = newWBISigner(apiClient, c.Cookie)
-	c.buvids = newBuvidStore(apiClient)
+	c.buvidStore = NewBuvidStore(apiClient)
 	return c
 }
 
@@ -63,7 +63,7 @@ func (c *Client) SetCookie(cookie string) {
 	c.cookie = cookie
 	c.mu.Unlock()
 	if old != "" && old != cookie {
-		c.buvids.invalidate(old)
+		c.buvidStore.invalidate(old)
 	}
 }
 

@@ -417,7 +417,7 @@ func (lc *liveClient) danmuBuvid(ctx context.Context) string {
 	if buvid := cookieValue(cookie, "buvid3"); buvid != "" {
 		return buvid
 	}
-	b3, _, err := lc.client.buvids.getBuvids(ctx, cookie)
+	b3, _, err := lc.client.buvidStore.GetBuvids(ctx, cookie)
 	if err != nil {
 		log.Warn("get buvid3 for danmaku failed, continuing without", "err", err)
 		return ""

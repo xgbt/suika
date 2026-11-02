@@ -31,7 +31,7 @@ type riskTransport interface {
 // antiRiskCookie 返回注入了 buvid3/buvid4 指纹的当前 cookie；失败时退化为原值。
 func (c *Client) antiRiskCookie(ctx context.Context) string {
 	cookie := c.Cookie()
-	b3, b4, err := c.buvids.getBuvids(ctx, cookie)
+	b3, b4, err := c.buvidStore.GetBuvids(ctx, cookie)
 	if err != nil {
 		log.Warn("get buvids failed, continuing without buvid", "err", err)
 		return cookie
@@ -49,7 +49,7 @@ func (c *Client) refreshRiskState(ctx context.Context) {
 	if err := c.signer.fetchKeys(ctx); err != nil {
 		log.Warn("wbi key refresh failed, retrying with existing keys", "err", err)
 	}
-	c.buvids.invalidate(c.Cookie())
+	c.buvidStore.invalidate(c.Cookie())
 }
 
 // fetchEndpointJSON 发起一次直播站伪装 GET 并解码 JSON；

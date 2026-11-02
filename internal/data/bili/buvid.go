@@ -24,8 +24,8 @@ type cachedBuvid struct {
 	expiresAt time.Time
 }
 
-// buvidStore 获取并缓存 B 站设备指纹（buvid3/buvid4），注入 cookie
-// 头以通过 -352 风控。移植自 hikami-go/internal/biliutil/buvid.go。
+// buvidStore 获取并缓存 B 站设备指纹（buvid3/buvid4），注入 cookie 头以通过 -352 风控。
+// 移植自 hikami-go/internal/biliutil/buvid.go。
 type buvidStore struct {
 	httpClient *resty.Client
 	spiURL     string
@@ -33,7 +33,7 @@ type buvidStore struct {
 	mu         sync.Mutex
 }
 
-func newBuvidStore(httpc *resty.Client) *buvidStore {
+func NewBuvidStore(httpc *resty.Client) *buvidStore {
 	return &buvidStore{
 		httpClient: httpc,
 		spiURL:     defaultBuvidSpiURL,
@@ -41,13 +41,12 @@ func newBuvidStore(httpc *resty.Client) *buvidStore {
 	}
 }
 
-// getBuvids 返回 cookieHeader 对应的 buvid3/buvid4，缓存 24 小时。
-func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3, buvid4 string, err error) {
-	now := time.Now()
+// GetBuvids 返回 cookieHeader 对应的 buvid3/buvid4，缓存 24 小时。
+func (s *buvidStore) GetBuvids(ctx context.Context, cookieHeader string) (buvid3, buvid4 string, err error) {
 	s.mu.Lock()
-	if cached, ok := s.cache[cookieHeader]; ok && now.Before(cached.expiresAt) {
+	if val, ok := s.cache[cookieHeader]; ok && time.Now().Before(val.expiresAt) {
 		s.mu.Unlock()
-		return cached.buvid3, cached.buvid4, nil
+		return val.buvid3, val.buvid4, nil
 	}
 	s.mu.Unlock()
 
@@ -80,7 +79,7 @@ func (s *buvidStore) getBuvids(ctx context.Context, cookieHeader string) (buvid3
 	s.cache[cookieHeader] = cachedBuvid{
 		buvid3:    result.Data.B3,
 		buvid4:    result.Data.B4,
-		expiresAt: now.Add(buvidTTL),
+		expiresAt: time.Now().Add(buvidTTL),
 	}
 	s.mu.Unlock()
 	return result.Data.B3, result.Data.B4, nil
